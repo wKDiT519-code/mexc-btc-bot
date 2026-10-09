@@ -1,0 +1,16 @@
+services:
+  - type: worker
+    name: mexc-btc-bot
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python mexc_btc_final_bot.py
+    envVars:
+      - key: MEXC_API_KEY
+        sync: false
+      - key: MEXC_API_SECRET
+        sync: false
+      - key: DRY_RUN
+        value: "False"
+      - key: PYTHON_VERSION
+        value: 3.11.0
+    autoDeploy: false
