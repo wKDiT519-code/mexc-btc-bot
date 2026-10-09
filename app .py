@@ -1,7 +1,6 @@
 """
-MEXC BTC Bot - FREE TIER VERSION for Render.com
-รันเป็น Web Service แทน Worker เพื่อใช้ฟรีได้
-มีเว็บเล็กๆ ให้ UptimeRobot มา ping ไม่ให้หลับ
+MEXC BTC Bot - DRY RUN + Telegram Notification
+ส่งผลงานเข้า Telegram ทุกครั้งที่เจอสัญญาณ
 """
 import ccxt
 import pandas as pd
@@ -10,42 +9,85 @@ from datetime import datetime
 import os
 import threading
 from flask import Flask
+import requests
 
 app = Flask(__name__)
 
-# หน้าเว็บไว้ให้ UptimeRobot ping
+latest_log = []
+signals = []
+
+# Telegram Config - จะใส่ใน Render Environment Variables
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
+
+def send_telegram(msg):
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        return
+    try:
+        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+        payload = {
+            "chat_id": TELEGRAM_CHAT_ID,
+            "text": msg,
+            "parse_mode": "Markdown"
+        }
+        requests.post(url, json=payload, timeout=10)
+        print(f"[Telegram] Sent: {msg[:50]}")
+    except Exception as e:
+        print(f"[Telegram Error] {e}")
+
 @app.route('/')
 def home():
+    logs_html = "<br>".join(latest_log[-30:])
+    sig_html = "<br>".join(signals[-15:]) if signals else "ยังไม่มีสัญญาณ - รอตลาด"
+    tg_status = "✅ เชื่อมต่อแล้ว" if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID else "❌ ยังไม่ได้ตั้งค่า TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID"
     return f"""
-    <h1>🤖 MEXC BTC Bot is Running</h1>
-    <p>Config: Long Only + Risk 2% + TP 3.5 ATR</p>
-    <p>Last check: {datetime.now()}</p>
-    <p>Status: OK - Bot scanning every 60s</p>
-    <p>Backtest: +4.73% / 3M | PF 2.02 | WR 63.6%</p>
+    <html><head><meta http-equiv="refresh" content="30"></head><body style="font-family: monospace; padding: 20px; max-width: 900px;">
+    <h1>🤖 MEXC BTC Bot - DRY RUN + Telegram</h1>
+    <p><b>Config:</b> Long Only + Risk 2% + TP 3.5 ATR + SL 2.2 ATR</p>
+    <p><b>Backtest:</b> +4.73% / 3M | PF 2.02 | WR 63.6%</p>
+    <p><b>Telegram:</b> {tg_status}</p>
+    <p><b>Last update:</b> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
+    <hr>
+    <h3>📈 สัญญาณล่าสุด (ส่งเข้า Telegram แล้ว):</h3>
+    <div style="background: #fef3c7; padding: 15px; border-radius: 8px; white-space: pre-wrap;">{sig_html}</div>
+    <hr>
+    <h3>📋 Log ล่าสุด:</h3>
+    <div style="background: #f3f4f6; padding: 15px; border-radius: 8px; font-size: 12px; max-height: 400px; overflow-y: auto;">{logs_html}</div>
+    <hr>
+    <p>💡 วิธีตั้งค่า Telegram ดูใน README ด้านล่าง</p>
+    </body></html>
     """
 
 @app.route('/health')
 def health():
     return "OK", 200
 
-class MexcBtcFinalBot:
-    def __init__(self, api_key, api_secret, dry_run=True):
-        self.exchange = ccxt.mexc({
-            'apiKey': api_key,
-            'secret': api_secret,
-            'enableRateLimit': True,
-            'options': {'defaultType': 'swap'}
-        })
+@app.route('/test-telegram')
+def test_telegram():
+    send_telegram("🧪 ทดสอบ Telegram จาก MEXC BTC Bot - ถ้าเห็นข้อความนี้แปลว่าเชื่อมต่อสำเร็จ!")
+    return "Test message sent to Telegram! Check your Telegram."
+
+def add_log(msg):
+    global latest_log
+    line = f"[{datetime.now().strftime('%H:%M:%S')}] {msg}"
+    print(line)
+    latest_log.append(line)
+    if len(latest_log) > 150:
+        latest_log = latest_log[-150:]
+
+class MexcBtcDryRunBot:
+    def __init__(self):
+        self.exchange = ccxt.mexc({'enableRateLimit': True, 'options': {'defaultType': 'swap'}})
         self.symbol = 'BTC/USDT:USDT'
-        self.dry_run = dry_run
         self.RISK_PCT = 0.02
         self.SL_ATR = 2.2
         self.TP_ATR = 3.5
-        self.leverage = 5
-        print(f"==================================================")
-        print(f" MEXC BTC BOT FREE | Long Only | Risk 2% | TP 3.5 ATR")
-        print(f" Mode: {'DRY RUN' if dry_run else 'LIVE'}")
-        print(f"==================================================")
+        add_log(f"Bot Started - DRY RUN + Telegram Mode")
+        if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
+            add_log(f"Telegram Connected - Chat ID {TELEGRAM_CHAT_ID}")
+            send_telegram(f"🤖 *MEXC BTC Bot Started*\n\nConfig: Long Only | Risk 2% | TP 3.5 ATR\nMode: DRY RUN\n\nบอทเริ่มสแกน BTC แล้ว จะแจ้งเตือนเมื่อเจอสัญญาณ")
+        else:
+            add_log(f"Telegram NOT set - ใส่ TELEGRAM_BOT_TOKEN และ TELEGRAM_CHAT_ID ใน Render Env")
 
     def get_df(self, tf, limit=300):
         ohlcv = self.exchange.fetch_ohlcv(self.symbol, tf, limit=limit)
@@ -73,7 +115,6 @@ class MexcBtcFinalBot:
 
     def run_loop(self):
         position = None
-        consecutive_losses = 0
         while True:
             try:
                 df_4h = self.get_df('4h')
@@ -93,87 +134,60 @@ class MexcBtcFinalBot:
                         if price < position['highest'] - position['atr']*1.2:
                             trailing_hit = True
                     if sl_hit or tp_hit or trailing_hit:
-                        pnl = (price - position['entry'])*position['qty']
-                        reason = 'SL' if sl_hit else ('TP 3.5 ATR' if tp_hit else 'Trailing')
-                        print(f"[{datetime.now().strftime('%H:%M:%S')}] CLOSE {reason} @ {price:.1f} PnL ${pnl:+.2f}")
-                        if not self.dry_run:
-                            try:
-                                self.exchange.create_market_order(self.symbol, 'sell', position['qty'])
-                            except Exception as e:
-                                print(f"Close error: {e}")
-                        consecutive_losses = consecutive_losses + 1 if pnl < 0 else 0
+                        pnl_pct = (price - position['entry'])/position['entry']*100
+                        reason = 'SL' if sl_hit else ('TP 3.5 ATR ✅' if tp_hit else 'Trailing ✅')
+                        msg = f"CLOSE {reason} @ {price:.1f} Entry {position['entry']:.1f} PnL {pnl_pct:+.2f}%"
+                        add_log(msg)
+                        signals.append(msg)
+                        
+                        # ส่ง Telegram
+                        tg_msg = f"{'🔴' if pnl_pct < 0 else '🟢'} *ปิดโพซิชั่น* {reason}\n\nEntry: ${position['entry']:.1f}\nExit: ${price:.1f}\nPnL: {pnl_pct:+.2f}%\nTime: {datetime.now().strftime('%H:%M')}"
+                        send_telegram(tg_msg)
+                        
                         position = None
-                        if consecutive_losses >= 3:
-                            print(f"!!! เสีย 3 ไม้ติด หยุด 1 ชม.")
-                            time.sleep(3600)
-                            consecutive_losses = 0
-                            continue
                     else:
-                        print(f"[{datetime.now().strftime('%H:%M:%S')}] HOLD Entry {position['entry']:.1f} Now {price:.1f} PnL ${(price-position['entry'])*position['qty']:+.2f}")
+                        add_log(f"HOLD Entry {position['entry']:.1f} Now {price:.1f} PnL {(price-position['entry'])/position['entry']*100:+.2f}%")
                         time.sleep(30)
                         continue
 
                 if not big_up:
-                    print(f"[{datetime.now().strftime('%H:%M:%S')}] Trend DOWN - ข้าม")
+                    add_log(f"Trend 4H DOWN - ข้าม BTC {price:.0f}")
                     time.sleep(120)
                     continue
-                if last['adx'] < 23 or last['vol'] < last['vol_ema']*0.7:
-                    print(f"[{datetime.now().strftime('%H:%M:%S')}] ADX {last['adx']:.1f} / Vol น้อย ข้าม")
+                if last['adx'] < 23:
+                    add_log(f"ADX {last['adx']:.1f} อ่อน ข้าม BTC {price:.0f} RSI {last['rsi']:.1f}")
+                    time.sleep(60)
+                    continue
+                if last['vol'] < last['vol_ema']*0.7:
+                    add_log(f"Vol น้อย ข้าม BTC {price:.0f}")
                     time.sleep(60)
                     continue
 
                 if 40 <= last['rsi'] <= 54 and last['rsi'] > prev['rsi']:
-                    balance = 10000
-                    if not self.dry_run:
-                        try:
-                            bal = self.exchange.fetch_balance()
-                            balance = bal['USDT']['free']
-                        except:
-                            balance = 10000
-                    sl_dist = float(last['atr'])*self.SL_ATR
-                    qty = min(balance*self.RISK_PCT/sl_dist, balance*0.4/price) if sl_dist>0 else 0
-                    if qty*price < 20:
-                        time.sleep(60)
-                        continue
-                    sl_price = price - sl_dist
+                    sl_price = price - float(last['atr'])*self.SL_ATR
                     tp_price = price + float(last['atr'])*self.TP_ATR
-                    print(f"\n>>> SIGNAL LONG @ {price:.1f} RSI {last['rsi']:.1f} ADX {last['adx']:.1f} Qty {qty:.4f} SL {sl_price:.1f} TP {tp_price:.1f}")
-                    if not self.dry_run:
-                        try:
-                            self.exchange.create_market_order(self.symbol, 'buy', qty)
-                        except Exception as e:
-                            print(f"Open error: {e}")
-                            time.sleep(10)
-                            continue
-                    position = {'side':'long','entry':price,'qty':qty,'sl':sl_price,'highest':price,'atr':float(last['atr']),'entry_time':datetime.now()}
+                    msg = f">>> SIGNAL LONG @ {price:.1f} RSI {last['rsi']:.1f} ADX {last['adx']:.1f} SL {sl_price:.1f} TP {tp_price:.1f}"
+                    add_log(msg)
+                    signals.append(msg)
+                    
+                    # ส่ง Telegram สัญญาณเข้า
+                    tg_msg = f"🚀 *SIGNAL LONG* 🚀\n\nPrice: ${price:.1f}\nRSI: {last['rsi']:.1f} | ADX: {last['adx']:.1f}\nTrend 4H: UP ✅\n\nSL: ${sl_price:.1f} ({self.SL_ATR} ATR)\nTP: ${tp_price:.1f} ({self.TP_ATR} ATR)\nRisk: 2%\n\nMode: DRY RUN"
+                    send_telegram(tg_msg)
+                    
+                    position = {'entry':price,'sl':sl_price,'highest':price,'atr':float(last['atr'])}
                 else:
-                    print(f"[{datetime.now().strftime('%H:%M:%S')}] รอ BTC {price:.0f} RSI {last['rsi']:.1f} ADX {last['adx']:.1f}")
+                    add_log(f"รอ BTC {price:.0f} RSI {last['rsi']:.1f} ADX {last['adx']:.1f} Trend UP")
                 time.sleep(60)
             except Exception as e:
-                print(f"[Error] {e}")
+                add_log(f"Error: {e}")
                 time.sleep(10)
 
 def start_bot():
-    API_KEY = os.getenv("MEXC_API_KEY", "ใส่_api_key_ตรงนี้")
-    API_SECRET = os.getenv("MEXC_API_SECRET", "ใส่_api_secret_ตรงนี้")
-    DRY_RUN = os.getenv("DRY_RUN", "True").lower() == "true"
-    
-    if API_KEY == "ใส่_api_key_ตรงนี้":
-        print("!!! ยังไม่ได้ใส่ API KEY - รอใส่ใน Environment Variables !!!")
-        # รันแบบไม่มี API ก็ให้เว็บติดก่อน
-        while True:
-            print(f"[{datetime.now().strftime('%H:%M:%S')}] Waiting for API KEY in Env Vars...")
-            time.sleep(60)
-    else:
-        bot = MexcBtcFinalBot(API_KEY, API_SECRET, dry_run=DRY_RUN)
-        bot.run_loop()
+    bot = MexcBtcDryRunBot()
+    bot.run_loop()
 
 if __name__ == "__main__":
-    # รันบอทใน thread แยก
     bot_thread = threading.Thread(target=start_bot, daemon=True)
     bot_thread.start()
-    
-    # รันเว็บเซิร์ฟเวอร์ (Render จะตรวจ port 10000)
     port = int(os.environ.get("PORT", 10000))
-    print(f"Starting web server on port {port} for free tier keep-alive...")
     app.run(host='0.0.0.0', port=port)
