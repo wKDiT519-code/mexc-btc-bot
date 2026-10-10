@@ -1,4 +1,4 @@
-flask
-ccxt
-pandas
-requests
+     flask
+     requests
+     ccxt
+     pandas
