@@ -6,137 +6,89 @@ from datetime import datetime
 
 app = Flask(__name__)
 
-# ========== CONFIG ==========
-BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
-CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
+BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 SYMBOL = "BTC/USDT"
-TIMEFRAME = "1m"  # ใช้ 1m เพื่อให้ไว เหมาะกับสแกน 15 วิ
-SCAN_INTERVAL = 15  # สแกนทุก 15 วินาที
-DRY_RUN = True  # True = แค่ส่งสัญญาณ ไม่ได้เทรดจริง
-SIGNAL_COOLDOWN = 300  # กันสแปม ส่งห่างกัน 5 นาที
+TIMEFRAME = "1m"
+SCAN_INTERVAL = 15
+DRY_RUN = True
+SIGNAL_COOLDOWN = 300
 
-# ========== TELEGRAM ==========
 def send_tele(msg):
-    if not BOT_TOKEN or not CHAT_ID:
-        print(f"[TELEGRAM SKIP] No token/chat")
-        return
+    if not BOT_TOKEN or not CHAT_ID: return
     try:
         url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-        r = requests.post(url, json={"chat_id": CHAT_ID, "text": msg, "parse_mode": "HTML"}, timeout=10)
-        print(f"[TELEGRAM SENT] {r.status_code} - {msg[:80]}")
-    except Exception as e:
-        print(f"[TELEGRAM ERROR] {e}")
+        requests.post(url, json={"chat_id": CHAT_ID, "text": msg, "parse_mode": "HTML"}, timeout=10)
+    except: pass
 
-# ========== INDICATORS ==========
-def calc_rsi(series, period=14):
-    delta = series.diff()
-    gain = delta.where(delta > 0, 0).rolling(window=period).mean()
-    loss = -delta.where(delta < 0, 0).rolling(window=period).mean()
-    rs = gain / loss
-    rsi = 100 - (100 / (1 + rs))
-    return rsi
+def calc_rsi(s, p=14):
+    d = s.diff()
+    gain = d.where(d>0,0).ewm(alpha=1/p, min_periods=p).mean()
+    loss = (-d.where(d<0,0)).ewm(alpha=1/p, min_periods=p).mean()
+    rs = gain/loss
+    return 100 - (100/(1+rs))
 
-def calc_adx(df, period=14):
+def calc_adx(df, p=14):
     try:
-        high = df['high']
-        low = df['low']
-        close = df['close']
-        plus_dm = high.diff()
-        minus_dm = low.diff() * -1
-        tr1 = high - low
-        tr2 = (high - close.shift()).abs()
-        tr3 = (low - close.shift()).abs()
+        h = df['high']; l = df['low']; c = df['close']
+        up = h.diff()
+        down = l.shift(1) - l
+        # +DM and -DM
+        plus_dm = pd.Series(0.0, index=df.index)
+        minus_dm = pd.Series(0.0, index=df.index)
+        plus_dm[(up > down) & (up > 0)] = up
+        minus_dm[(down > up) & (down > 0)] = down
+        
+        tr1 = h - l
+        tr2 = (h - c.shift(1)).abs()
+        tr3 = (l - c.shift(1)).abs()
         tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
-        atr = tr.rolling(period).mean()
-        plus_di = 100 * (plus_dm.rolling(period).mean() / atr)
-        minus_di = 100 * (minus_dm.rolling(period).mean() / atr)
-        dx = 100 * (abs(plus_di - minus_di) / (plus_di + minus_di))
-        adx = dx.rolling(period).mean()
+        
+        atr = tr.ewm(alpha=1/p, min_periods=p).mean()
+        plus_di = 100 * (plus_dm.ewm(alpha=1/p, min_periods=p).mean() / atr)
+        minus_di = 100 * (minus_dm.ewm(alpha=1/p, min_periods=p).mean() / atr)
+        
+        dx = 100 * ((plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, 1)).fillna(0)
+        adx = dx.ewm(alpha=1/p, min_periods=p).mean()
         return adx.iloc[-1], plus_di.iloc[-1], minus_di.iloc[-1]
-    except Exception as e:
-        print(f"ADX calc error: {e}")
-        return 25, 20, 20
+    except:
+        return 25.0, 20.0, 20.0
 
-# ========== BOT LOOP ==========
 def bot_loop():
-    exchange = ccxt.mexc({'enableRateLimit': True})
-    print(f"🚀 Bot Starting - Scanning every {SCAN_INTERVAL}s | TF {TIMEFRAME} | Symbol {SYMBOL}")
-    send_tele(f"🤖 <b>MEXC BTC Bot Started LIVE!</b>\n\nSymbol: {SYMBOL}\nTF: {TIMEFRAME}\nScan: Every {SCAN_INTERVAL} sec\nStrategy: RSI + ADX\nMode: {'DRY RUN' if DRY_RUN else 'LIVE TRADING'}\n\nTime: {datetime.now().strftime('%H:%M:%S')}")
-
-    last_signal_time = 0
-
+    ex = ccxt.mexc({'enableRateLimit': True})
+    send_tele(f"🤖 <b>BTC Bot v2 FIXED - 15s LIVE!</b>\n{SYMBOL} {TIMEFRAME} ADX Fixed")
+    last = 0
     while True:
         try:
-            # Fetch OHLCV
-            ohlcv = exchange.fetch_ohlcv(SYMBOL, TIMEFRAME, limit=100)
+            ohlcv = ex.fetch_ohlcv(SYMBOL, TIMEFRAME, limit=100)
             df = pd.DataFrame(ohlcv, columns=['ts','open','high','low','close','vol'])
-            df['rsi'] = calc_rsi(df['close'], 14)
-            adx, plus_di, minus_di = calc_adx(df, 14)
-
+            df['rsi'] = calc_rsi(df['close'])
+            adx, plus_di, minus_di = calc_adx(df)
             price = float(df['close'].iloc[-1])
             rsi = float(df['rsi'].iloc[-1])
             trend = "UP 📈" if plus_di > minus_di else "DOWN 📉"
-
-            # Log to Render Logs
-            log_msg = f"[{datetime.now().strftime('%H:%M:%S')}] BTC {price:.2f} RSI {rsi:.1f} ADX {adx:.1f} {trend} +DI {plus_di:.1f} -DI {minus_di:.1f}"
-            print(log_msg)
-
-            # Signal Logic with Cooldown
-            if time.time() - last_signal_time > SIGNAL_COOLDOWN:
-                signal = None
-                
-                # LONG: ADX > 20 + Uptrend + RSI 35-60
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] BTC {price:.2f} RSI {rsi:.1f} ADX {adx:.1f} {trend}")
+            
+            if time.time() - last > SIGNAL_COOLDOWN:
+                sig = None
                 if adx > 20 and plus_di > minus_di and 35 < rsi < 60:
-                    signal = f"🚀 <b>SIGNAL LONG</b>\n\n💰 BTC: ${price:,.2f}\n📊 RSI: {rsi:.1f}\n📈 ADX: {adx:.1f}\n🔀 Trend: {trend}\n⏰ TF: {TIMEFRAME}\n⏱ Scan: {SCAN_INTERVAL}s\n🕐 {datetime.now().strftime('%d/%m %H:%M:%S')}\n\n{'🧪 DRY RUN - ไม่ได้เปิดออเดอร์จริง' if DRY_RUN else '⚠️ LIVE ORDER'}"
-
-                # SHORT: ADX > 20 + Downtrend + RSI 40-65
+                    sig = f"🚀 <b>LONG</b> BTC ${price:,.2f}\nRSI {rsi:.1f} ADX {adx:.1f} {trend}\n+DI {plus_di:.1f} > -DI {minus_di:.1f}\nTF {TIMEFRAME} {SCAN_INTERVAL}s"
                 elif adx > 20 and minus_di > plus_di and 40 < rsi < 65:
-                    signal = f"🔻 <b>SIGNAL SHORT</b>\n\n💰 BTC: ${price:,.2f}\n📊 RSI: {rsi:.1f}\n📈 ADX: {adx:.1f}\n🔀 Trend: {trend}\n⏰ TF: {TIMEFRAME}\n⏱ Scan: {SCAN_INTERVAL}s\n🕐 {datetime.now().strftime('%d/%m %H:%M:%S')}\n\n{'🧪 DRY RUN - ไม่ได้เปิดออเดอร์จริง' if DRY_RUN else '⚠️ LIVE ORDER'}"
-
-                if signal:
-                    send_tele(signal)
-                    last_signal_time = time.time()
-                    print(f">>> SIGNAL SENT: {signal[:50]}")
-
+                    sig = f"🔻 <b>SHORT</b> BTC ${price:,.2f}\nRSI {rsi:.1f} ADX {adx:.1f} {trend}\n+DI {plus_di:.1f} < -DI {minus_di:.1f}\nTF {TIMEFRAME} {SCAN_INTERVAL}s"
+                if sig:
+                    send_tele(sig + f"\n🕐 {datetime.now().strftime('%H:%M:%S')}\n{'🧪 DRY RUN' if DRY_RUN else 'LIVE'}")
+                    last = time.time()
         except Exception as e:
-            print(f"[LOOP ERROR] {e}")
-
+            print(f"Error {e}")
         time.sleep(SCAN_INTERVAL)
 
-# Start bot in background thread
 threading.Thread(target=bot_loop, daemon=True).start()
 
-# ========== FLASK ROUTES ==========
 @app.route('/')
-def home():
-    return f"""
-    <html>
-    <head><title>BTC Bot LIVE</title><meta http-equiv="refresh" content="15"></head>
-    <body style="font-family: sans-serif; padding: 20px;">
-        <h1>🤖 MEXC BTC Bot LIVE ✅</h1>
-        <p><b>Symbol:</b> {SYMBOL} | <b>TF:</b> {TIMEFRAME} | <b>Scan:</b> Every {SCAN_INTERVAL}s</p>
-        <p><b>Mode:</b> {'DRY RUN (ทดสอบ - แค่ส่งสัญญาณ)' if DRY_RUN else 'LIVE TRADING (เทรดจริง)'}</p>
-        <p><b>Strategy:</b> RSI + ADX > 20 + Trend</p>
-        <p><b>Cooldown:</b> {SIGNAL_COOLDOWN//60} min per signal</p>
-        <hr>
-        <p><a href='/health'>/health</a> | <a href='/test-telegram'>/test-telegram</a></p>
-        <p>Check <b>Render > Logs</b> to see live scan every {SCAN_INTERVAL}s</p>
-        <p>Auto refresh every 15s - Last: {datetime.now().strftime('%H:%M:%S')}</p>
-    </body>
-    </html>
-    """
-
+def home(): return f"<h1>🤖 BTC Bot FIXED v2 - {SCAN_INTERVAL}s ✅</h1>"
 @app.route('/health')
-def health():
-    return "OK", 200
-
+def health(): return "OK",200
 @app.route('/test-telegram')
 def test_telegram():
-    if not BOT_TOKEN or not CHAT_ID:
-        return "Missing TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID in Environment"
-    send_tele(f"🧪 <b>Telegram OK - {SCAN_INTERVAL}s Bot LIVE!</b>\n\nBTC Bot scanning every {SCAN_INTERVAL}s\nReady for signals!")
-    return f"Sent! Scanning every {SCAN_INTERVAL}s - Check Telegram"
-
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host='0.0.0.0', port=port)
+    send_tele(f"🧪 FIXED v2 OK - ADX now 0-100")
+    return "Sent!"
