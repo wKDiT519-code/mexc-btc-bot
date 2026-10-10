@@ -1,128 +1,179 @@
+
+import os, time, threading, requests, math
 from flask import Flask
-import threading, time, os, requests
 import ccxt
 import pandas as pd
-from datetime import datetime
 
 app = Flask(__name__)
-BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+
+# ===== CONFIG =====
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "YOUR_TOKEN")
+CHAT_ID = os.getenv("CHAT_ID", "YOUR_CHAT_ID")
 SYMBOL = "BTC/USDT"
 TIMEFRAME = "15m"
-SCAN_INTERVAL = 60
-COOLDOWN = 900
-DRY_RUN = True
+START_BALANCE = 100.0  # พอร์ตจำลอง $100
+RISK_PER_TRADE = 20.0  # เปิดไม้ละ $20 (20% พอร์ต)
+LEVERAGE = 10
+COOLDOWN_SEC = 15*60
 
-# ตั้งค่า ATR Multiplier - แก้ตรงนี้ได้
-ATR_SL_MULT = 1.5
-ATR_TP1_MULT = 1.0
-ATR_TP2_MULT = 2.0
-ATR_TP3_MULT = 3.0
+# Paper Portfolio (เก็บใน memory, Render restart จะรีเซ็ต)
+portfolio = {
+    "balance": START_BALANCE,
+    "start_balance": START_BALANCE,
+    "trades": [],
+    "wins": 0,
+    "losses": 0,
+    "position": None  # {side, entry, amount, sl, tp1,tp2,tp3, opened_at}
+}
 
-def send_tele(msg):
-    if not BOT_TOKEN or not CHAT_ID: return
+exchange = ccxt.mexc()
+
+def send_telegram(msg):
     try:
-        requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
-                      json={"chat_id": CHAT_ID, "text": msg, "parse_mode": "HTML"}, timeout=10)
-        print(f"SENT OK")
+        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+        requests.post(url, json={"chat_id": CHAT_ID, "text": msg, "parse_mode": "Markdown"}, timeout=10)
     except Exception as e:
-        print(f"TELE ERR {e}")
+        print(f"Telegram error: {e}")
 
-def calc_rsi(s,p=14):
-    d=s.diff(); g=d.where(d>0,0).ewm(alpha=1/p,min_periods=p).mean()
-    l=(-d.where(d<0,0)).ewm(alpha=1/p,min_periods=p).mean()
-    return 100-(100/(1+g/l))
+def get_ohlcv():
+    ohlcv = exchange.fetch_ohlcv(SYMBOL, TIMEFRAME, limit=100)
+    df = pd.DataFrame(ohlcv, columns=["ts","open","high","low","close","vol"])
+    return df
 
-def calc_adx_atr(df,p=14):
-    try:
-        h=df['high']; l=df['low']; c=df['close']
-        up=h.diff(); down=l.shift(1)-l
-        pdm=pd.Series(0.0,index=df.index); mdm=pd.Series(0.0,index=df.index)
-        pdm[(up>down)&(up>0)]=up; mdm[(down>up)&(down>0)]=down
-        tr=pd.concat([h-l,(h-c.shift(1)).abs(),(l-c.shift(1)).abs()],axis=1).max(axis=1)
-        atr=tr.ewm(alpha=1/p,min_periods=p).mean()
-        pdi=100*(pdm.ewm(alpha=1/p,min_periods=p).mean()/atr)
-        mdi=100*(mdm.ewm(alpha=1/p,min_periods=p).mean()/atr)
-        dx=100*(((pdi-mdi).abs()/(pdi+mdi).replace(0,1)).fillna(0))
-        adx=dx.ewm(alpha=1/p,min_periods=p).mean()
-        return float(adx.iloc[-1]), float(pdi.iloc[-1]), float(mdi.iloc[-1]), float(atr.iloc[-1])
-    except Exception as e:
-        print(f"ADX ERR {e}")
-        return 25.0,20.0,20.0,400.0
+def calc_indicators(df):
+    # RSI 14
+    delta = df["close"].diff()
+    gain = delta.where(delta>0,0).rolling(14).mean()
+    loss = -delta.where(delta<0,0).rolling(14).mean()
+    rs = gain/loss
+    df["rsi"] = 100 - (100/(1+rs))
+    # ADX simplified
+    df["tr"] = pd.concat([df["high"]-df["low"], (df["high"]-df["close"].shift()).abs(), (df["low"]-df["close"].shift()).abs()], axis=1).max(axis=1)
+    df["atr"] = df["tr"].rolling(14).mean()
+    # ADX
+    df["up"] = df["high"].diff()
+    df["down"] = -df["low"].diff()
+    df["plus_dm"] = df.apply(lambda x: x["up"] if x["up"]>x["down"] and x["up"]>0 else 0, axis=1)
+    df["minus_dm"] = df.apply(lambda x: x["down"] if x["down"]>x["up"] and x["down"]>0 else 0, axis=1)
+    df["plus_di"] = 100 * (df["plus_dm"].rolling(14).mean() / df["atr"])
+    df["minus_di"] = 100 * (df["minus_dm"].rolling(14).mean() / df["atr"])
+    df["dx"] = 100 * abs(df["plus_di"]-df["minus_di"]) / (df["plus_di"]+df["minus_di"])
+    df["adx"] = df["dx"].rolling(14).mean()
+    return df
 
-def calc_tp_sl_atr(price, side, atr):
-    if side=="LONG":
-        sl=price - atr*ATR_SL_MULT
-        tp1=price + atr*ATR_TP1_MULT
-        tp2=price + atr*ATR_TP2_MULT
-        tp3=price + atr*ATR_TP3_MULT
-    else:
-        sl=price + atr*ATR_SL_MULT
-        tp1=price - atr*ATR_TP1_MULT
-        tp2=price - atr*ATR_TP2_MULT
-        tp3=price - atr*ATR_TP3_MULT
-    return tp1,tp2,tp3,sl
-
-def format_signal(side, price, rsi, adx, trend, pdi, mdi, atr):
-    icon = "🚀" if side=="LONG" else "🔻"
-    trend_icon = "📈" if trend=="UP" else "📉"
-    tp1,tp2,tp3,sl = calc_tp_sl_atr(price, side, atr)
-    
-    def pct(target): return ((target-price)/price*100)
-
-    return (
-        f"{icon} SIGNAL {side}\n\n"
-        f"💰 BTC: ${price:,.2f}\n"
-        f"📊 RSI: {rsi:.1f}\n"
-        f"📈 ADX: {adx:.1f}\n"
-        f"📏 ATR: {atr:.2f}\n"
-        f"🔀 Trend: {trend} {trend_icon}\n"
-        f"⏰ TF: {TIMEFRAME}\n"
-        f"⏱ Scan: {SCAN_INTERVAL}s\n"
-        f"🕐 {datetime.now().strftime('%d/%m %H:%M:%S')}\n\n"
-        f"🎯 TP1: ${tp1:,.2f} ({pct(tp1):+.2f}% | x{ATR_TP1_MULT})\n"
-        f"🎯 TP2: ${tp2:,.2f} ({pct(tp2):+.2f}% | x{ATR_TP2_MULT})\n"
-        f"🎯 TP3: ${tp3:,.2f} ({pct(tp3):+.2f}% | x{ATR_TP3_MULT})\n"
-        f"🛑 SL: ${sl:,.2f} ({pct(sl):+.2f}% | x{ATR_SL_MULT})\n"
-        f"📐 RR: 1:{ATR_TP1_MULT/ATR_SL_MULT:.1f} / 1:{ATR_TP2_MULT/ATR_SL_MULT:.1f} / 1:{ATR_TP3_MULT/ATR_SL_MULT:.1f}\n\n"
-        f"{'🧪 DRY RUN - ไม่ได้เปิดออเดอร์จริง' if DRY_RUN else '⚡ LIVE TRADING'}"
-    )
+def paper_check_close(current_price):
+    pos = portfolio["position"]
+    if not pos:
+        return
+    # Long logic
+    if pos["side"]=="LONG":
+        # Check SL first
+        if current_price <= pos["sl"]:
+            pnl = (pos["sl"]-pos["entry"])/pos["entry"] * pos["amount"] * LEVERAGE
+            portfolio["balance"] += pnl
+            portfolio["losses"]+=1
+            portfolio["trades"].append({"pnl":pnl, "result":"SL"})
+            send_telegram(f"""🛑 *SL HIT* LONG
+Entry: ${pos['entry']:.2f} -> SL: ${pos['sl']:.2f}
+PnL: ${pnl:.2f} ({pnl/START_BALANCE*100:+.2f}%)
+💰 พอร์ต: ${portfolio['balance']:.2f} ({(portfolio['balance']/START_BALANCE-1)*100:+.2f}%)
+📊 Win: {portfolio['wins']} / Loss: {portfolio['losses']}""")
+            portfolio["position"]=None
+            return
+        # Check TPs (partial close simulation - close all at highest TP hit for simplicity)
+        if current_price >= pos["tp3"]:
+            pnl = (pos["tp3"]-pos["entry"])/pos["entry"] * pos["amount"] * LEVERAGE * 0.2 + (pos["tp2"]-pos["entry"])/pos["entry"]*pos["amount"]*LEVERAGE*0.3 + (pos["tp1"]-pos["entry"])/pos["entry"]*pos["amount"]*LEVERAGE*0.5
+            # คำนวณรวม 3 TP ตามสัดส่วน 50%/30%/20%
+            portfolio["balance"]+=pnl
+            portfolio["wins"]+=1
+            portfolio["trades"].append({"pnl":pnl, "result":"TP3"})
+            send_telegram(f"""✅ *TP3 HIT* LONG - ปิดครบ 3 เป้า
+Entry: ${pos['entry']:.2f}
+TP1 ${pos['tp1']:.2f} + TP2 ${pos['tp2']:.2f} + TP3 ${pos['tp3']:.2f}
+PnL: +${pnl:.2f} ({pnl/START_BALANCE*100:+.2f}%)
+💰 พอร์ต: ${portfolio['balance']:.2f} ({(portfolio['balance']/START_BALANCE-1)*100:+.2f}%)
+📊 Win: {portfolio['wins']} / Loss: {portfolio['losses']}
+RR: 1:0.7 / 1:1.3 / 1:2.0""")
+            portfolio["position"]=None
+        elif current_price >= pos["tp2"]:
+            # ถ้าถึง TP2 แต่ยังไม่ TP3 ถือต่อ รอ TP3
+            pass
+        elif current_price >= pos["tp1"]:
+            pass
 
 def bot_loop():
-    ex=ccxt.mexc({'enableRateLimit':True})
-    send_tele(f"<b>Bot v8 ATR TP/SL LIVE!</b>\nTF {TIMEFRAME}\nATR SL x{ATR_SL_MULT} TP x{ATR_TP1_MULT}/{ATR_TP2_MULT}/{ATR_TP3_MULT}")
-    last=0
+    last_signal_time = 0
+    send_telegram(f"Bot v9 PAPER TRADE LIVE!\nTF 15m\nATR SL x1.5 TP x1.0/2.0/3.0\n💰 พอร์ตจำลอง: ${START_BALANCE}\nRisk: ${RISK_PER_TRADE}/ไม้ x{LEVERAGE}\nScan every 60s")
     while True:
         try:
-            ohlcv=ex.fetch_ohlcv(SYMBOL,TIMEFRAME,limit=100)
-            df=pd.DataFrame(ohlcv,columns=['ts','open','high','low','close','vol'])
-            df['rsi']=calc_rsi(df['close'])
-            adx,pdi,mdi,atr=calc_adx_atr(df)
-            price=float(df['close'].iloc[-1]); rsi=float(df['rsi'].iloc[-1])
-            trend="DOWN" if mdi>pdi else "UP"
-            print(f"[{datetime.now().strftime('%H:%M:%S')}] {price:.2f} RSI {rsi:.1f} ADX {adx:.1f} ATR {atr:.1f} {trend}")
-            if time.time()-last>COOLDOWN:
-                sig=None
-                if adx>20 and pdi>mdi and 35<rsi<60:
-                    sig=format_signal("LONG",price,rsi,adx,trend,pdi,mdi,atr)
-                elif adx>20 and mdi>pdi and 40<rsi<65:
-                    sig=format_signal("SHORT",price,rsi,adx,trend,pdi,mdi,atr)
-                if sig:
-                    send_tele(sig)
-                    last=time.time()
-        except Exception as e: print(f"ERR {e}")
-        time.sleep(SCAN_INTERVAL)
+            df = get_ohlcv()
+            df = calc_indicators(df)
+            last = df.iloc[-1]
+            price = last["close"]
+            rsi = last["rsi"]
+            adx = last["adx"]
+            atr = last["atr"]
+            
+            # เช็คปิดออเดอร์ก่อน
+            paper_check_close(price)
+            
+            # หาสัญญาณใหม่ ถ้าไม่มี position
+            if portfolio["position"] is None and time.time() - last_signal_time > COOLDOWN_SEC:
+                trend_up = last["plus_di"] > last["minus_di"]
+                trend_down = not trend_up
+                # LONG condition: ADX>20, RSI 50-70, Uptrend
+                if adx>20 and 50<rsi<70 and trend_up:
+                    atr_val = atr if not math.isnan(atr) else price*0.001
+                    entry = price
+                    sl = entry - atr_val*1.5
+                    tp1 = entry + atr_val*1.0
+                    tp2 = entry + atr_val*2.0
+                    tp3 = entry + atr_val*3.0
+                    
+                    # เปิด Paper Position
+                    amount = min(RISK_PER_TRADE, portfolio["balance"]*0.2)
+                    portfolio["position"]={
+                        "side":"LONG","entry":entry,"amount":amount,
+                        "sl":sl,"tp1":tp1,"tp2":tp2,"tp3":tp3,
+                        "opened_at":time.time()
+                    }
+                    last_signal_time=time.time()
+                    rr1 = (tp1-entry)/(entry-sl) if entry!=sl else 0
+                    
+                    send_telegram(f"""🚀 *SIGNAL LONG - PAPER TRADE OPEN*
 
-threading.Thread(target=bot_loop,daemon=True).start()
+💰 BTC: ${entry:.2f}
+📊 RSI: {rsi:.1f} | ADX: {adx:.1f}
+📏 ATR: {atr_val:.2f}
+🔀 Trend: UP
 
-@app.route('/')
-def home(): return f"<h1>Bot v8 ATR TP/SL TF {TIMEFRAME} LIVE</h1>"
-@app.route('/health')
-def health(): return "OK",200
-@app.route('/test-telegram')
-def test():
-    send_tele(format_signal("SHORT",82655.27,49.3,28.5,"DOWN",18.2,25.4,452.3))
-    return "Sent ATR TP/SL format!"
+🎯 TP1: ${tp1:.2f} (+{(tp1/entry-1)*100:.2f}% | x1.0)
+🎯 TP2: ${tp2:.2f} (+{(tp2/entry-1)*100:.2f}% | x2.0)
+🎯 TP3: ${tp3:.2f} (+{(tp3/entry-1)*100:.2f}% | x3.0)
+🛑 SL: ${sl:.2f} ({(sl/entry-1)*100:.2f}% | x1.5)
+📐 RR: 1:{rr1:.1f}
+
+💵 เปิด: ${amount:.2f} x{LEVERAGE}
+💰 พอร์ตตอนนี้: ${portfolio['balance']:.2f}
+🧪 PAPER TRADE - ทดลองพอร์ต $100""")
+                    
+        except Exception as e:
+            print(f"Bot error: {e}")
+        time.sleep(60)
+
+@app.route("/")
+def home():
+    return f"Bot v9 PAPER TRADE LIVE - Balance ${portfolio['balance']:.2f} Win {portfolio['wins']} Loss {portfolio['losses']}"
+
+@app.route("/health")
+def health():
+    return "OK", 200
+
+@app.route("/portfolio")
+def portfolio_view():
+    return portfolio
+
+threading.Thread(target=bot_loop, daemon=True).start()
 
 if __name__=="__main__":
-    app.run(host='0.0.0.0',port=int(os.environ.get("PORT",10000)))
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
