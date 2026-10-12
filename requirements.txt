@@ -1,4 +1,5 @@
-     flask
-     requests
-     ccxt
-     pandas
+flask
+ccxt
+pandas
+requests
+pytz
