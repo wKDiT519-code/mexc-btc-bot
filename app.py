@@ -1,12 +1,10 @@
 """
-V13 BT 30 DAYS - REQUESTS ONLY - รันบน Render.com Free ได้เลย
-ไม่ใช้ ccxt (ต้อง pip) ใช้ requests ล้วนๆ ดึงจาก MEXC API โดยตรง
-สำหรับ BT 1 เดือนก่อนลงเงินจริง
+V13 BT 30 DAYS + TELEGRAM - ส่งผลเข้าเทเลด้วย
+ตามคำสั่ง: "ส่งผลเข้าเทเลด้วยมั้ย"
 
-Deploy บน Render:
-- Start Command: python V13-BT-30DAYS-RENDER.py
-- จะ BT ทั้ง BTCUSDT + PAXGUSDT 30 วัน แล้วเซฟผลลง /data
-- ดูผลที่ /stats บน Render
+เพิ่มส่ง Telegram หลัง BT เสร็จ:
+- ส่งสรุป WR, PnL, MaxDD, Balance ทั้ง BTC และ GOLD เข้า Telegram
+- ใช้ BOT_TOKEN + CHAT_ID เดิมได้เลย
 """
 
 import requests, pandas as pd, os, time, json
@@ -22,32 +20,37 @@ try:
 except:
     pass
 
-print(f"V13 BT 30 DAYS - DATA_DIR {DATA_DIR}")
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "").strip()
+CHAT_ID = os.environ.get("CHAT_ID", "").strip()
+
+print(f"V13 BT 30 DAYS + TELE - DATA_DIR {DATA_DIR} | TELE {'ON' if BOT_TOKEN else 'OFF'}")
 
 app = Flask(__name__)
 
 def thai_time():
     return datetime.now(pytz.timezone('Asia/Bangkok')).strftime("%d/%m/%Y %H:%M ICT")
 
-def get_klines_requests(symbol_mexc="BTC_USDT", interval="Min15", limit_days=30):
-    """
-    ดึง Kline จาก MEXC Contract API โดยตรง ไม่ใช้ ccxt
-    API: https://contract.mexc.com/api/v1/contract/kline/{symbol}?interval=Min15
-    """
+def send_telegram(msg):
+    if not BOT_TOKEN or not CHAT_ID:
+        print("Telegram not configured, skip")
+        return
     try:
-        # MEXC kline API
+        requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
+                      json={"chat_id": CHAT_ID, "text": msg, "parse_mode":"HTML", "disable_web_page_preview": True}, timeout=15)
+        print(f"Telegram sent")
+    except Exception as e:
+        print(f"TG err {e}")
+
+def get_klines_requests(symbol_mexc="BTC_USDT", interval="Min15", limit_days=30):
+    try:
         url = f"https://contract.mexc.com/api/v1/contract/kline/{symbol_mexc}"
         params = {"interval": interval}
-        # บาง endpoint ต้องใส่ start
         r = requests.get(url, params=params, timeout=15)
         data = r.json()
-        # data structure: {"data": {"time":[..], "open":[..], "high":[..], "low":[..], "close":[..], "vol":[..]}}
         if 'data' not in data:
             print(f"Kline fetch fail {symbol_mexc} {data}")
             return None
-        
         d = data['data']
-        # แปลงเป็น DataFrame
         if 'time' in d:
             df = pd.DataFrame({
                 'ot': d['time'],
@@ -58,13 +61,11 @@ def get_klines_requests(symbol_mexc="BTC_USDT", interval="Min15", limit_days=30)
                 'v': d['vol']
             })
         elif isinstance(d, list):
-            # บาง version return list of [time,o,h,l,c,vol]
             df = pd.DataFrame(d, columns=['ot','o','h','l','c','v'])
         else:
             print(f"Unknown kline format {d.keys()}")
             return None
-        
-        df = df.tail(limit_days * 96)  # 15m 96 แท่งต่อวัน
+        df = df.tail(limit_days * 96)
         df['o'] = df['o'].astype(float)
         df['h'] = df['h'].astype(float)
         df['l'] = df['l'].astype(float)
@@ -72,7 +73,7 @@ def get_klines_requests(symbol_mexc="BTC_USDT", interval="Min15", limit_days=30)
         df['v'] = df['v'].astype(float)
         return df
     except Exception as e:
-        print(f"get_klines_requests err {symbol_mexc} {e}")
+        print(f"get_klines err {symbol_mexc} {e}")
         import traceback
         traceback.print_exc()
         return None
@@ -119,7 +120,6 @@ def run_bt(df, symbol="BTCUSDT", tp=1.8, sl=0.9, max_hold=8, enable_short=True):
     for i in range(200, len(df)):
         last = df.iloc[i]
         price=float(last['c'])
-        
         ema_bull = last['EMA12'] > last['EMA26']
         ema_bear = last['EMA12'] < last['EMA26']
         uptrend = last['+DI'] > last['-DI'] and last['ADX'] > 22
@@ -159,7 +159,7 @@ def run_bt(df, symbol="BTCUSDT", tp=1.8, sl=0.9, max_hold=8, enable_short=True):
                 else:
                     stats["losses"]+=1
                 stats["pnl_sum"]+=pnl
-                balance = balance * (1 + pnl/100 * 0.1)  # 10% order
+                balance = balance * (1 + pnl/100 * 0.1)
                 highest_equity = max(highest_equity, balance)
                 dd = (highest_equity-balance)/highest_equity*100 if highest_equity>0 else 0
                 stats["max_dd"]=max(stats["max_dd"], dd)
@@ -169,72 +169,94 @@ def run_bt(df, symbol="BTCUSDT", tp=1.8, sl=0.9, max_hold=8, enable_short=True):
     wr = (stats["wins"]/stats["total"]*100) if stats["total"]>0 else 0
     return stats, wr, balance
 
-# Global BT results
 bt_results = {}
 
 def bt_all():
     global bt_results
     print(f"=== BT START {thai_time()} ===")
-    # BTC 30 DAYS
+    send_telegram(f"📊 [{thai_time()}] เริ่ม BT 30 วัน BTC + GOLD ...\nกำลังดึงกราฟ MEXC | {DATA_DIR}")
+
+    # BTC
     print("Fetching BTC_USDT...")
     df_btc = get_klines_requests("BTC_USDT", "Min15", 30)
     if df_btc is not None and len(df_btc)>200:
         df_btc = calc_indicators(df_btc)
         stats_btc, wr_btc, bal_btc = run_bt(df_btc, "BTCUSDT", tp=1.8, sl=0.9, max_hold=8, enable_short=True)
         bt_results["BTCUSDT"] = {"wr":wr_btc, "stats":stats_btc, "balance":bal_btc, "candles":len(df_btc)}
-        print(f"BTC BT 30D: {stats_btc['total']} trades WR {wr_btc:.1f}% PnL {stats_btc['pnl_sum']:+.2f}% Bal {bal_btc:.2f}")
+        print(f"BTC BT 30D: {stats_btc['total']} trades WR {wr_btc:.1f}% PnL {stats_btc['pnl_sum']:+.2f}%")
         with open(os.path.join(DATA_DIR, "btc_bt_30d.json"), 'w', encoding='utf-8') as f:
             json.dump(stats_btc, f, indent=2, ensure_ascii=False)
     else:
         print("BTC fetch failed")
-    
+        bt_results["BTCUSDT"] = {"wr":0, "stats":{"total":0,"wins":0,"losses":0,"pnl_sum":0,"max_dd":0}, "balance":40.16, "candles":0}
+
     time.sleep(2)
-    
-    # GOLD 30 DAYS
+
+    # GOLD
     print("Fetching PAXG_USDT...")
     df_gold = get_klines_requests("PAXG_USDT", "Min15", 30)
     if df_gold is not None and len(df_gold)>200:
         df_gold = calc_indicators(df_gold)
         stats_gold, wr_gold, bal_gold = run_bt(df_gold, "PAXGUSDT", tp=2.5, sl=1.2, max_hold=24, enable_short=False)
         bt_results["PAXGUSDT"] = {"wr":wr_gold, "stats":stats_gold, "balance":bal_gold, "candles":len(df_gold)}
-        print(f"GOLD BT 30D: {stats_gold['total']} trades WR {wr_gold:.1f}% PnL {stats_gold['pnl_sum']:+.2f}% Bal {bal_gold:.2f}")
+        print(f"GOLD BT 30D: {stats_gold['total']} trades WR {wr_gold:.1f}% PnL {stats_gold['pnl_sum']:+.2f}%")
         with open(os.path.join(DATA_DIR, "gold_bt_30d.json"), 'w', encoding='utf-8') as f:
             json.dump(stats_gold, f, indent=2, ensure_ascii=False)
     else:
         print("GOLD fetch failed")
-    
+        bt_results["PAXGUSDT"] = {"wr":0, "stats":{"total":0,"wins":0,"losses":0,"pnl_sum":0,"max_dd":0}, "balance":40.16, "candles":0}
+
+    # ส่งผลเข้า Telegram
     print(f"=== BT DONE {thai_time()} ===")
+    msg = f"📈 [{thai_time()}] BT 30 วันเสร็จ | {DATA_DIR}\n\n"
+    for sym, res in bt_results.items():
+        wr = res['wr']
+        st = res['stats']
+        bal = res['balance']
+        status = "✅ ผ่าน" if wr>=60 and st['pnl_sum']>0 else "⚠️ ไม่ผ่าน"
+        emoji = "🟢" if wr>=60 and st['pnl_sum']>0 else "🔴"
+        msg += f"{emoji} {sym} {status}\n"
+        msg += f"Trades {st['total']} WR {wr:.1f}% PnL {st['pnl_sum']:+.2f}%\n"
+        msg += f"Bal 40.16→{bal:.2f} MaxDD {st['max_dd']:.1f}% Wins {st['wins']}/Loss {st['losses']}\n\n"
+    
+    msg += f"เกณฑ์ผ่าน: WR≥60% PnL>0 MaxDD<15%\n"
+    if all(r['wr']>=60 and r['stats']['pnl_sum']>0 for r in bt_results.values()):
+        msg += f"✅ พร้อมลงเงินจริงแล้ว! เปลี่ยน DRY_RUN=False"
+    else:
+        msg += f"⚠️ ต้องปรับ TP/SL ต่อ"
+    
+    msg += f"\nดูเว็บ /stats ได้เลย | {DATA_DIR}"
+    send_telegram(msg)
+    print(msg)
     print(bt_results)
 
 @app.route('/')
 def home():
     if not bt_results:
-        return f"V13 BT 30 DAYS - Running... {thai_time()} | DATA_DIR {DATA_DIR} | รอ 1-2 นาที"
-    html = f"<h2>BT 30 DAYS RESULT - {thai_time()} - {DATA_DIR}</h2>"
+        return f"<h2>V13 BT 30 DAYS + TELE - Running... {thai_time()} | {DATA_DIR}</h2>กำลัง BT รอ 1-2 นาที แล้วจะส่งเข้า Telegram"
+    html = f"<h2>BT 30 DAYS + TELE RESULT - {thai_time()} - {DATA_DIR}</h2>"
     for sym, res in bt_results.items():
         wr = res['wr']
         st = res['stats']
         bal = res['balance']
         status = "✅ ผ่าน พร้อมลงเงินจริง" if wr>=60 and st['pnl_sum']>0 else "⚠️ ยังไม่ผ่าน"
         html += f"<h3>{sym} {status}</h3>"
-        html += f"Trades {st['total']} WR {wr:.1f}% PnL {st['pnl_sum']:+.2f}% Bal 40.16 -> {bal:.2f} MaxDD {st['max_dd']:.1f}% Candles {res['candles']}<br>"
-        html += f"Wins {st['wins']} Losses {st['losses']}<br><hr>"
-    html += f"<br><b>เกณฑ์ผ่าน:</b> WR≥60% + PnL>0 + MaxDD<15%<br>"
-    html += f"ถ้าผ่านแล้ว → เปลี่ยน DRY_RUN=False ใน V12.9/V13 แล้วลงเงินจริงได้เลย"
+        html += f"Trades {st['total']} WR {wr:.1f}% PnL {st['pnl_sum']:+.2f}% Bal 40.16 -> {bal:.2f} MaxDD {st['max_dd']:.1f}%<br>"
+        html += f"Wins {st['wins']} Losses {st['losses']} Candles {res['candles']}<br><hr>"
+    html += f"<br><b>ส่งเข้า Telegram แล้ว</b> | เกณฑ์ผ่าน WR≥60% PnL>0 MaxDD<15%<br>"
     return html
 
 @app.route('/health')
 def health():
-    return jsonify({"status":"ok","version":"V13 BT 30 DAYS","data_dir":DATA_DIR,"results":bt_results,"time":thai_time()})
+    return jsonify({"status":"ok","version":"V13 BT 30D + TELE","data_dir":DATA_DIR,"results":bt_results,"time":thai_time()})
 
 @app.route('/stats')
 def stats_page():
     return home()
 
-# Run BT in background thread
 import threading
 def bt_thread():
-    time.sleep(5)  # รอ Flask start
+    time.sleep(5)
     bt_all()
 
 threading.Thread(target=bt_thread, daemon=True).start()
