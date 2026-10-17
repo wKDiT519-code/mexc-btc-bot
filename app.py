@@ -1,8 +1,9 @@
 """
-V14.3 BTC FAST RSI - แก้เข้าช้าเพราะ RSI14
-RSI14 = 14 แท่ง *15 นาที = 210 นาที = 3.5 ชม ช้า!
-เปลี่ยนเป็น RSI7 = 7*15 = 105 นาที = 1.75 ชม เร็วขึ้น 2 เท่า
-+ เพิ่ม RSI5 สำหรับกรองเร็ว + เอา RSI14 ออก หรือใช้คู่
+V14.2 BTC FINAL2 - เอาฐาน V13.7 WR63.6% PnL-0.15% ที่ดีสุด แล้วลด SL 1.3->1.0 ให้ PnL บวก
+V13.7: TP2.2 SL1.3 RR1.69 Hold8H WR63.6% PnL-0.15% -> WR ผ่าน PnL ติดลบจิ๋ว
+V14.0: TP2.5 SL1.0 RR2.5 Hold12H WR44.4% PnL+0.92% -> PnL บวก WR ตก
+V14.1: TP2.3 SL1.15 RR2.0 Hold10H WR44.4% PnL+0.69% -> กลางๆ
+V14.2: TP2.2 SL1.0 RR2.2 Hold9H WR? PnL? -> เอา TP V13.7 เดิม SL ลดลง = ขาดทุนน้อยลง PnL บวก WR น่าจะยังสูง
 """
 
 import requests, pandas as pd, numpy as np, os, time, json
@@ -74,21 +75,12 @@ def get_klines_fast(days=30):
     except: pass
     return None, None
 
-def calc_rsi(series, period=14):
-    delta=series.diff()
-    gain=delta.where(delta>0,0).rolling(period).mean()
-    loss=-delta.where(delta<0,0).rolling(period).mean()
-    rs=gain/(loss.replace(0,0.001))
-    return 100-(100/(1+rs))
-
 def calc_indicators(df):
     df['EMA12']=df['c'].ewm(span=12, adjust=False).mean()
     df['EMA26']=df['c'].ewm(span=26, adjust=False).mean()
     df['EMA50']=df['c'].ewm(span=50, adjust=False).mean()
-    # RSI 3 ตัว เร็ว กลาง ช้า
-    df['RSI14']=calc_rsi(df['c'],14)
-    df['RSI7']=calc_rsi(df['c'],7)   # เร็ว 2 เท่า 1.75 ชม
-    df['RSI5']=calc_rsi(df['c'],5)   # เร็วสุด 1.25 ชม
+    delta=df['c'].diff(); gain=delta.where(delta>0,0).rolling(14).mean(); loss=-delta.where(delta<0,0).rolling(14).mean()
+    df['RSI']=100-(100/(1+gain/(loss.replace(0,0.001))))
     df['H-L']=df['h']-df['l']; df['H-pC']=(df['h']-df['c'].shift(1)).abs(); df['L-pC']=(df['l']-df['c'].shift(1)).abs()
     df['TR']=df[['H-L','H-pC','L-pC']].max(axis=1)
     df['H-pH']=df['h']-df['h'].shift(1); df['pL-L']=df['l'].shift(1)-df['l']
@@ -104,10 +96,9 @@ def calc_indicators(df):
 def dist_pct(price, step): return abs(price-round(price/step)*step)/price*100
 
 def run_bt(df):
-    # V14.3 FAST RSI: ใช้ RSI7 เร็วแทน RSI14 ช้า + RSI14 เป็นกรองรอง
-    # RSI7 1.75 ชม เร็วขึ้น 2 เท่า เข้าเร็วขึ้น
-    cfg={"tp":2.2,"sl":1.0,"max_hold":36,"adx":22,"di":18,"vol":1.2,"round_step":500,"round_pct":0.15,"short":True,"rsi_fast":7,"rsi_slow":14}
-    stats={"total":0,"wins":0,"losses":0,"pnl_sum":0.0,"max_dd":0,"skip":{"adx":0,"vol":0,"round":0,"rsi":0}}
+    # V14.2 FINAL2: เอา V13.7 เป๊ะๆ TP2.2 Hold8H ADX22 Vol1.2 Round500 0.15% แต่ SL 1.3->1.0 ให้ขาดทุนน้อยลง PnL บวก
+    cfg={"tp":2.2,"sl":1.0,"max_hold":36,"adx":22,"di":18,"vol":1.2,"round_step":500,"round_pct":0.15,"short":True}
+    stats={"total":0,"wins":0,"losses":0,"pnl_sum":0.0,"max_dd":0,"skip":{"adx":0,"vol":0,"round":0}}
     bal=40.16; high=bal; pos=[]
     for i in range(200, len(df)):
         last=df.iloc[i]; price=float(last['c'])
@@ -121,18 +112,10 @@ def run_bt(df):
         body = abs(last['c']-last['o']); rng = last['h']-last['l']
         strong_bull = body > rng*0.3 and last['c']>last['o']
         strong_bear = body > rng*0.3 and last['o']>last['c']
-
-        # FAST RSI: ใช้ RSI7 เป็นหลัก 35-70 กว้างกว่าเดิม เข้าเร็ว
-        # RSI14 เป็นกรองรอง ไม่ให้สวนเทรนด์ใหญ่
-        rsi7=last['RSI7']; rsi14=last['RSI14']
-        rsi_ok_long = (35 <= rsi7 <= 72) and (30 <= rsi14 <= 75)  # RSI7 เร็ว + RSI14 ไม่สวน
-        rsi_ok_short = (28 <= rsi7 <= 65) and (25 <= rsi14 <= 68)
-
-        if not (rsi_ok_long or rsi_ok_short): stats["skip"]["rsi"]+=1
-
+        rsi_ok_long = 40 <= last['RSI'] <= 72
+        rsi_ok_short = 28 <= last['RSI'] <= 62
         buy = up and strong_bull and rsi_ok_long
         sell = down and strong_bear and rsi_ok_short
-
         if not pos and buy: pos.append({"entry":price,"side":"long","idx":i})
         elif not pos and sell: pos.append({"entry":price,"side":"short","idx":i})
         if pos:
@@ -159,7 +142,7 @@ def bt_job():
     global bt_results, bt_status, LIVE_PRICE
     bt_status="Running..."
     try:
-        send_telegram(f"📊 [{thai_time()}] V14.3 BTC FAST RSI เริ่ม BT 30D\nแก้ RSI14 ช้า 3.5 ชม -> RSI7 เร็ว 1.75 ชม เข้าเร็ว 2 เท่า\nTP2.2 SL1.0 RR2.2 Hold9H ADX22 Vol1.2 RSI7 35-72 + RSI14 30-75 กรอง...")
+        send_telegram(f"📊 [{thai_time()}] V14.2 BTC FINAL2 เริ่ม BT 30D\nฐาน V13.7 WR63.6% PnL-0.15% TP2.2 SL1.3 Hold8H -> V14.2 TP2.2 SL1.0 RR2.2 Hold9H\nลด SL ให้ขาดทุนน้อยลง PnL บวก WR ยังสูง...")
         df, sym = get_klines_fast(30)
         if df is None: bt_status="Fail"; send_telegram("🔴 BTC ดึงกราฟไม่ได้"); return
         df=calc_indicators(df)
@@ -167,9 +150,11 @@ def bt_job():
         s,w,b,c=run_bt(df)
         bt_results["BTCUSDT"]={"wr":w,"stats":s,"balance":b,"cfg":c,"sym_used":sym,"live_price":LIVE_PRICE}
         bt_status="Done"
-        emoji="🟢" if w>=60 and s['pnl_sum']>0 else "🟡" if w>=50 else "🔴"
-        msg=f"{emoji} [{thai_time()}] V14.3 BTC FAST RSI BT เสร็จ\n{sym} ${LIVE_PRICE:.0f}\nWR {w:.1f}% PnL {s['pnl_sum']:+.2f}% Tr {s['total']} Bal 40.16→{b:.2f}\nDD {s['max_dd']:.1f}% Skip ADX{s['skip']['adx']} Vol{s['skip']['vol']} Round{s['skip']['round']} RSI{s['skip']['rsi']}\n"
-        msg+=f"{'✅ FINAL ผ่าน! WR60%+ PnL บวก เข้าเร็ว!' if w>=60 and s['pnl_sum']>0 else f'🟡 WR {w:.1f}% PnL {s['pnl_sum']:+.2f}%'}\nRSI7 เร็ว 1.75H + RSI14 กรอง TP2.2 SL1.0 RR2.2"
+        emoji="🟢" if w>=60 and s['pnl_sum']>0 else "🟡" if w>=55 and s['pnl_sum']>0 else "🔴"
+        msg=f"{emoji} [{thai_time()}] V14.2 BTC FINAL2 BT เสร็จ\n{sym} ${LIVE_PRICE:.0f}\nWR {w:.1f}% PnL {s['pnl_sum']:+.2f}% Tr {s['total']} Bal 40.16→{b:.2f}\nDD {s['max_dd']:.1f}% Skip ADX{s['skip']['adx']} Vol{s['skip']['vol']} Round{s['skip']['round']}\n"
+        if w>=60 and s['pnl_sum']>0: msg+="✅ FINAL ผ่าน! WR 60%+ PnL บวก!\n"
+        else: msg+=f"🟡 WR {w:.1f}% PnL {s['pnl_sum']:+.2f}%\n"
+        msg+="V13.7 base TP2.2 SL1.0 RR2.2 Hold9H ADX22 Vol1.2"
         send_telegram(msg)
     except Exception as e:
         bt_status=f"Error {e}"
@@ -189,15 +174,15 @@ def handle(text, cid):
     if CHAT_ID and str(cid)!=str(CHAT_ID): return
     t=(text or "").lower().strip()
     if t in ["/stats","/bt"]:
-        if bt_status=="Running...": send_telegram("⏳ BTC FAST RSI กำลังรัน...")
+        if bt_status=="Running...": send_telegram("⏳ BTC FINAL2 กำลังรัน...")
         elif not bt_results:
             threading.Thread(target=bt_job, daemon=True).start()
-            send_telegram("📊 เริ่ม BT V14.3 FAST RSI 30D รอ 15 วิ...")
+            send_telegram("📊 เริ่ม BT V14.2 FINAL2 30D รอ 15 วิ...")
         else:
-            b=bt_results["BTCUSDT"]; send_telegram(f"📊 BTC {b['sym_used']} ${b['live_price']:.0f} WR {b['wr']:.1f}% PnL {b['stats']['pnl_sum']:+.2f}% Tr {b['stats']['total']} RSI7 เร็ว")
+            b=bt_results["BTCUSDT"]; send_telegram(f"📊 BTC {b['sym_used']} ${b['live_price']:.0f} WR {b['wr']:.1f}% PnL {b['stats']['pnl_sum']:+.2f}% Tr {b['stats']['total']}")
     elif t in ["/status"]:
         b=bt_results.get("BTCUSDT")
-        if b: send_telegram(f"📍 BTC {b['sym_used']} ${b['live_price']:.0f} WR {b['wr']:.1f}% PnL {b['stats']['pnl_sum']:+.2f}% RSI7 FAST {'✅' if TRADING_ENABLED else '🛑'}")
+        if b: send_telegram(f"📍 BTC {b['sym_used']} ${b['live_price']:.0f} WR {b['wr']:.1f}% PnL {b['stats']['pnl_sum']:+.2f}% {'✅' if TRADING_ENABLED else '🛑'}")
         else: send_telegram(f"📍 BTC {bt_status} {'✅' if TRADING_ENABLED else '🛑'} /bt")
     elif t in ["/stop"]: TRADING_ENABLED=False; save_trading(False); send_telegram(f"🛑 ปิด BTC {thai_time()}")
     elif t in ["/start"]: TRADING_ENABLED=True; save_trading(True); send_telegram(f"✅ เปิด BTC {thai_time()}")
@@ -220,12 +205,12 @@ def poll():
 @app.route('/')
 def home():
     b=bt_results.get("BTCUSDT")
-    if not b: return f"<h2>V14.3 FAST RSI {bt_status}</h2>"
-    return f"<h2>BTC WR {b['wr']:.1f}% PnL {b['stats']['pnl_sum']:+.2f}% RSI7 FAST</h2>"
+    if not b: return f"<h2>V14.2 FINAL2 {bt_status}</h2>"
+    return f"<h2>BTC WR {b['wr']:.1f}% PnL {b['stats']['pnl_sum']:+.2f}%</h2>"
 @app.route('/health')
-def health(): return jsonify({"status":"ok","version":"V14.3 FAST RSI","trading":TRADING_ENABLED,"bt":bt_results,"time":thai_time()})
+def health(): return jsonify({"status":"ok","version":"V14.2 FINAL2","trading":TRADING_ENABLED,"bt":bt_results,"time":thai_time()})
 
-send_telegram(f"🚀 [{thai_time()}] V14.3 BTC FAST RSI Live\nแก้ RSI14 ช้า 3.5 ชม -> RSI7 เร็ว 1.75 ชม เข้าเร็ว 2 เท่า\nพิมพ์ /bt /status")
+send_telegram(f"🚀 [{thai_time()}] V14.2 BTC FINAL2 Live\nฐาน V13.7 WR63.6% PnL-0.15% TP2.2 SL1.3 -> TP2.2 SL1.0 RR2.2 Hold9H\nพิมพ์ /bt /status")
 
 threading.Thread(target=lambda: (time.sleep(3), bt_job()), daemon=True).start()
 threading.Thread(target=poll, daemon=True).start()
