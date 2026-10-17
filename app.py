@@ -1,9 +1,8 @@
 """
-V14.0 BTC OPTIMAL - กลับฐาน V13.7 WR63.6% ดีสุด แล้วจูนแค่ RR กับ Hold ให้ PnL บวก
-V13.7: WR63.6% PnL-0.15% Tr11 TP2.2 SL1.3 Hold8H ADX22 Vol1.2 -> ดีสุด
-V13.8: WR50% PnL-0.36% Tr8 TP2.8 SL1.2 Hold12H -> TP สูงไป แย่
-V13.9: WR41.7% PnL-1.56% Tr12 TP2.4 SL1.1 Hold16H +EMA50 slope -> กรองเยอะไป แย่
-V14.0: ใช้ V13.7 เป๊ะๆ + TP2.5 SL1.0 RR2.5 Hold12H + ปิดด้วย RSI overbought เท่านั้น
+V14.1 BTC FINAL - รวมข้อดี V13.7 WR63.6% + V14.0 PnL+0.92%
+V13.7: WR63.6% PnL-0.15% Tr11 TP2.2 SL1.3 Hold8H ADX22 Vol1.2
+V14.0: WR44.4% PnL+0.92% Tr9 TP2.5 SL1.0 Hold12H ADX22 Vol1.2
+V14.1: TP2.3 SL1.15 RR2.0 Hold10H ADX21 Vol1.15 + ปรับ RSI 38-70 = กลางๆ
 """
 
 import requests, pandas as pd, numpy as np, os, time, json
@@ -97,10 +96,9 @@ def calc_indicators(df):
 def dist_pct(price, step): return abs(price-round(price/step)*step)/price*100
 
 def run_bt(df):
-    # V14.0 OPTIMAL: ใช้ฐาน V13.7 ที่ดีสุด WR63.6% PnL-0.15% แล้วเพิ่ม RR + Hold นิดเดียว
-    # V13.7: TP2.2 SL1.3 RR1.69 Hold8H ADX22 Vol1.2 Round500 0.15% -> WR63.6% PnL-0.15% Tr11
-    # V14.0: TP2.5 SL1.0 RR2.5 Hold12H ADX22 Vol1.2 Round500 0.15% -> คง WR แต่ PnL บวก
-    cfg={"tp":2.5,"sl":1.0,"max_hold":48,"adx":22,"di":18,"vol":1.2,"round_step":500,"round_pct":0.15,"short":True}
+    # V14.1 FINAL: กลางๆ ระหว่าง V13.7 WR63.6% กับ V14.0 PnL+0.92%
+    cfg={"tp":2.3,"sl":1.15,"max_hold":40,"adx":21,"di":17,"vol":1.15,"round_step":500,"round_pct":0.14,"short":True}
+    # tp2.3 sl1.15 RR2.0 hold40=10H adx21 vol1.15 round0.14% = กลางๆ
     stats={"total":0,"wins":0,"losses":0,"pnl_sum":0.0,"max_dd":0,"skip":{"adx":0,"vol":0,"round":0}}
     bal=40.16; high=bal; pos=[]
     for i in range(200, len(df)):
@@ -113,10 +111,10 @@ def run_bt(df):
         up = last['+DI']>last['-DI'] and last['+DI']>cfg["di"] and up_trend
         down = last['-DI']>last['+DI'] and last['-DI']>cfg["di"] and down_trend and cfg["short"]
         body = abs(last['c']-last['o']); rng = last['h']-last['l']
-        strong_bull = body > rng*0.3 and last['c']>last['o']
-        strong_bear = body > rng*0.3 and last['o']>last['c']
-        rsi_ok_long = 40 <= last['RSI'] <= 72
-        rsi_ok_short = 28 <= last['RSI'] <= 62
+        strong_bull = body > rng*0.28 and last['c']>last['o']
+        strong_bear = body > rng*0.28 and last['o']>last['c']
+        rsi_ok_long = 38 <= last['RSI'] <= 71
+        rsi_ok_short = 29 <= last['RSI'] <= 64
         buy = up and strong_bull and rsi_ok_long
         sell = down and strong_bear and rsi_ok_short
         if not pos and buy: pos.append({"entry":price,"side":"long","idx":i})
@@ -145,7 +143,7 @@ def bt_job():
     global bt_results, bt_status, LIVE_PRICE
     bt_status="Running..."
     try:
-        send_telegram(f"📊 [{thai_time()}] V14.0 BTC OPTIMAL เริ่ม BT 30D\nกลับฐาน V13.7 WR63.6% PnL-0.15% ที่ดีสุด + TP2.5 SL1.0 RR2.5 Hold12H\nV13.8 WR50% V13.9 WR41.7% แย่ลงเลยกลับฐาน...")
+        send_telegram(f"📊 [{thai_time()}] V14.1 BTC FINAL เริ่ม BT 30D\nรวม V13.7 WR63.6% + V14.0 PnL+0.92% -> TP2.3 SL1.15 RR2.0 Hold10H ADX21 Vol1.15\nเป้า WR60%+ PnL บวก...")
         df, sym = get_klines_fast(30)
         if df is None: bt_status="Fail"; send_telegram("🔴 BTC ดึงกราฟไม่ได้"); return
         df=calc_indicators(df)
@@ -153,9 +151,12 @@ def bt_job():
         s,w,b,c=run_bt(df)
         bt_results["BTCUSDT"]={"wr":w,"stats":s,"balance":b,"cfg":c,"sym_used":sym,"live_price":LIVE_PRICE}
         bt_status="Done"
-        emoji="🟢" if w>=60 and s['pnl_sum']>0 else "🟡" if w>=55 else "🔴"
-        msg=f"{emoji} [{thai_time()}] V14.0 BTC OPTIMAL BT เสร็จ\n{sym} ${LIVE_PRICE:.0f}\nWR {w:.1f}% PnL {s['pnl_sum']:+.2f}% Tr {s['total']} Bal 40.16→{b:.2f}\nDD {s['max_dd']:.1f}% Skip ADX{s['skip']['adx']} Vol{s['skip']['vol']} Round{s['skip']['round']}\n"
-        msg+=f"{'✅ ผ่าน! WR 60%+ PnL บวก' if w>=60 and s['pnl_sum']>0 else f'🟡 WR {w:.1f}% PnL {s['pnl_sum']:+.2f}%'}\nกลับฐาน V13.7 TP2.5 SL1.0 RR2.5 Hold12H ADX22 Vol1.2"
+        emoji="🟢" if w>=60 and s['pnl_sum']>0 else "🟡" if w>=50 and s['pnl_sum']>0 else "🔴"
+        msg=f"{emoji} [{thai_time()}] V14.1 BTC FINAL BT เสร็จ\n{sym} ${LIVE_PRICE:.0f}\nWR {w:.1f}% PnL {s['pnl_sum']:+.2f}% Tr {s['total']} Bal 40.16→{b:.2f}\nDD {s['max_dd']:.1f}%\n"
+        if w>=60 and s['pnl_sum']>0: msg+="✅ ผ่าน! WR 60%+ PnL บวก = FINAL!\n"
+        elif w>=50 and s['pnl_sum']>0: msg+="🟡 ใกล้ผ่าน WR 50%+ PnL บวก\n"
+        else: msg+=f"🔴 WR {w:.1f}% PnL {s['pnl_sum']:+.2f}%\n"
+        msg+="TP2.3 SL1.15 RR2.0 Hold10H ADX21 Vol1.15"
         send_telegram(msg)
     except Exception as e:
         bt_status=f"Error {e}"; traceback.print_exc()
@@ -175,15 +176,15 @@ def handle(text, cid):
     if CHAT_ID and str(cid)!=str(CHAT_ID): return
     t=(text or "").lower().strip()
     if t in ["/stats","/bt"]:
-        if bt_status=="Running...": send_telegram("⏳ BTC OPTIMAL กำลังรัน...")
+        if bt_status=="Running...": send_telegram("⏳ BTC FINAL กำลังรัน...")
         elif not bt_results:
             threading.Thread(target=bt_job, daemon=True).start()
-            send_telegram("📊 เริ่ม BT V14.0 OPTIMAL 30D รอ 15 วิ...")
+            send_telegram("📊 เริ่ม BT V14.1 FINAL 30D รอ 15 วิ...")
         else:
             b=bt_results["BTCUSDT"]; send_telegram(f"📊 BTC {b['sym_used']} ${b['live_price']:.0f} WR {b['wr']:.1f}% PnL {b['stats']['pnl_sum']:+.2f}% Tr {b['stats']['total']}")
     elif t in ["/status"]:
         b=bt_results.get("BTCUSDT")
-        if b: send_telegram(f"📍 [{thai_time()}] BTC {b['sym_used']} ${b['live_price']:.0f} WR {b['wr']:.1f}% PnL {b['stats']['pnl_sum']:+.2f}% {'✅' if TRADING_ENABLED else '🛑'}")
+        if b: send_telegram(f"📍 BTC {b['sym_used']} ${b['live_price']:.0f} WR {b['wr']:.1f}% PnL {b['stats']['pnl_sum']:+.2f}% {'✅' if TRADING_ENABLED else '🛑'}")
         else: send_telegram(f"📍 BTC {bt_status} {'✅' if TRADING_ENABLED else '🛑'} /bt")
     elif t in ["/stop"]: TRADING_ENABLED=False; save_trading(False); send_telegram(f"🛑 ปิด BTC {thai_time()}")
     elif t in ["/start"]: TRADING_ENABLED=True; save_trading(True); send_telegram(f"✅ เปิด BTC {thai_time()}")
@@ -206,12 +207,12 @@ def poll():
 @app.route('/')
 def home():
     b=bt_results.get("BTCUSDT")
-    if not b: return f"<h2>V14.0 OPTIMAL {bt_status}</h2>"
+    if not b: return f"<h2>V14.1 FINAL {bt_status}</h2>"
     return f"<h2>BTC WR {b['wr']:.1f}% PnL {b['stats']['pnl_sum']:+.2f}% Tr {b['stats']['total']}</h2>"
 @app.route('/health')
-def health(): return jsonify({"status":"ok","version":"V14.0 OPTIMAL","trading":TRADING_ENABLED,"bt":bt_results,"time":thai_time()})
+def health(): return jsonify({"status":"ok","version":"V14.1 FINAL","trading":TRADING_ENABLED,"bt":bt_results,"time":thai_time()})
 
-send_telegram(f"🚀 [{thai_time()}] V14.0 BTC OPTIMAL Live\nกลับฐาน V13.7 WR63.6% ดีสุด + TP2.5 SL1.0 RR2.5 Hold12H\nพิมพ์ /bt /status")
+send_telegram(f"🚀 [{thai_time()}] V14.1 BTC FINAL Live\nรวม V13.7 WR63.6% + V14.0 PnL+0.92% -> TP2.3 SL1.15 RR2.0 Hold10H\nพิมพ์ /bt /status")
 
 threading.Thread(target=lambda: (time.sleep(3), bt_job()), daemon=True).start()
 threading.Thread(target=poll, daemon=True).start()
