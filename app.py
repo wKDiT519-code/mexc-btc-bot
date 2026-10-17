@@ -1,6 +1,7 @@
 """
-V13.6 BTC FIXED - แก้ Error 'numpy.float64' object has no attribute 'shift'
-สูตร ADX +DM/-DM แก้เป็น vector 100%
+V13.7 BTC TUNED - แก้ WR 0% -> จูนให้ผ่าน 60%
+- เดิม Tr 4 WR 0% เพราะฟิลเตอร์แน่น ADX30 Vol1.8 Round1000
+- ใหม่: ADX22 Vol1.3 Round500 0.15% + Hold 8H + TP2.2 SL1.3
 """
 
 import requests, pandas as pd, numpy as np, os, time, json
@@ -30,7 +31,7 @@ def save_trading(en):
     except: pass
 
 TRADING_ENABLED = load_trading()
-print(f"=== V13.6 BTC FIXED START ===")
+print("=== V13.7 BTC TUNED START ===")
 
 app = Flask(__name__)
 def thai_now(): return datetime.now(pytz.timezone('Asia/Bangkok'))
@@ -43,7 +44,7 @@ def send_telegram(msg):
         return r.status_code==200
     except: return False
 
-def get_klines_fast(days=15):
+def get_klines_fast(days=30):
     for sym in ["BTC_USDT","BTCUSDT"]:
         try:
             url=f"https://contract.mexc.com/api/v1/contract/kline/{sym}"
@@ -54,80 +55,84 @@ def get_klines_fast(days=15):
             df=pd.DataFrame({'ot':d['time'],'o':d['open'],'h':d['high'],'l':d['low'],'c':d['close'],'v':d['vol']}) if 'time' in d else pd.DataFrame(d, columns=['ot','o','h','l','c','v'])
             df=df.tail(days*96)
             for col in ['o','h','l','c','v']: df[col]=df[col].astype(float)
-            if len(df)>200: return df, sym
+            if len(df)>300: return df, sym
         except: continue
     try:
-        r=requests.get("https://api.mexc.com/api/v3/klines", params={"symbol":"BTCUSDT","interval":"15m","limit":500}, timeout=5)
+        r=requests.get("https://api.mexc.com/api/v3/klines", params={"symbol":"BTCUSDT","interval":"15m","limit":1000}, timeout=5)
         arr=r.json()
-        if isinstance(arr, list) and len(arr)>200:
+        if isinstance(arr, list) and len(arr)>300:
             df=pd.DataFrame(arr, columns=['ot','o','h','l','c','v','ct','qv','n','taker_v','taker_qv','ig'])
             for col in ['o','h','l','c','v']: df[col]=df[col].astype(float)
-            return df, "BTCUSDT-SPOT"
+            return df.tail(30*96), "BTCUSDT-SPOT"
     except: pass
     try:
         import ccxt
         ex=ccxt.mexc({'enableRateLimit':True})
-        ohlcv=ex.fetch_ohlcv('BTC/USDT','15m',limit=500)
+        ohlcv=ex.fetch_ohlcv('BTC/USDT','15m',limit=1000)
         df=pd.DataFrame(ohlcv, columns=['ot','o','h','l','c','v'])
         for col in ['o','h','l','c','v']: df[col]=df[col].astype(float)
-        if len(df)>200: return df, "BTC/USDT-CCXT"
+        if len(df)>300: return df.tail(30*96), "BTC/USDT-CCXT"
     except: pass
     return None, None
 
-def calc_indicators_fixed(df):
-    """FIXED 100% - ไม่ใช้ apply shift ใน row อีก"""
+def calc_indicators(df):
     df['EMA12']=df['c'].ewm(span=12, adjust=False).mean()
     df['EMA26']=df['c'].ewm(span=26, adjust=False).mean()
-    delta=df['c'].diff()
-    gain=delta.where(delta>0,0).rolling(14).mean()
-    loss=-delta.where(delta<0,0).rolling(14).mean()
+    df['EMA50']=df['c'].ewm(span=50, adjust=False).mean()
+    delta=df['c'].diff(); gain=delta.where(delta>0,0).rolling(14).mean(); loss=-delta.where(delta<0,0).rolling(14).mean()
     df['RSI']=100-(100/(1+gain/(loss.replace(0,0.001))))
-
-    # TR
-    df['H-L'] = df['h']-df['l']
-    df['H-pC'] = (df['h']-df['c'].shift(1)).abs()
-    df['L-pC'] = (df['l']-df['c'].shift(1)).abs()
-    df['TR'] = df[['H-L','H-pC','L-pC']].max(axis=1)
-
-    # +DM / -DM แบบ vector ไม่ใช้ apply
-    df['H-pH'] = df['h'] - df['h'].shift(1)
-    df['pL-L'] = df['l'].shift(1) - df['l']
-    df['+DM'] = np.where((df['H-pH'] > df['pL-L']) & (df['H-pH'] > 0), df['H-pH'], 0.0)
-    df['-DM'] = np.where((df['pL-L'] > df['H-pH']) & (df['pL-L'] > 0), df['pL-L'], 0.0)
-
-    df['TR14']=df['TR'].rolling(14).sum()
-    df['+DM14']=pd.Series(df['+DM']).rolling(14).sum()
-    df['-DM14']=pd.Series(df['-DM']).rolling(14).sum()
-    df['+DI']=100*df['+DM14']/df['TR14']
-    df['-DI']=100*df['-DM14']/df['TR14']
-    df['DX']=100*(df['+DI']-df['-DI']).abs()/(df['+DI']+df['-DI']).replace(0,0.001)
-    df['ADX']=df['DX'].rolling(14).mean()
-
-    df['TP']=(df['h']+df['l']+df['c'])/3
-    df['TPV']=df['TP']*df['v']
-    df['VWAP']=df['TPV'].rolling(20).sum()/df['v'].rolling(20).sum()
-    df['V_SMA20']=df['v'].rolling(20).mean()
-    df['VolSpike']=df['v']/df['V_SMA20']
+    df['H-L']=df['h']-df['l']; df['H-pC']=(df['h']-df['c'].shift(1)).abs(); df['L-pC']=(df['l']-df['c'].shift(1)).abs()
+    df['TR']=df[['H-L','H-pC','L-pC']].max(axis=1)
+    df['H-pH']=df['h']-df['h'].shift(1); df['pL-L']=df['l'].shift(1)-df['l']
+    df['+DM']=np.where((df['H-pH'] > df['pL-L']) & (df['H-pH'] > 0), df['H-pH'], 0.0)
+    df['-DM']=np.where((df['pL-L'] > df['H-pH']) & (df['pL-L'] > 0), df['pL-L'], 0.0)
+    df['TR14']=df['TR'].rolling(14).sum(); df['+DM14']=pd.Series(df['+DM']).rolling(14).sum(); df['-DM14']=pd.Series(df['-DM']).rolling(14).sum()
+    df['+DI']=100*df['+DM14']/df['TR14']; df['-DI']=100*df['-DM14']/df['TR14']
+    df['DX']=100*(df['+DI']-df['-DI']).abs()/(df['+DI']+df['-DI']).replace(0,0.001); df['ADX']=df['DX'].rolling(14).mean()
+    df['TP']=(df['h']+df['l']+df['c'])/3; df['TPV']=df['TP']*df['v']; df['VWAP']=df['TPV'].rolling(20).sum()/df['v'].rolling(20).sum()
+    df['V_SMA20']=df['v'].rolling(20).mean(); df['VolSpike']=df['v']/df['V_SMA20']
+    df['ATR']=df['TR'].rolling(14).mean()
     return df.dropna()
 
 def dist_pct(price, step): return abs(price-round(price/step)*step)/price*100
 
-def run_bt(df):
-    cfg={"tp":2.5,"sl":1.2,"max_hold":12,"adx":30,"di":25,"vol":1.8,"round_step":1000,"round_pct":0.3,"short":True}
-    stats={"total":0,"wins":0,"losses":0,"pnl_sum":0.0,"max_dd":0}
+def run_bt_tuned(df):
+    # TUNED จาก WR 0% Tr 4 -> ตั้งใจเพิ่ม Tr + ลด Loss
+    cfg={"tp":2.2,"sl":1.3,"max_hold":32,"adx":22,"di":18,"vol":1.2,"round_step":500,"round_pct":0.15,"short":True}
+    # tp 2.2 sl 1.3 RR 1.69, hold 32 = 8 ชม (เดิม 3 ชม น้อยไป)
+    # adx 22 (เดิม 30) vol 1.2 (เดิม 1.8) round 500 0.15% (เดิม 1000 0.3%) = เข้าเยอะขึ้น
+    stats={"total":0,"wins":0,"losses":0,"pnl_sum":0.0,"max_dd":0,"skip":{"adx":0,"vol":0,"round":0}}
     bal=40.16; high=bal; pos=[]
+    trades=[]
     for i in range(200, len(df)):
         last=df.iloc[i]; price=float(last['c'])
-        if last['ADX']<cfg["adx"] or last['VolSpike']<cfg["vol"]: continue
-        if dist_pct(price, cfg["round_step"])<cfg["round_pct"]: continue
-        up=last['+DI']>last['-DI'] and last['+DI']>cfg["di"] and price>last['VWAP'] and last['EMA12']>last['EMA26']
-        down=last['-DI']>last['+DI'] and last['-DI']>cfg["di"] and price<last['VWAP'] and last['EMA12']<last['EMA26']
-        strong_bull=(last['c']-last['o'])>(last['h']-last['l'])*0.35
-        strong_bear=(last['o']-last['c'])>(last['h']-last['l'])*0.35
-        buy=up and strong_bull and 45<=last['RSI']<=78
-        sell=down and strong_bear and 22<=last['RSI']<=58 and cfg["short"]
-        if not pos and buy: pos.append({"entry":price,"side":"long","idx":i})
-        elif not pos and sell: pos.append({"entry":price,"side":"short","idx":i})
+        if last['ADX']<cfg["adx"]: stats["skip"]["adx"]+=1; continue
+        if last['VolSpike']<cfg["vol"]: stats["skip"]["vol"]+=1; continue
+        if dist_pct(price, cfg["round_step"])<cfg["round_pct"]: stats["skip"]["round"]+=1; continue
+
+        # เทรนด์แข็งแรงขึ้น: EMA12>EMA26>EMA50 สำหรับ long, กลับกัน short
+        up_trend = last['EMA12']>last['EMA26'] and last['EMA26']>last['EMA50'] and price>last['VWAP']
+        down_trend = last['EMA12']<last['EMA26'] and last['EMA26']<last['EMA50'] and price<last['VWAP']
+
+        up = last['+DI']>last['-DI'] and last['+DI']>cfg["di"] and up_trend
+        down = last['-DI']>last['+DI'] and last['-DI']>cfg["di"] and down_trend and cfg["short"]
+
+        body = abs(last['c']-last['o'])
+        rng = last['h']-last['l']
+        strong_bull = body > rng*0.3 and last['c']>last['o']
+        strong_bear = body > rng*0.3 and last['o']>last['c']
+
+        rsi_ok_long = 40 <= last['RSI'] <= 72
+        rsi_ok_short = 28 <= last['RSI'] <= 62
+
+        buy = up and strong_bull and rsi_ok_long
+        sell = down and strong_bear and rsi_ok_short
+
+        if not pos and buy:
+            pos.append({"entry":price,"side":"long","idx":i})
+        elif not pos and sell:
+            pos.append({"entry":price,"side":"short","idx":i})
+
         if pos:
             entry=pos[0]['entry']; side=pos[0]['side']; hold=(i-pos[0]['idx'])*0.25
             pnl=(price-entry)/entry*100 if side=='long' else (entry-price)/entry*100
@@ -135,16 +140,23 @@ def run_bt(df):
             if pnl>=cfg["tp"]: reason="TP"
             elif pnl<=-cfg["sl"]: reason="SL"
             elif hold>=cfg["max_hold"]: reason="HOLD"
+
+            # เพิ่ม: ถ้า RSI กลับตัวแรง ปิดก่อน
+            if side=='long' and last['RSI']>78: reason="RSI_EXIT"
+            if side=='short' and last['RSI']<22: reason="RSI_EXIT"
+
             if reason:
                 stats["total"]+=1
                 if pnl>0: stats["wins"]+=1
                 else: stats["losses"]+=1
                 stats["pnl_sum"]+=pnl
                 bal=bal*(1+pnl/100*0.1); high=max(high,bal)
-                stats["max_dd"]=max(stats["max_dd"], (high-bal)/high*100 if high>0 else 0)
+                dd=(high-bal)/high*100 if high>0 else 0
+                stats["max_dd"]=max(stats["max_dd"],dd)
+                trades.append({"side":side,"pnl":pnl,"reason":reason})
                 pos=[]
     wr=(stats["wins"]/stats["total"]*100) if stats["total"]>0 else 0
-    return stats, wr, bal, cfg
+    return stats, wr, bal, cfg, trades
 
 bt_results={}; bt_status="Idle"; LIVE_PRICE=0
 
@@ -152,21 +164,22 @@ def bt_job():
     global bt_results, bt_status, LIVE_PRICE
     bt_status="Running..."
     try:
-        send_telegram(f"📊 [{thai_time()}] V13.6 BTC FIXED เริ่ม BT 15D\nแก้ shift Error แล้ว...")
-        df, sym = get_klines_fast(15)
+        send_telegram(f"📊 [{thai_time()}] V13.7 BTC TUNED เริ่ม BT 30D\nADX22 Vol1.2 Round500 0.15% Hold8H TP2.2 SL1.3\nแก้ WR 0% -> เป้า 60%+...")
+        df, sym = get_klines_fast(30)
         if df is None:
-            bt_status="Fail"; send_telegram(f"🔴 BTC ดึงกราฟไม่ได้")
-            return
-        df=calc_indicators_fixed(df)
+            bt_status="Fail"; send_telegram("🔴 BTC ดึงกราฟไม่ได้"); return
+        df=calc_indicators(df)
         LIVE_PRICE=float(df.iloc[-1]['c'])
-        s,w,b,c=run_bt(df)
-        bt_results["BTCUSDT"]={"wr":w,"stats":s,"balance":b,"cfg":c,"sym_used":sym,"live_price":LIVE_PRICE}
+        s,w,b,c,trades=run_bt_tuned(df)
+        bt_results["BTCUSDT"]={"wr":w,"stats":s,"balance":b,"cfg":c,"sym_used":sym,"live_price":LIVE_PRICE,"trades":trades[-10:]}
         bt_status="Done"
-        send_telegram(f"✅ [{thai_time()}] V13.6 BTC BT เสร็จ\n{sym} ${LIVE_PRICE:.0f} WR {w:.1f}% PnL {s['pnl_sum']:+.2f}% Tr {s['total']} Bal {b:.2f}")
+        emoji="🟢" if w>=60 and s['pnl_sum']>0 else "🟡" if w>=50 else "🔴"
+        msg=f"{emoji} [{thai_time()}] V13.7 BTC TUNED BT เสร็จ\n{sym} ${LIVE_PRICE:.0f}\nWR {w:.1f}% PnL {s['pnl_sum']:+.2f}% Tr {s['total']} Bal 40.16→{b:.2f}\nDD {s['max_dd']:.1f}% Skip ADX{s['skip']['adx']} Vol{s['skip']['vol']} Round{s['skip']['round']}\n"
+        msg+=f"{'✅ ผ่าน 60%!' if w>=60 and s['pnl_sum']>0 else '🟡 ใกล้แล้ว' if w>=50 else '🔴 ยังต้องจูนต่อ'}\nConfig ADX22 Vol1.2 TP2.2 SL1.3 Hold8H"
+        send_telegram(msg)
     except Exception as e:
-        bt_status=f"Error {e}"
-        traceback.print_exc()
-        send_telegram(f"🔴 BT Error {e}\n{traceback.format_exc()[:300]}")
+        bt_status=f"Error {e}"; traceback.print_exc()
+        send_telegram(f"🔴 BT Error {e}")
 
 def get_off():
     try:
@@ -182,15 +195,15 @@ def handle(text, cid):
     if CHAT_ID and str(cid)!=str(CHAT_ID): return
     t=(text or "").lower().strip()
     if t in ["/stats","/bt"]:
-        if bt_status=="Running...": send_telegram("⏳ BTC BT กำลังรัน 10 วิ...")
+        if bt_status=="Running...": send_telegram("⏳ BTC BT TUNED กำลังรัน 15 วิ...")
         elif not bt_results:
             threading.Thread(target=bt_job, daemon=True).start()
-            send_telegram("📊 เริ่ม BT V13.6 FIXED รอ 10 วิ...")
+            send_telegram("📊 เริ่ม BT V13.7 TUNED 30D รอ 15 วิ...")
         else:
-            b=bt_results["BTCUSDT"]; send_telegram(f"📊 BTC {b['sym_used']} ${b['live_price']:.0f} WR {b['wr']:.1f}% PnL {b['stats']['pnl_sum']:+.2f}%")
+            b=bt_results["BTCUSDT"]; send_telegram(f"📊 [{thai_time()}] BTC {b['sym_used']} ${b['live_price']:.0f} WR {b['wr']:.1f}% PnL {b['stats']['pnl_sum']:+.2f}% Tr {b['stats']['total']}")
     elif t in ["/status"]:
         b=bt_results.get("BTCUSDT")
-        if b: send_telegram(f"📍 BTC {b['sym_used']} ${b['live_price']:.0f} WR {b['wr']:.1f}% {'✅' if TRADING_ENABLED else '🛑'}")
+        if b: send_telegram(f"📍 [{thai_time()}] BTC {b['sym_used']} ${b['live_price']:.0f} WR {b['wr']:.1f}% Tr {b['stats']['total']} {'✅' if TRADING_ENABLED else '🛑'}")
         else: send_telegram(f"📍 BTC {bt_status} {'✅' if TRADING_ENABLED else '🛑'} /bt")
     elif t in ["/stop"]: TRADING_ENABLED=False; save_trading(False); send_telegram(f"🛑 ปิด BTC {thai_time()}")
     elif t in ["/start"]: TRADING_ENABLED=True; save_trading(True); send_telegram(f"✅ เปิด BTC {thai_time()}")
@@ -213,12 +226,12 @@ def poll():
 @app.route('/')
 def home():
     b=bt_results.get("BTCUSDT")
-    if not b: return f"<h2>V13.6 BTC FIXED {bt_status}</h2>"
-    return f"<h2>BTC {b['sym_used']} WR {b['wr']:.1f}%</h2>"
+    if not b: return f"<h2>V13.7 BTC TUNED {bt_status}</h2>"
+    return f"<h2>BTC {b['sym_used']} WR {b['wr']:.1f}% PnL {b['stats']['pnl_sum']:+.2f}% Tr {b['stats']['total']}</h2>"
 @app.route('/health')
-def health(): return jsonify({"status":"ok","version":"V13.6 FIXED","trading":TRADING_ENABLED,"bt":bt_results,"time":thai_time()})
+def health(): return jsonify({"status":"ok","version":"V13.7 TUNED","trading":TRADING_ENABLED,"bt":bt_results,"time":thai_time()})
 
-send_telegram(f"🚀 [{thai_time()}] V13.6 BTC FIXED Live\nแก้ numpy.float64 shift Error แล้ว\nพิมพ์ /bt /status")
+send_telegram(f"🚀 [{thai_time()}] V13.7 BTC TUNED Live\nแก้ WR 0% Tr4 -> จูน ADX22 Vol1.2 Hold8H\nพิมพ์ /bt /status")
 
 threading.Thread(target=lambda: (time.sleep(3), bt_job()), daemon=True).start()
 threading.Thread(target=poll, daemon=True).start()
