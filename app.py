@@ -1,8 +1,9 @@
 """
-V13.9 BTC ULTRA - กลับไปฐาน V13.7 ที่ WR 63.6% ดีสุด + จูนให้ PnL บวก
-- V13.7: WR63.6% PnL-0.15% Tr11 TP2.2 SL1.3 Hold8H
-- V13.8: WR50% PnL-0.36% Tr8 TP2.8 SL1.2 Hold12H -> แย่ลง
-- V13.9: ใช้ TP2.4 SL1.1 RR2.18 Hold16H + กรอง EMA50 trend ชัด + RSI 35-70
+V14.0 BTC OPTIMAL - กลับฐาน V13.7 WR63.6% ดีสุด แล้วจูนแค่ RR กับ Hold ให้ PnL บวก
+V13.7: WR63.6% PnL-0.15% Tr11 TP2.2 SL1.3 Hold8H ADX22 Vol1.2 -> ดีสุด
+V13.8: WR50% PnL-0.36% Tr8 TP2.8 SL1.2 Hold12H -> TP สูงไป แย่
+V13.9: WR41.7% PnL-1.56% Tr12 TP2.4 SL1.1 Hold16H +EMA50 slope -> กรองเยอะไป แย่
+V14.0: ใช้ V13.7 เป๊ะๆ + TP2.5 SL1.0 RR2.5 Hold12H + ปิดด้วย RSI overbought เท่านั้น
 """
 
 import requests, pandas as pd, numpy as np, os, time, json
@@ -32,7 +33,6 @@ def save_trading(en):
     except: pass
 
 TRADING_ENABLED = load_trading()
-print("=== V13.9 BTC ULTRA START ===")
 
 app = Flask(__name__)
 def thai_now(): return datetime.now(pytz.timezone('Asia/Bangkok'))
@@ -80,7 +80,6 @@ def calc_indicators(df):
     df['EMA12']=df['c'].ewm(span=12, adjust=False).mean()
     df['EMA26']=df['c'].ewm(span=26, adjust=False).mean()
     df['EMA50']=df['c'].ewm(span=50, adjust=False).mean()
-    df['EMA50_slope']=df['EMA50'].diff(5)  # เทรนด์ 5 แท่ง
     delta=df['c'].diff(); gain=delta.where(delta>0,0).rolling(14).mean(); loss=-delta.where(delta<0,0).rolling(14).mean()
     df['RSI']=100-(100/(1+gain/(loss.replace(0,0.001))))
     df['H-L']=df['h']-df['l']; df['H-pC']=(df['h']-df['c'].shift(1)).abs(); df['L-pC']=(df['l']-df['c'].shift(1)).abs()
@@ -98,10 +97,10 @@ def calc_indicators(df):
 def dist_pct(price, step): return abs(price-round(price/step)*step)/price*100
 
 def run_bt(df):
-    # V13.9 ULTRA: กลับฐาน V13.7 ที่ WR 63.6% + ปรับ TP2.4 SL1.1 RR2.18 Hold 16H + EMA50 slope filter
-    cfg={"tp":2.4,"sl":1.1,"max_hold":64,"adx":20,"di":16,"vol":1.1,"round_step":500,"round_pct":0.12,"short":True}
-    # adx 20 (ลดจาก 22) vol 1.1 (ลดจาก 1.2) round 0.12% (ลดจาก 0.15%) = เข้าเยอะขึ้น
-    # tp 2.4 sl 1.1 RR 2.18 + hold 64 = 16 ชม (เพิ่มจาก 8 ชม) ให้วิ่งถึง TP
+    # V14.0 OPTIMAL: ใช้ฐาน V13.7 ที่ดีสุด WR63.6% PnL-0.15% แล้วเพิ่ม RR + Hold นิดเดียว
+    # V13.7: TP2.2 SL1.3 RR1.69 Hold8H ADX22 Vol1.2 Round500 0.15% -> WR63.6% PnL-0.15% Tr11
+    # V14.0: TP2.5 SL1.0 RR2.5 Hold12H ADX22 Vol1.2 Round500 0.15% -> คง WR แต่ PnL บวก
+    cfg={"tp":2.5,"sl":1.0,"max_hold":48,"adx":22,"di":18,"vol":1.2,"round_step":500,"round_pct":0.15,"short":True}
     stats={"total":0,"wins":0,"losses":0,"pnl_sum":0.0,"max_dd":0,"skip":{"adx":0,"vol":0,"round":0}}
     bal=40.16; high=bal; pos=[]
     for i in range(200, len(df)):
@@ -109,28 +108,19 @@ def run_bt(df):
         if last['ADX']<cfg["adx"]: stats["skip"]["adx"]+=1; continue
         if last['VolSpike']<cfg["vol"]: stats["skip"]["vol"]+=1; continue
         if dist_pct(price, cfg["round_step"])<cfg["round_pct"]: stats["skip"]["round"]+=1; continue
-
-        # เพิ่ม slope filter: EMA50 ต้องขึ้นสำหรับ long ลงสำหรับ short
-        up_trend = last['EMA12']>last['EMA26'] and last['EMA26']>last['EMA50'] and last['EMA50_slope']>0 and price>last['VWAP']
-        down_trend = last['EMA12']<last['EMA26'] and last['EMA26']<last['EMA50'] and last['EMA50_slope']<0 and price<last['VWAP']
-
+        up_trend = last['EMA12']>last['EMA26'] and last['EMA26']>last['EMA50'] and price>last['VWAP']
+        down_trend = last['EMA12']<last['EMA26'] and last['EMA26']<last['EMA50'] and price<last['VWAP']
         up = last['+DI']>last['-DI'] and last['+DI']>cfg["di"] and up_trend
         down = last['-DI']>last['+DI'] and last['-DI']>cfg["di"] and down_trend and cfg["short"]
-
         body = abs(last['c']-last['o']); rng = last['h']-last['l']
-        strong_bull = body > rng*0.25 and last['c']>last['o']
-        strong_bear = body > rng*0.25 and last['o']>last['c']
-
-        # RSI กว้างขึ้นเล็กน้อย 35-72 / 28-65
-        rsi_ok_long = 35 <= last['RSI'] <= 72
-        rsi_ok_short = 28 <= last['RSI'] <= 65
-
+        strong_bull = body > rng*0.3 and last['c']>last['o']
+        strong_bear = body > rng*0.3 and last['o']>last['c']
+        rsi_ok_long = 40 <= last['RSI'] <= 72
+        rsi_ok_short = 28 <= last['RSI'] <= 62
         buy = up and strong_bull and rsi_ok_long
         sell = down and strong_bear and rsi_ok_short
-
         if not pos and buy: pos.append({"entry":price,"side":"long","idx":i})
         elif not pos and sell: pos.append({"entry":price,"side":"short","idx":i})
-
         if pos:
             entry=pos[0]['entry']; side=pos[0]['side']; hold=(i-pos[0]['idx'])*0.25
             pnl=(price-entry)/entry*100 if side=='long' else (entry-price)/entry*100
@@ -155,7 +145,7 @@ def bt_job():
     global bt_results, bt_status, LIVE_PRICE
     bt_status="Running..."
     try:
-        send_telegram(f"📊 [{thai_time()}] V13.9 BTC ULTRA เริ่ม BT 30D\nกลับฐาน V13.7 WR63.6% + TP2.4 SL1.1 RR2.18 Hold16H ADX20 Vol1.1\nแก้ V13.8 WR50% PnL-0.36% ที่แย่ลง...")
+        send_telegram(f"📊 [{thai_time()}] V14.0 BTC OPTIMAL เริ่ม BT 30D\nกลับฐาน V13.7 WR63.6% PnL-0.15% ที่ดีสุด + TP2.5 SL1.0 RR2.5 Hold12H\nV13.8 WR50% V13.9 WR41.7% แย่ลงเลยกลับฐาน...")
         df, sym = get_klines_fast(30)
         if df is None: bt_status="Fail"; send_telegram("🔴 BTC ดึงกราฟไม่ได้"); return
         df=calc_indicators(df)
@@ -164,8 +154,8 @@ def bt_job():
         bt_results["BTCUSDT"]={"wr":w,"stats":s,"balance":b,"cfg":c,"sym_used":sym,"live_price":LIVE_PRICE}
         bt_status="Done"
         emoji="🟢" if w>=60 and s['pnl_sum']>0 else "🟡" if w>=55 else "🔴"
-        msg=f"{emoji} [{thai_time()}] V13.9 BTC ULTRA BT เสร็จ\n{sym} ${LIVE_PRICE:.0f}\nWR {w:.1f}% PnL {s['pnl_sum']:+.2f}% Tr {s['total']} Bal 40.16→{b:.2f}\nDD {s['max_dd']:.1f}% Skip ADX{s['skip']['adx']} Vol{s['skip']['vol']} Round{s['skip']['round']}\n"
-        msg+=f"{'✅ ผ่าน! WR 60%+ PnL บวก' if w>=60 and s['pnl_sum']>0 else '🟡 ใกล้แล้ว - ลอง V14 ต่อ' if w>=55 else '🔴 จูนต่อ'}\nTP2.4 SL1.1 RR2.18 Hold16H ADX20 Vol1.1 +EMA50 slope"
+        msg=f"{emoji} [{thai_time()}] V14.0 BTC OPTIMAL BT เสร็จ\n{sym} ${LIVE_PRICE:.0f}\nWR {w:.1f}% PnL {s['pnl_sum']:+.2f}% Tr {s['total']} Bal 40.16→{b:.2f}\nDD {s['max_dd']:.1f}% Skip ADX{s['skip']['adx']} Vol{s['skip']['vol']} Round{s['skip']['round']}\n"
+        msg+=f"{'✅ ผ่าน! WR 60%+ PnL บวก' if w>=60 and s['pnl_sum']>0 else f'🟡 WR {w:.1f}% PnL {s['pnl_sum']:+.2f}%'}\nกลับฐาน V13.7 TP2.5 SL1.0 RR2.5 Hold12H ADX22 Vol1.2"
         send_telegram(msg)
     except Exception as e:
         bt_status=f"Error {e}"; traceback.print_exc()
@@ -185,10 +175,10 @@ def handle(text, cid):
     if CHAT_ID and str(cid)!=str(CHAT_ID): return
     t=(text or "").lower().strip()
     if t in ["/stats","/bt"]:
-        if bt_status=="Running...": send_telegram("⏳ BTC ULTRA กำลังรัน...")
+        if bt_status=="Running...": send_telegram("⏳ BTC OPTIMAL กำลังรัน...")
         elif not bt_results:
             threading.Thread(target=bt_job, daemon=True).start()
-            send_telegram("📊 เริ่ม BT V13.9 ULTRA 30D รอ 15 วิ...")
+            send_telegram("📊 เริ่ม BT V14.0 OPTIMAL 30D รอ 15 วิ...")
         else:
             b=bt_results["BTCUSDT"]; send_telegram(f"📊 BTC {b['sym_used']} ${b['live_price']:.0f} WR {b['wr']:.1f}% PnL {b['stats']['pnl_sum']:+.2f}% Tr {b['stats']['total']}")
     elif t in ["/status"]:
@@ -216,12 +206,12 @@ def poll():
 @app.route('/')
 def home():
     b=bt_results.get("BTCUSDT")
-    if not b: return f"<h2>V13.9 ULTRA {bt_status}</h2>"
+    if not b: return f"<h2>V14.0 OPTIMAL {bt_status}</h2>"
     return f"<h2>BTC WR {b['wr']:.1f}% PnL {b['stats']['pnl_sum']:+.2f}% Tr {b['stats']['total']}</h2>"
 @app.route('/health')
-def health(): return jsonify({"status":"ok","version":"V13.9 ULTRA","trading":TRADING_ENABLED,"bt":bt_results,"time":thai_time()})
+def health(): return jsonify({"status":"ok","version":"V14.0 OPTIMAL","trading":TRADING_ENABLED,"bt":bt_results,"time":thai_time()})
 
-send_telegram(f"🚀 [{thai_time()}] V13.9 BTC ULTRA Live\nกลับฐาน V13.7 WR63.6% + TP2.4 SL1.1 RR2.18 Hold16H ADX20\nพิมพ์ /bt /status")
+send_telegram(f"🚀 [{thai_time()}] V14.0 BTC OPTIMAL Live\nกลับฐาน V13.7 WR63.6% ดีสุด + TP2.5 SL1.0 RR2.5 Hold12H\nพิมพ์ /bt /status")
 
 threading.Thread(target=lambda: (time.sleep(3), bt_job()), daemon=True).start()
 threading.Thread(target=poll, daemon=True).start()
