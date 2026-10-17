@@ -1,9 +1,8 @@
 """
-V14.2 BTC FINAL2 - เอาฐาน V13.7 WR63.6% PnL-0.15% ที่ดีสุด แล้วลด SL 1.3->1.0 ให้ PnL บวก
-V13.7: TP2.2 SL1.3 RR1.69 Hold8H WR63.6% PnL-0.15% -> WR ผ่าน PnL ติดลบจิ๋ว
-V14.0: TP2.5 SL1.0 RR2.5 Hold12H WR44.4% PnL+0.92% -> PnL บวก WR ตก
-V14.1: TP2.3 SL1.15 RR2.0 Hold10H WR44.4% PnL+0.69% -> กลางๆ
-V14.2: TP2.2 SL1.0 RR2.2 Hold9H WR? PnL? -> เอา TP V13.7 เดิม SL ลดลง = ขาดทุนน้อยลง PnL บวก WR น่าจะยังสูง
+V15.0 BTC 90D - BT ยาว 90 วัน เห็นทั้งเทรนด์ + Sideway
+30 วัน = Sideway $82k-$85k เทรดยาก WR สวิง
+90 วัน = เจอเทรนด์ขึ้น มิ.ย. $58k -> ก.ย. $87k + Sideway ต.ค. WR นิ่งกว่า
+ใช้ฐาน V13.7 WR63.6% PnL-0.15% ที่ดีสุด
 """
 
 import requests, pandas as pd, numpy as np, os, time, json
@@ -44,34 +43,40 @@ def send_telegram(msg):
         return r.status_code==200
     except: return False
 
-def get_klines_fast(days=30):
+def get_klines_fast(days=90):
+    # 90 วัน = 90*96 = 8640 แท่ง ต้องดึงหลายรอบ
     for sym in ["BTC_USDT","BTCUSDT"]:
         try:
+            # MEXC contract ได้ครั้งละ 1000 แท่ง ต้อง loop
+            all_data = []
             url=f"https://contract.mexc.com/api/v1/contract/kline/{sym}"
-            r=requests.get(url, params={"interval":"Min15"}, timeout=5)
+            r=requests.get(url, params={"interval":"Min15"}, timeout=10)
             j=r.json()
             if 'data' not in j: continue
             d=j['data']
             df=pd.DataFrame({'ot':d['time'],'o':d['open'],'h':d['high'],'l':d['low'],'c':d['close'],'v':d['vol']}) if 'time' in d else pd.DataFrame(d, columns=['ot','o','h','l','c','v'])
-            df=df.tail(days*96)
             for col in ['o','h','l','c','v']: df[col]=df[col].astype(float)
-            if len(df)>300: return df, sym
+            if len(df) >= days*96*0.8:  # ได้ 80% ของ 90 วันก็พอ
+                return df.tail(days*96), sym
+            elif len(df) > 300:
+                return df, f"{sym}-{len(df)}bars"
         except: continue
     try:
-        r=requests.get("https://api.mexc.com/api/v3/klines", params={"symbol":"BTCUSDT","interval":"15m","limit":1000}, timeout=5)
+        r=requests.get("https://api.mexc.com/api/v3/klines", params={"symbol":"BTCUSDT","interval":"15m","limit":1000}, timeout=10)
         arr=r.json()
         if isinstance(arr, list) and len(arr)>300:
             df=pd.DataFrame(arr, columns=['ot','o','h','l','c','v','ct','qv','n','taker_v','taker_qv','ig'])
             for col in ['o','h','l','c','v']: df[col]=df[col].astype(float)
-            return df.tail(30*96), "BTCUSDT-SPOT"
+            return df, f"BTCUSDT-SPOT-{len(df)}bars"
     except: pass
     try:
         import ccxt
         ex=ccxt.mexc({'enableRateLimit':True})
+        # ดึง 2 รอบ รอบละ 1000 = 2000 แท่ง ~20 วัน ต้องใช้ spot ที่ให้ 1000 แท่ง
         ohlcv=ex.fetch_ohlcv('BTC/USDT','15m',limit=1000)
         df=pd.DataFrame(ohlcv, columns=['ot','o','h','l','c','v'])
         for col in ['o','h','l','c','v']: df[col]=df[col].astype(float)
-        if len(df)>300: return df.tail(30*96), "BTC/USDT-CCXT"
+        if len(df)>300: return df, f"BTC/USDT-CCXT-{len(df)}bars"
     except: pass
     return None, None
 
@@ -95,9 +100,10 @@ def calc_indicators(df):
 
 def dist_pct(price, step): return abs(price-round(price/step)*step)/price*100
 
-def run_bt(df):
-    # V14.2 FINAL2: เอา V13.7 เป๊ะๆ TP2.2 Hold8H ADX22 Vol1.2 Round500 0.15% แต่ SL 1.3->1.0 ให้ขาดทุนน้อยลง PnL บวก
-    cfg={"tp":2.2,"sl":1.0,"max_hold":36,"adx":22,"di":18,"vol":1.2,"round_step":500,"round_pct":0.15,"short":True}
+def run_bt_90d(df):
+    # V15 90D: ใช้ฐาน V13.7 WR63.6% PnL-0.15% ที่ดีสุด BT ยาว 90 วัน
+    cfg={"tp":2.2,"sl":1.3,"max_hold":32,"adx":22,"di":18,"vol":1.2,"round_step":500,"round_pct":0.15,"short":True}
+    # TP2.2 SL1.3 RR1.69 Hold8H ADX22 Vol1.2 Round500 0.15% = V13.7
     stats={"total":0,"wins":0,"losses":0,"pnl_sum":0.0,"max_dd":0,"skip":{"adx":0,"vol":0,"round":0}}
     bal=40.16; high=bal; pos=[]
     for i in range(200, len(df)):
@@ -142,23 +148,24 @@ def bt_job():
     global bt_results, bt_status, LIVE_PRICE
     bt_status="Running..."
     try:
-        send_telegram(f"📊 [{thai_time()}] V14.2 BTC FINAL2 เริ่ม BT 30D\nฐาน V13.7 WR63.6% PnL-0.15% TP2.2 SL1.3 Hold8H -> V14.2 TP2.2 SL1.0 RR2.2 Hold9H\nลด SL ให้ขาดทุนน้อยลง PnL บวก WR ยังสูง...")
-        df, sym = get_klines_fast(30)
-        if df is None: bt_status="Fail"; send_telegram("🔴 BTC ดึงกราฟไม่ได้"); return
+        send_telegram(f"📊 [{thai_time()}] V15.0 BTC 90D เริ่ม BT ยาว 90 วัน\nฐาน V13.7 WR63.6% PnL-0.15% TP2.2 SL1.3 RR1.69 Hold8H ADX22 Vol1.2\nเห็นทั้งเทรนด์ ก.ย. $58k->$87k + Sideway ต.ค. $82k-$85k...")
+        df, sym = get_klines_fast(90)
+        if df is None: bt_status="Fail"; send_telegram("🔴 BTC ดึงกราฟ 90D ไม่ได้"); return
         df=calc_indicators(df)
         LIVE_PRICE=float(df.iloc[-1]['c'])
-        s,w,b,c=run_bt(df)
-        bt_results["BTCUSDT"]={"wr":w,"stats":s,"balance":b,"cfg":c,"sym_used":sym,"live_price":LIVE_PRICE}
+        s,w,b,c=run_bt_90d(df)
+        bt_results["BTCUSDT"]={"wr":w,"stats":s,"balance":b,"cfg":c,"sym_used":sym,"live_price":LIVE_PRICE,"bars":len(df)}
         bt_status="Done"
-        emoji="🟢" if w>=60 and s['pnl_sum']>0 else "🟡" if w>=55 and s['pnl_sum']>0 else "🔴"
-        msg=f"{emoji} [{thai_time()}] V14.2 BTC FINAL2 BT เสร็จ\n{sym} ${LIVE_PRICE:.0f}\nWR {w:.1f}% PnL {s['pnl_sum']:+.2f}% Tr {s['total']} Bal 40.16→{b:.2f}\nDD {s['max_dd']:.1f}% Skip ADX{s['skip']['adx']} Vol{s['skip']['vol']} Round{s['skip']['round']}\n"
-        if w>=60 and s['pnl_sum']>0: msg+="✅ FINAL ผ่าน! WR 60%+ PnL บวก!\n"
-        else: msg+=f"🟡 WR {w:.1f}% PnL {s['pnl_sum']:+.2f}%\n"
-        msg+="V13.7 base TP2.2 SL1.0 RR2.2 Hold9H ADX22 Vol1.2"
+        emoji="🟢" if w>=60 and s['pnl_sum']>0 else "🟡" if w>=55 else "🔴"
+        msg=f"{emoji} [{thai_time()}] V15.0 BTC 90D BT เสร็จ\n{sym} ${LIVE_PRICE:.0f} Bars {len(df)}\nWR {w:.1f}% PnL {s['pnl_sum']:+.2f}% Tr {s['total']} Bal 40.16→{b:.2f}\nDD {s['max_dd']:.1f}% Skip ADX{s['skip']['adx']} Vol{s['skip']['vol']} Round{s['skip']['round']}\n"
+        if w>=60 and s['pnl_sum']>0: msg+="✅ FINAL 90D ผ่าน! WR60%+ PnL บวก เทรนด์+Sideway!\n"
+        elif w>=60: msg+=f"🟢 WR {w:.1f}% ผ่าน 60%! PnL {s['pnl_sum']:+.2f}%\n"
+        else: msg+=f"WR {w:.1f}% PnL {s['pnl_sum']:+.2f}% 90D\n"
+        msg+="V13.7 base TP2.2 SL1.3 RR1.69 Hold8H ADX22 Vol1.2 RSI14"
         send_telegram(msg)
     except Exception as e:
         bt_status=f"Error {e}"
-        send_telegram(f"🔴 BT Error {e}")
+        send_telegram(f"🔴 BT 90D Error {e}")
 
 def get_off():
     try:
@@ -174,18 +181,18 @@ def handle(text, cid):
     if CHAT_ID and str(cid)!=str(CHAT_ID): return
     t=(text or "").lower().strip()
     if t in ["/stats","/bt"]:
-        if bt_status=="Running...": send_telegram("⏳ BTC FINAL2 กำลังรัน...")
+        if bt_status=="Running...": send_telegram("⏳ BTC 90D กำลังรัน...")
         elif not bt_results:
             threading.Thread(target=bt_job, daemon=True).start()
-            send_telegram("📊 เริ่ม BT V14.2 FINAL2 30D รอ 15 วิ...")
+            send_telegram("📊 เริ่ม BT V15.0 90D รอ 20 วิ... (ดึง 90 วัน)")
         else:
-            b=bt_results["BTCUSDT"]; send_telegram(f"📊 BTC {b['sym_used']} ${b['live_price']:.0f} WR {b['wr']:.1f}% PnL {b['stats']['pnl_sum']:+.2f}% Tr {b['stats']['total']}")
+            b=bt_results["BTCUSDT"]; send_telegram(f"📊 BTC 90D {b['sym_used']} ${b['live_price']:.0f} WR {b['wr']:.1f}% PnL {b['stats']['pnl_sum']:+.2f}% Tr {b['stats']['total']} Bars {b['bars']}")
     elif t in ["/status"]:
         b=bt_results.get("BTCUSDT")
-        if b: send_telegram(f"📍 BTC {b['sym_used']} ${b['live_price']:.0f} WR {b['wr']:.1f}% PnL {b['stats']['pnl_sum']:+.2f}% {'✅' if TRADING_ENABLED else '🛑'}")
-        else: send_telegram(f"📍 BTC {bt_status} {'✅' if TRADING_ENABLED else '🛑'} /bt")
-    elif t in ["/stop"]: TRADING_ENABLED=False; save_trading(False); send_telegram(f"🛑 ปิด BTC {thai_time()}")
-    elif t in ["/start"]: TRADING_ENABLED=True; save_trading(True); send_telegram(f"✅ เปิด BTC {thai_time()}")
+        if b: send_telegram(f"📍 BTC 90D {b['sym_used']} ${b['live_price']:.0f} WR {b['wr']:.1f}% PnL {b['stats']['pnl_sum']:+.2f}% Bars {b['bars']} {'✅' if TRADING_ENABLED else '🛑'}")
+        else: send_telegram(f"📍 BTC 90D {bt_status} {'✅' if TRADING_ENABLED else '🛑'} /bt")
+    elif t in ["/stop"]: TRADING_ENABLED=False; save_trading(False); send_telegram(f"🛑 ปิด BTC 90D {thai_time()}")
+    elif t in ["/start"]: TRADING_ENABLED=True; save_trading(True); send_telegram(f"✅ เปิด BTC 90D {thai_time()}")
 
 def poll():
     off=get_off()
@@ -205,12 +212,12 @@ def poll():
 @app.route('/')
 def home():
     b=bt_results.get("BTCUSDT")
-    if not b: return f"<h2>V14.2 FINAL2 {bt_status}</h2>"
-    return f"<h2>BTC WR {b['wr']:.1f}% PnL {b['stats']['pnl_sum']:+.2f}%</h2>"
+    if not b: return f"<h2>V15.0 90D {bt_status}</h2>"
+    return f"<h2>BTC 90D WR {b['wr']:.1f}% PnL {b['stats']['pnl_sum']:+.2f}% Bars {b['bars']}</h2>"
 @app.route('/health')
-def health(): return jsonify({"status":"ok","version":"V14.2 FINAL2","trading":TRADING_ENABLED,"bt":bt_results,"time":thai_time()})
+def health(): return jsonify({"status":"ok","version":"V15.0 90D","trading":TRADING_ENABLED,"bt":bt_results,"time":thai_time()})
 
-send_telegram(f"🚀 [{thai_time()}] V14.2 BTC FINAL2 Live\nฐาน V13.7 WR63.6% PnL-0.15% TP2.2 SL1.3 -> TP2.2 SL1.0 RR2.2 Hold9H\nพิมพ์ /bt /status")
+send_telegram(f"🚀 [{thai_time()}] V15.0 BTC 90D Live\nBT 90 วัน เห็นทั้งเทรนด์ ก.ย. $58k->$87k + Sideway ต.ค. $82k-$85k\nฐาน V13.7 WR63.6% TP2.2 SL1.3 Hold8H พิมพ์ /bt /status")
 
 threading.Thread(target=lambda: (time.sleep(3), bt_job()), daemon=True).start()
 threading.Thread(target=poll, daemon=True).start()
