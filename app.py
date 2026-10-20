@@ -1,30 +1,8 @@
 """
-V12.32 IMPROVED FROM 85% WR COPY TRADERS - BTCUSDT FUTURES
-แกะจาก Mexctrader-KqktYd 85.71% WR + Scalp daily 436% ROI
-
-บทเรียนจาก Copy Trade:
-1. Mexctrader-KqktYd 85.71% WR 12W2L ROI 186% Ratio 5.3:1 14/week
-   - High Stress Tolerance = ทนลากได้ รอจังหวะ A+ เท่านั้น
-   - EMA เรียงตัวสวย + Gap 0.30% กรอง Sideway
-   - RSI เข้ม 62-68 / 32-38 ไม่เทรดกลาง
-   - Followers PNL +$94 = ของจริง
-2. Scalp daily 50% WR ROI 436% Ratio 11.6:1 22/week Followers -5341
-   - API Trading = บอท
-   - Ratio สูงมาก 11.6:1 = ปล่อยกำไรไหล คัทไว
-   - Followers ขาดทุน = Copy ไม่ทัน / Slippage / Martingale → หลีกเลี่ยง
-
-ปรับเป็น V12.32:
-- TF 15m + EMA50/200 Daily Filter (Multi-TF)
-- EMA Stack 12>26>50 + Gap >=0.22%
-- RSI 57-67 LONG / 33-43 SHORT (เข้มกว่า V12.30 แต่ไม่เข้มจน 0 เทรด)
-- Volume > MA20 *0.9 + ADX >12
-- TP 18% PnL (2.25% ราคา) SL 3.4% PnL (0.425% ราคา) = Ratio 5.29:1 ตรงเป้า 5.3:1
-- BE 3% ยกทุนเร็ว + Trail Start 7% Trail 2.5% ปล่อยกำไรไหลแบบ 11.6:1
-- Cooldown 3 แท่งหลังแพ้ + SINGLE SIDE ไม้เดียว
-- Target: WR 64-68% 1Y + Ratio 2-3:1 + PnL +300-400%
-
-BT เดิม V12.30: WR 60.3% Ratio 0.625:1 PnL +641% 866 ไม้
-BT คาด V12.32: WR 62-65% Ratio 2.5-3:1 PnL +350-450% 400-500 ไม้ (เทรดน้อยลงแต่แม่นขึ้น)
+V12.33 FIXED - แก้ 2 บัคจาก Screenshot V12.32
+1. LONG ERR amount must be greater than minimum amount precision of 1
+   → MEXC BTC/USDT:USDT ใช้ Contract ไม่ใช่ BTC ตรงๆ 1 Contract = 0.0001 BTC ต้องส่งเป็น int 1,2,3...
+2. เปิดช๊อตแต่บอทเปิดลอง → /open เดี่ยวๆ default LONG ต้องพิมพ์ /open short ถึงจะ SHORT
 """
 import requests, os, time, threading, json
 from flask import Flask, jsonify, request
@@ -50,9 +28,8 @@ CHAT_ID = os.environ.get("CHAT_ID","").strip() or os.environ.get("TELEGRAM_CHAT_
 SYMBOL_CCXT = "BTC/USDT:USDT"
 SYMBOL_BINANCE = "BTCUSDT"
 LEVERAGE = 8
-# V12.32 IMPROVED
-TP_PCT = 18.0   # 2.25% ราคา
-SL_PCT = 3.4    # 0.425% ราคา = Ratio 5.29:1 ใกล้ 5.3:1 ของ 85% WR Trader
+TP_PCT = 18.0
+SL_PCT = 3.4
 BE_PCT = 3.0
 TRAIL_START = 7.0
 TRAIL_PCT = 2.5
@@ -71,11 +48,11 @@ app = Flask(__name__)
 @app.route('/', methods=['GET','HEAD'])
 def home():
     if request.method=='HEAD': return '',200
-    return f"V12.32 IMPROVED 85WR TP{TP_PCT} SL{SL_PCT} Ratio {TP_PCT/SL_PCT:.2f}:1"
+    return f"V12.33 FIXED 85WR CONTRACT"
 @app.route('/health', methods=['GET','HEAD'])
 def health():
     if request.method=='HEAD': return '',200
-    return jsonify({"status":"ok","version":"V12.32 IMPROVED 85WR"})
+    return jsonify({"status":"ok","version":"V12.33 FIXED"})
 
 positions, highest, lowest = [], 0, 999999
 stats = {"total_trades":0,"wins":0,"losses":0,"total_pnl_pct":0.0,"history":[]}
@@ -178,31 +155,52 @@ def calc_indicators(ohlcv):
     except: return None
 
 def get_balance():
-    if not mexc: return 100.0
+    if not mexc: return 40.0
     try:
-        bal=mexc.fetch_balance(); return float(bal.get('USDT',{}).get('free',0) or bal.get('total',{}).get('USDT',0) or 100.0)
-    except: return 100.0
+        bal=mexc.fetch_balance(); return float(bal.get('USDT',{}).get('free',0) or bal.get('total',{}).get('USDT',0) or 40.0)
+    except: return 40.0
 
-def mexc_open_futures(price, qty, side):
+def mexc_open_futures(price, qty_contracts, side):
     global is_real_mode
+    # FIX: qty_contracts ต้องเป็น int 1,2,3... (MEXC Contract) ไม่ใช่ 0.001 BTC
+    try:
+        qty_contracts = int(float(qty_contracts))
+        if qty_contracts < 1: qty_contracts = 1
+        if qty_contracts > 20: qty_contracts = 20  # กันพอร์ต $40 แตก
+    except:
+        qty_contracts = 1
+
     if mexc and is_real_mode:
         try:
             try: mexc.set_leverage(LEVERAGE, SYMBOL_CCXT, {'marginMode':'CROSS'})
             except: pass
+            # MEXC BTC swap: amount = จำนวน contract
             if side=="long":
-                try: mexc.create_order(SYMBOL_CCXT, 'market', 'buy', qty, None, {'positionSide':'LONG'})
-                except: mexc.create_market_buy_order(SYMBOL_CCXT, qty)
+                try: mexc.create_order(SYMBOL_CCXT, 'market', 'buy', qty_contracts, None, {'positionSide':'LONG'})
+                except: mexc.create_market_buy_order(SYMBOL_CCXT, qty_contracts)
             else:
-                try: mexc.create_order(SYMBOL_CCXT, 'market', 'sell', qty, None, {'positionSide':'SHORT'})
-                except: mexc.create_market_sell_order(SYMBOL_CCXT, qty)
+                try: mexc.create_order(SYMBOL_CCXT, 'market', 'sell', qty_contracts, None, {'positionSide':'SHORT'})
+                except: mexc.create_market_sell_order(SYMBOL_CCXT, qty_contracts)
             return True
         except Exception as e:
             err=str(e)
             if "700007" in err or "permission" in err.lower():
                 is_real_mode=False
-                send_telegram(f"⚠️ 700007 → PAPER {side.upper()} {qty} @ {price:.2f}")
+                send_telegram(f"⚠️ 700007 → PAPER {side.upper()} {qty_contracts} CONT @ {price:.0f}")
                 return "PAPER"
-            send_telegram(f"❌ {side.upper()} ERR {err[:200]}")
+            # ถ้ายัง precision ผิด ให้ลอง 1 contract
+            if "precision" in err.lower() or "amount" in err.lower():
+                try:
+                    if side=="long":
+                        mexc.create_order(SYMBOL_CCXT, 'market', 'buy', 1, None, {'positionSide':'LONG'})
+                    else:
+                        mexc.create_order(SYMBOL_CCXT, 'market', 'sell', 1, None, {'positionSide':'SHORT'})
+                    send_telegram(f"✅ แก้ precision สำเร็จ เปิด {side.upper()} 1 CONT @ {price:.0f}")
+                    return True
+                except Exception as e2:
+                    send_telegram(f"❌ {side.upper()} ERR {str(e2)[:250]}")
+                    return False
+            send_telegram(f"❌ {side.upper()} ERR {err[:250]}")
             return False
     else:
         return "PAPER"
@@ -218,43 +216,47 @@ def mexc_buy(price, custom_qty=None, side="long"):
             send_telegram(f"⚠️ มี {cur.upper()} อยู่แล้ว 1 ไม้ SINGLE SIDE")
             return False,0
     balance=get_balance()
+    # สำหรับทุน $40: 1 Contract = 0.0001 BTC ≈ $8.15 notional, margin $1.01
+    # 5% * 8x = $16 notional ≈ 2 contracts
     if custom_qty:
-        try: qty=float(custom_qty)
-        except: qty=0.001
+        try: qty_contracts=int(float(custom_qty))
+        except: qty_contracts=1
     else:
-        usdt=balance*5/100
-        qty=(usdt*LEVERAGE)/price
-        qty=max(0.001, round(qty,3)); qty=min(qty,0.01)
-    result=mexc_open_futures(price, qty, side)
+        notional = balance * 0.05 * LEVERAGE
+        contracts = notional / (price * 0.0001)
+        qty_contracts = max(1, int(contracts))
+        qty_contracts = min(qty_contracts, 3)  # $40 พอร์ตเล็ก เปิด 1-3 พอ
+    result=mexc_open_futures(price, qty_contracts, side)
     if result==False: return False,0
-    positions.append({'entry':price,'qty':qty,'side':side,'time':time.time()})
+    positions.append({'entry':price,'qty':qty_contracts,'side':side,'time':time.time()})
     if side=="long": highest=price; lowest=999999; trail_sl=price*(1-(SL_PCT/LEVERAGE)/100)
     else: lowest=price; highest=0; trail_sl=price*(1+(SL_PCT/LEVERAGE)/100)
     hard_sl_price=trail_sl; be_done=False
     save_positions()
-    send_telegram(f"✅ เปิด {side.upper()} BTCUSDT {price:.0f} qty {qty} SL {trail_sl:.0f} Ratio {TP_PCT/SL_PCT:.1f}:1")
-    return True, qty
+    btc_size = qty_contracts * 0.0001
+    send_telegram(f"✅ เปิด {side.upper()} BTCUSDT {price:.0f} {qty_contracts} CONT ({btc_size:.4f} BTC) SL {trail_sl:.0f} Ratio {TP_PCT/SL_PCT:.1f}:1")
+    return True, qty_contracts
 
 def close_position(price, reason):
     global positions, highest, lowest, trail_sl, be_done, hard_sl_price, cooldown_until
     if not positions: return False
-    p=positions[0]; qty=abs(p['qty']); entry=p['entry']; side=p['side']
+    p=positions[0]; qty_contracts=abs(int(p['qty'])); entry=p['entry']; side=p['side']
     pnl=(entry-price)/entry*100*LEVERAGE if side=='short' else (price-entry)/entry*100*LEVERAGE
     if mexc and is_real_mode:
         try:
             if side=='long':
-                try: mexc.create_order(SYMBOL_CCXT, 'market', 'sell', qty, None, {'positionSide':'LONG'})
-                except: mexc.create_market_sell_order(SYMBOL_CCXT, qty)
+                try: mexc.create_order(SYMBOL_CCXT, 'market', 'sell', qty_contracts, None, {'positionSide':'LONG'})
+                except: mexc.create_market_sell_order(SYMBOL_CCXT, qty_contracts)
             else:
-                try: mexc.create_order(SYMBOL_CCXT, 'market', 'buy', qty, None, {'positionSide':'SHORT'})
-                except: mexc.create_market_buy_order(SYMBOL_CCXT, qty)
+                try: mexc.create_order(SYMBOL_CCXT, 'market', 'buy', qty_contracts, None, {'positionSide':'SHORT'})
+                except: mexc.create_market_buy_order(SYMBOL_CCXT, qty_contracts)
         except: pass
     stats["total_trades"]+=1; stats["total_pnl_pct"]+=pnl
     if pnl>0: stats["wins"]+=1; icon="✅"
     else: stats["losses"]+=1; icon="❌"; cooldown_until=time.time()+1*3600
     stats["history"].append({"time":thai_time(),"type":f"{side.upper()} {reason}","pnl":pnl})
     save_stats(); wr=stats["wins"]/stats["total_trades"]*100 if stats["total_trades"]>0 else 0
-    send_telegram(f"{icon} ปิด {side.upper()} BTCUSDT {reason} {price:.0f} PnL {pnl:+.2f}% WR {wr:.1f}% Ratio {TP_PCT/SL_PCT:.1f}:1")
+    send_telegram(f"{icon} ปิด {side.upper()} BTCUSDT {reason} {price:.0f} PnL {pnl:+.2f}% WR {wr:.1f}%")
     positions.clear(); highest=0; lowest=999999; trail_sl=0; be_done=False; hard_sl_price=0
     save_positions()
     return True
@@ -262,7 +264,7 @@ def close_position(price, reason):
 def trading_loop():
     global highest, lowest, trail_sl, be_done, hard_sl_price, cooldown_until
     price=get_price_mexc()
-    send_telegram(f"🚀 <b>V12.32 IMPROVED FROM 85% WR START</b>\nแกะสูตร Mexctrader 85.71% WR Ratio 5.3:1 + Scalp 436% ROI Ratio 11.6:1\nTP {TP_PCT}% SL {SL_PCT}% Ratio {TP_PCT/SL_PCT:.1f}:1\nRSI {RSI_LONG_MIN}-{RSI_LONG_MAX}/{RSI_SHORT_MIN}-{RSI_SHORT_MAX} Gap {EMA_GAP_PCT}% ADX>{ADX_MIN}\nPrice:{price}")
+    send_telegram(f"🚀 <b>V12.33 FIXED CONTRACT START</b>\nแก้ amount precision 1 CONT = 0.0001 BTC\nทุน $40 เปิด 1-3 CONT พอ\nTP {TP_PCT}% SL {SL_PCT}% Ratio {TP_PCT/SL_PCT:.1f}:1\nPrice:{price}")
     while True:
         try:
             ohlcv=get_klines_mexc(500, '15m')
@@ -328,16 +330,45 @@ def telegram_check_loop():
                     wr=(stats["wins"]/stats["total_trades"]*100) if stats["total_trades"]>0 else 0
                     side=positions[0]['side'].upper() if positions else "ว่าง"
                     price=get_price_mexc()
-                    send_telegram(f"✅ BTCUSDT V12.32 IMPROVED\n⏰ {thai_time()}\nPrice:{price}\nถือ:{side}\nWR:{wr:.1f}% Trades:{stats['total_trades']} PnL {stats['total_pnl_pct']:+.1f}%\nTP {TP_PCT}% SL {SL_PCT}% Ratio {TP_PCT/SL_PCT:.1f}:1\nแกะจาก 85% WR 5.3:1 + 436% ROI 11.6:1", chat)
+                    bal=get_balance()
+                    send_telegram(f"✅ BTCUSDT V12.33 FIXED CONTRACT\n⏰ {thai_time()}\nPrice:{price:.0f} Bal:{bal:.2f}\nถือ:{side} {positions[0]['qty'] if positions else ''} CONT\nWR:{wr:.1f}% Trades:{stats['total_trades']} PnL {stats['total_pnl_pct']:+.1f}%\nTP {TP_PCT}% SL {SL_PCT}% Ratio {TP_PCT/SL_PCT:.1f}:1\n1 CONT=0.0001 BTC", chat)
                 elif text.startswith("/open"):
-                    parts=text_raw.split(); side="long"; qty=None
-                    if "short" in text_raw.lower(): side="short"
-                    threading.Thread(target=lambda: mexc_buy(get_price_mexc() or 80000, custom_qty=qty, side=side), daemon=True).start()
-                    send_telegram(f"⏳ เปิด {side.upper()}...", chat)
+                    # รองรับ /open, /open long, /open short, /open long 2, /open short 2
+                    parts=text_raw.split()
+                    side="long"
+                    qty=None
+                    if len(parts)>=2:
+                        if "short" in parts[1].lower(): side="short"
+                        elif "long" in parts[1].lower(): side="long"
+                        # ถ้า parts[1] เป็นตัวเลข
+                        try:
+                            qty=int(float(parts[1]))
+                            side="long"
+                        except: pass
+                    if len(parts)>=3:
+                        try: qty=int(float(parts[2]))
+                        except: pass
+                        if "short" in parts[1].lower(): side="short"
+                    # ถ้าพิมพ์ /short หรือ /long สั้นๆ ก็รองรับใน loop ล่าง
+                    price=get_price_mexc()
+                    if not price: price=81500
+                    threading.Thread(target=lambda s=side,q=qty,p=price: mexc_buy(p, custom_qty=q, side=s), daemon=True).start()
+                    send_telegram(f"⏳ เปิด {side.upper()} {qty if qty else 'AUTO'} CONT...", chat)
+                elif text=="/long":
+                    price=get_price_mexc() or 81500
+                    threading.Thread(target=lambda: mexc_buy(price, side="long"), daemon=True).start()
+                    send_telegram(f"⏳ เปิด LONG...", chat)
+                elif text=="/short":
+                    price=get_price_mexc() or 81500
+                    threading.Thread(target=lambda: mexc_buy(price, side="short"), daemon=True).start()
+                    send_telegram(f"⏳ เปิด SHORT...", chat)
                 elif text.startswith("/close"):
                     price=get_price_mexc() or (positions[0]['entry'] if positions else 0)
                     if positions: close_position(price, "MANUAL_CLOSE")
                     send_telegram(f"⏳ ปิด {len(positions)} ไม้...", chat)
+                elif text.startswith("/balance"):
+                    bal=get_balance()
+                    send_telegram(f"💰 Balance Futures: {bal:.2f} USDT\n1 CONT = 0.0001 BTC ≈ ${ (get_price_mexc() or 81500)*0.0001 :.2f}", chat)
         except Exception as e:
             print(f"Tele err {e}"); time.sleep(10)
 
