@@ -1,8 +1,7 @@
 """
-V12.33 FIXED - แก้ 2 บัคจาก Screenshot V12.32
-1. LONG ERR amount must be greater than minimum amount precision of 1
-   → MEXC BTC/USDT:USDT ใช้ Contract ไม่ใช่ BTC ตรงๆ 1 Contract = 0.0001 BTC ต้องส่งเป็น int 1,2,3...
-2. เปิดช๊อตแต่บอทเปิดลอง → /open เดี่ยวๆ default LONG ต้องพิมพ์ /open short ถึงจะ SHORT
+V12.34 QTY 5 CONT - ตามสั่ง
+ทุน $40 เปิด 5 CONT = 0.0005 BTC ≈ $40 notional Margin $5
+SL $0.17 (0.4% พอร์ต) TP $0.91 (2.2% พอร์ต) ปลอดภัย
 """
 import requests, os, time, threading, json
 from flask import Flask, jsonify, request
@@ -40,6 +39,7 @@ RSI_SHORT_MAX = 43
 EMA_GAP_PCT = 0.22
 ADX_MIN = 12
 VOL_MULT = 0.9
+DEFAULT_QTY = 5  # ตามสั่ง Qty=5 cont
 
 POSITIONS_FILE = os.path.join(DATA_DIR, "positions.json")
 STATS_FILE = os.path.join(DATA_DIR, "stats.json")
@@ -48,15 +48,15 @@ app = Flask(__name__)
 @app.route('/', methods=['GET','HEAD'])
 def home():
     if request.method=='HEAD': return '',200
-    return f"V12.33 FIXED 85WR CONTRACT"
+    return f"V12.34 QTY5 CONT"
 @app.route('/health', methods=['GET','HEAD'])
 def health():
     if request.method=='HEAD': return '',200
-    return jsonify({"status":"ok","version":"V12.33 FIXED"})
+    return jsonify({"status":"ok","version":"V12.34 QTY5"})
 
 positions, highest, lowest = [], 0, 999999
 stats = {"total_trades":0,"wins":0,"losses":0,"total_pnl_pct":0.0,"history":[]}
-manual_pause_until=0; is_real_mode=True; trail_sl=0; be_done=False; hard_sl_price=0; cooldown_until=0
+is_real_mode=True; trail_sl=0; be_done=False; hard_sl_price=0; cooldown_until=0
 
 try:
     import ccxt
@@ -162,19 +162,16 @@ def get_balance():
 
 def mexc_open_futures(price, qty_contracts, side):
     global is_real_mode
-    # FIX: qty_contracts ต้องเป็น int 1,2,3... (MEXC Contract) ไม่ใช่ 0.001 BTC
     try:
         qty_contracts = int(float(qty_contracts))
         if qty_contracts < 1: qty_contracts = 1
-        if qty_contracts > 20: qty_contracts = 20  # กันพอร์ต $40 แตก
+        if qty_contracts > 20: qty_contracts = 20
     except:
-        qty_contracts = 1
-
+        qty_contracts = DEFAULT_QTY
     if mexc and is_real_mode:
         try:
             try: mexc.set_leverage(LEVERAGE, SYMBOL_CCXT, {'marginMode':'CROSS'})
             except: pass
-            # MEXC BTC swap: amount = จำนวน contract
             if side=="long":
                 try: mexc.create_order(SYMBOL_CCXT, 'market', 'buy', qty_contracts, None, {'positionSide':'LONG'})
                 except: mexc.create_market_buy_order(SYMBOL_CCXT, qty_contracts)
@@ -188,7 +185,6 @@ def mexc_open_futures(price, qty_contracts, side):
                 is_real_mode=False
                 send_telegram(f"⚠️ 700007 → PAPER {side.upper()} {qty_contracts} CONT @ {price:.0f}")
                 return "PAPER"
-            # ถ้ายัง precision ผิด ให้ลอง 1 contract
             if "precision" in err.lower() or "amount" in err.lower():
                 try:
                     if side=="long":
@@ -215,17 +211,11 @@ def mexc_buy(price, custom_qty=None, side="long"):
         else:
             send_telegram(f"⚠️ มี {cur.upper()} อยู่แล้ว 1 ไม้ SINGLE SIDE")
             return False,0
-    balance=get_balance()
-    # สำหรับทุน $40: 1 Contract = 0.0001 BTC ≈ $8.15 notional, margin $1.01
-    # 5% * 8x = $16 notional ≈ 2 contracts
     if custom_qty:
         try: qty_contracts=int(float(custom_qty))
-        except: qty_contracts=1
+        except: qty_contracts=DEFAULT_QTY
     else:
-        notional = balance * 0.05 * LEVERAGE
-        contracts = notional / (price * 0.0001)
-        qty_contracts = max(1, int(contracts))
-        qty_contracts = min(qty_contracts, 3)  # $40 พอร์ตเล็ก เปิด 1-3 พอ
+        qty_contracts=DEFAULT_QTY  # ตามสั่ง 5 CONT
     result=mexc_open_futures(price, qty_contracts, side)
     if result==False: return False,0
     positions.append({'entry':price,'qty':qty_contracts,'side':side,'time':time.time()})
@@ -234,7 +224,7 @@ def mexc_buy(price, custom_qty=None, side="long"):
     hard_sl_price=trail_sl; be_done=False
     save_positions()
     btc_size = qty_contracts * 0.0001
-    send_telegram(f"✅ เปิด {side.upper()} BTCUSDT {price:.0f} {qty_contracts} CONT ({btc_size:.4f} BTC) SL {trail_sl:.0f} Ratio {TP_PCT/SL_PCT:.1f}:1")
+    send_telegram(f"✅ เปิด {side.upper()} BTCUSDT {price:.0f} {qty_contracts} CONT ({btc_size:.4f} BTC) SL {trail_sl:.0f} Ratio 5.3:1 QTY5")
     return True, qty_contracts
 
 def close_position(price, reason):
@@ -256,7 +246,7 @@ def close_position(price, reason):
     else: stats["losses"]+=1; icon="❌"; cooldown_until=time.time()+1*3600
     stats["history"].append({"time":thai_time(),"type":f"{side.upper()} {reason}","pnl":pnl})
     save_stats(); wr=stats["wins"]/stats["total_trades"]*100 if stats["total_trades"]>0 else 0
-    send_telegram(f"{icon} ปิด {side.upper()} BTCUSDT {reason} {price:.0f} PnL {pnl:+.2f}% WR {wr:.1f}%")
+    send_telegram(f"{icon} ปิด {side.upper()} BTCUSDT {reason} {price:.0f} PnL {pnl:+.2f}% WR {wr:.1f}% QTY{qty_contracts}")
     positions.clear(); highest=0; lowest=999999; trail_sl=0; be_done=False; hard_sl_price=0
     save_positions()
     return True
@@ -264,7 +254,7 @@ def close_position(price, reason):
 def trading_loop():
     global highest, lowest, trail_sl, be_done, hard_sl_price, cooldown_until
     price=get_price_mexc()
-    send_telegram(f"🚀 <b>V12.33 FIXED CONTRACT START</b>\nแก้ amount precision 1 CONT = 0.0001 BTC\nทุน $40 เปิด 1-3 CONT พอ\nTP {TP_PCT}% SL {SL_PCT}% Ratio {TP_PCT/SL_PCT:.1f}:1\nPrice:{price}")
+    send_telegram(f"🚀 <b>V12.34 QTY5 CONT START</b>\nทุน $40 เปิด {DEFAULT_QTY} CONT = {DEFAULT_QTY*0.0001:.4f} BTC\nTP {TP_PCT}% SL {SL_PCT}% Ratio 5.3:1\nPrice:{price}")
     while True:
         try:
             ohlcv=get_klines_mexc(500, '15m')
@@ -331,44 +321,40 @@ def telegram_check_loop():
                     side=positions[0]['side'].upper() if positions else "ว่าง"
                     price=get_price_mexc()
                     bal=get_balance()
-                    send_telegram(f"✅ BTCUSDT V12.33 FIXED CONTRACT\n⏰ {thai_time()}\nPrice:{price:.0f} Bal:{bal:.2f}\nถือ:{side} {positions[0]['qty'] if positions else ''} CONT\nWR:{wr:.1f}% Trades:{stats['total_trades']} PnL {stats['total_pnl_pct']:+.1f}%\nTP {TP_PCT}% SL {SL_PCT}% Ratio {TP_PCT/SL_PCT:.1f}:1\n1 CONT=0.0001 BTC", chat)
+                    send_telegram(f"✅ BTCUSDT V12.34 QTY5\n⏰ {thai_time()}\nPrice:{price:.0f} Bal:{bal:.2f}\nถือ:{side} {positions[0]['qty'] if positions else ''} CONT\nWR:{wr:.1f}% Trades:{stats['total_trades']} PnL {stats['total_pnl_pct']:+.1f}%\nTP {TP_PCT}% SL {SL_PCT}% Ratio 5.3:1\nDefault {DEFAULT_QTY} CONT", chat)
                 elif text.startswith("/open"):
-                    # รองรับ /open, /open long, /open short, /open long 2, /open short 2
                     parts=text_raw.split()
                     side="long"
-                    qty=None
+                    qty=DEFAULT_QTY
                     if len(parts)>=2:
                         if "short" in parts[1].lower(): side="short"
                         elif "long" in parts[1].lower(): side="long"
-                        # ถ้า parts[1] เป็นตัวเลข
-                        try:
-                            qty=int(float(parts[1]))
-                            side="long"
-                        except: pass
+                        else:
+                            try: qty=int(float(parts[1])); side="long"
+                            except: pass
                     if len(parts)>=3:
                         try: qty=int(float(parts[2]))
                         except: pass
                         if "short" in parts[1].lower(): side="short"
-                    # ถ้าพิมพ์ /short หรือ /long สั้นๆ ก็รองรับใน loop ล่าง
                     price=get_price_mexc()
                     if not price: price=81500
                     threading.Thread(target=lambda s=side,q=qty,p=price: mexc_buy(p, custom_qty=q, side=s), daemon=True).start()
-                    send_telegram(f"⏳ เปิด {side.upper()} {qty if qty else 'AUTO'} CONT...", chat)
+                    send_telegram(f"⏳ เปิด {side.upper()} {qty} CONT...", chat)
                 elif text=="/long":
                     price=get_price_mexc() or 81500
-                    threading.Thread(target=lambda: mexc_buy(price, side="long"), daemon=True).start()
-                    send_telegram(f"⏳ เปิด LONG...", chat)
+                    threading.Thread(target=lambda: mexc_buy(price, custom_qty=DEFAULT_QTY, side="long"), daemon=True).start()
+                    send_telegram(f"⏳ เปิด LONG {DEFAULT_QTY} CONT...", chat)
                 elif text=="/short":
                     price=get_price_mexc() or 81500
-                    threading.Thread(target=lambda: mexc_buy(price, side="short"), daemon=True).start()
-                    send_telegram(f"⏳ เปิด SHORT...", chat)
+                    threading.Thread(target=lambda: mexc_buy(price, custom_qty=DEFAULT_QTY, side="short"), daemon=True).start()
+                    send_telegram(f"⏳ เปิด SHORT {DEFAULT_QTY} CONT...", chat)
                 elif text.startswith("/close"):
                     price=get_price_mexc() or (positions[0]['entry'] if positions else 0)
                     if positions: close_position(price, "MANUAL_CLOSE")
                     send_telegram(f"⏳ ปิด {len(positions)} ไม้...", chat)
                 elif text.startswith("/balance"):
                     bal=get_balance()
-                    send_telegram(f"💰 Balance Futures: {bal:.2f} USDT\n1 CONT = 0.0001 BTC ≈ ${ (get_price_mexc() or 81500)*0.0001 :.2f}", chat)
+                    send_telegram(f"💰 Balance: {bal:.2f} USDT\n{DEFAULT_QTY} CONT = {DEFAULT_QTY*0.0001:.4f} BTC ≈ ${ (get_price_mexc() or 81500)*0.0001*DEFAULT_QTY :.2f}", chat)
         except Exception as e:
             print(f"Tele err {e}"); time.sleep(10)
 
