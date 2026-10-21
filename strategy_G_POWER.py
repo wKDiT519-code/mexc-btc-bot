@@ -1,7 +1,6 @@
 """
-G_POWER - FIXED for Render - ไม่ใช้ pandas_ta
-แก้ ModuleNotFoundError: pkg_resources + pandas build failed
-ใช้ pandas ล้วนๆ คำนวณ EMA RSI เอง
+G_POWER + CDC ATR - FIXED for Render
+CDC ATR Trailing Stop V2.1 (close 5 0.5 10 2) - จาก TradingView BTC 15m
 """
 
 import pandas as pd
@@ -9,7 +8,7 @@ import numpy as np
 
 class Strategy_G_Power:
     def __init__(self):
-        self.name = "G_POWER - BTC Ultimate"
+        self.name = "G_POWER + CDC ATR - BTC Ultimate"
         self.config = {
             "ema_fast": 12,
             "ema_slow": 26,
@@ -29,6 +28,11 @@ class Strategy_G_Power:
             "risk_per_trade": 0.02,
             "max_positions": 2,
             "cooldown_after_2_losses": 16,
+            "cdc_atr_fast": 5,
+            "cdc_mult_fast": 0.5,
+            "cdc_atr_slow": 10,
+            "cdc_mult_slow": 2.0,
+            "cdc_use": True,
         }
         self.loss_streak = 0
         self.cooldown = 0
@@ -70,9 +74,62 @@ class Strategy_G_Power:
     
     def _obv(self, close, volume):
         return (np.sign(close.diff()) * volume).fillna(0).cumsum()
+
+    def _cdc_atr_trailing(self, df):
+        atr_fast = self._atr(df['high'], df['low'], df['close'], self.config["cdc_atr_fast"])
+        atr_slow = self._atr(df['high'], df['low'], df['close'], self.config["cdc_atr_slow"])
+        
+        long_stop_fast = df['close'] - atr_fast * self.config["cdc_mult_fast"]
+        short_stop_fast = df['close'] + atr_fast * self.config["cdc_mult_fast"]
+        long_stop_slow = df['close'] - atr_slow * self.config["cdc_mult_slow"]
+        short_stop_slow = df['close'] + atr_slow * self.config["cdc_mult_slow"]
+        
+        long_stop = pd.concat([long_stop_fast, long_stop_slow], axis=1).max(axis=1)
+        short_stop = pd.concat([short_stop_fast, short_stop_slow], axis=1).min(axis=1)
+        
+        trend = np.zeros(len(df), dtype=int)
+        stop_level = np.zeros(len(df))
+        
+        trend[0] = 1
+        stop_level[0] = long_stop.iloc[0]
+        
+        for i in range(1, len(df)):
+            close = df['close'].iloc[i]
+            prev_trend = trend[i-1]
+            prev_stop = stop_level[i-1]
+            
+            if prev_trend == 1:
+                curr_long = long_stop.iloc[i]
+                new_stop = max(curr_long, prev_stop) if not np.isnan(prev_stop) else curr_long
+                if close < new_stop:
+                    trend[i] = -1
+                    stop_level[i] = short_stop.iloc[i]
+                else:
+                    trend[i] = 1
+                    stop_level[i] = new_stop
+            else:
+                curr_short = short_stop.iloc[i]
+                new_stop = min(curr_short, prev_stop) if not np.isnan(prev_stop) else curr_short
+                if close > new_stop:
+                    trend[i] = 1
+                    stop_level[i] = long_stop.iloc[i]
+                else:
+                    trend[i] = -1
+                    stop_level[i] = new_stop
+        
+        df['cdc_trend'] = trend
+        df['cdc_stop'] = stop_level
+        df['cdc_atr_fast'] = atr_fast
+        df['cdc_atr_slow'] = atr_slow
+        df['cdc_long_stop'] = long_stop
+        df['cdc_short_stop'] = short_stop
+        df['cdc_up'] = (trend == 1)
+        df['cdc_down'] = (trend == -1)
+        df['cdc_dist_pct'] = (df['close'] - df['cdc_stop']) / df['close'] * 100
+        
+        return df
     
     def add_indicators(self, df):
-        # NEW 12/26/200 Base
         df['ema12'] = self._ema(df['close'], 12)
         df['ema26'] = self._ema(df['close'], 26)
         df['ema200'] = self._ema(df['close'], 200)
@@ -82,7 +139,6 @@ class Strategy_G_Power:
         df['rsi26'] = self._rsi(df['close'], 26)
         df['rsi200'] = self._rsi(df['close'], 200)
         
-        # Fractal + Sweep
         df['fractal_high'] = df['high'].rolling(5, center=True).max() == df['high']
         df['fractal_low'] = df['low'].rolling(5, center=True).min() == df['low']
         
@@ -96,10 +152,8 @@ class Strategy_G_Power:
         df['last_swing_high'] = df['swing_high'].ffill()
         df['last_swing_low'] = df['swing_low'].ffill()
         
-        # SuperTrend simplified: use EMA trend
         df['supertrend_dir'] = np.where(df['close'] > df['ema200'], 1, -1)
         
-        # Momentum
         df['mfi'] = self._mfi(df['high'], df['low'], df['close'], df['volume'], 14)
         df['obv'] = self._obv(df['close'], df['volume'])
         df['obv_ema3'] = self._ema(df['obv'], 3)
@@ -108,6 +162,8 @@ class Strategy_G_Power:
         df['adx'] = self._adx(df['high'], df['low'], df['close'], 14)
         df['atr'] = self._atr(df['high'], df['low'], df['close'], 14)
         df['vol_avg'] = df['volume'].rolling(20).mean()
+        
+        df = self._cdc_atr_trailing(df)
         
         return df
     
@@ -126,9 +182,12 @@ class Strategy_G_Power:
         fractal_long = curr['fractal_low']
         fractal_short = curr['fractal_high']
         
+        cdc_flip_long = prev['cdc_down'] and curr['cdc_up']
+        cdc_flip_short = prev['cdc_up'] and curr['cdc_down']
+        
         return {
-            'long': new_long and (sweep_ok_long or fractal_long),
-            'short': new_short and (sweep_ok_short or fractal_short),
+            'long': (new_long and (sweep_ok_long or fractal_long)) or cdc_flip_long,
+            'short': (new_short and (sweep_ok_short or fractal_short)) or cdc_flip_short,
         }
     
     def check_trend(self, curr):
@@ -141,10 +200,23 @@ class Strategy_G_Power:
         bos_bull = curr['close'] > curr['last_swing_high'] if pd.notna(curr['last_swing_high']) else False
         super_bull = curr['supertrend_dir'] == 1
         
+        cdc_up = bool(curr.get('cdc_up', True))
+        cdc_down = bool(curr.get('cdc_down', False))
+        
+        if self.config.get("cdc_use", False):
+            cdc_long_ok = cdc_up
+            cdc_short_ok = cdc_down
+        else:
+            cdc_long_ok = True
+            cdc_short_ok = True
+        
         return {
-            'long': price_above_200 and ema_align_bull and ema200_up and (bos_bull or super_bull),
-            'short': (not price_above_200) and ema_align_bear and not ema200_up,
-            'sideway': sideway
+            'long': price_above_200 and ema_align_bull and ema200_up and (bos_bull or super_bull) and cdc_long_ok,
+            'short': (not price_above_200) and ema_align_bear and not ema200_up and cdc_short_ok,
+            'sideway': sideway,
+            'cdc_up': cdc_up,
+            'cdc_down': cdc_down,
+            'cdc_dist': curr.get('cdc_dist_pct', 0)
         }
     
     def check_momentum(self, curr):
@@ -158,7 +230,9 @@ class Strategy_G_Power:
         adx_ok = curr['adx'] > 20 if pd.notna(curr['adx']) else False
         vol_ok = curr['volume'] > curr['vol_avg']*0.8 if pd.notna(curr['vol_avg']) else False
         
+        cdc_strength = abs(curr.get('cdc_dist_pct', 0)) > 0.3
+        
         return {
-            'long': rsi_triple_bull and rsi_not_ob and mfi_bull and obv_bull and adx_ok and vol_ok,
-            'short': rsi_triple_bear and mfi_bear and obv_bear and adx_ok
+            'long': rsi_triple_bull and rsi_not_ob and mfi_bull and obv_bull and adx_ok and vol_ok and cdc_strength,
+            'short': rsi_triple_bear and mfi_bear and obv_bear and adx_ok and cdc_strength
         }
