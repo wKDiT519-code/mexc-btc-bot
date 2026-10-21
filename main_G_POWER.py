@@ -243,17 +243,25 @@ async def telegram_webhook(request: Request):
             pos = calc_position_40()
             auto = get_auto_state()
             price = 0
+            cdc_info = ""
             try:
                 df_result = get_mexc_futures_data()
                 if not isinstance(df_result, tuple):
-                    price = float(df_result.iloc[-1]['close'])
-            except:
-                pass
+                    df_result = strat.add_indicators(df_result)
+                    curr = df_result.iloc[-1]
+                    price = float(curr['close'])
+                    cdc_up = bool(curr.get('cdc_up', False))
+                    cdc_stop = float(curr.get('cdc_stop', 0))
+                    cdc_dist = float(curr.get('cdc_dist_pct', 0))
+                    cdc_trend = "🟢 CDC UPTREND" if cdc_up else "🔴 CDC DOWNTREND"
+                    cdc_info = f"\n<b>📡 CDC:</b> {cdc_trend}\nStop: ${cdc_stop:,.0f} ({cdc_dist:+.2f}%)"
+            except Exception as e:
+                cdc_info = ""
             mexc_info = get_mexc_balance_and_positions()
-            msg = f"""📊 <b>G_POWER CHECK</b>
+            msg = f"""📊 <b>G_POWER + CDC CHECK</b>
 
 💰 <b>ทุนตั้งต้น:</b> ${CAPITAL}
-📈 <b>ราคาปัจจุบัน:</b> ${price:,.0f}
+📈 <b>ราคาปัจจุบัน:</b> ${price:,.0f}{cdc_info}
 
 <b>📜 ผลงาน Paper:</b>
 Trades: {perf['closed_trades']} ปิด | {perf['open_trades']} เปิด
@@ -471,6 +479,13 @@ def live_signal(send_tele: bool = Query(False)):
         pos = calc_position_40()
         auto = get_auto_state()
         
+        # CDC info
+        cdc_up = bool(curr.get('cdc_up', False))
+        cdc_down = bool(curr.get('cdc_down', False))
+        cdc_stop = float(curr.get('cdc_stop', 0))
+        cdc_dist = float(curr.get('cdc_dist_pct', 0))
+        cdc_trend_str = "🟢 UPTREND" if cdc_up else "🔴 DOWNTREND"
+        
         signal = "WAIT"
         if rev['long'] and trend['long'] and mom['long'] and not trend['sideway']:
             signal = "LONG"
@@ -482,17 +497,18 @@ def live_signal(send_tele: bool = Query(False)):
         
         tele_result = None
         if should_send or send_tele:
+            cdc_info = f"CDC: {cdc_trend_str} Stop ${cdc_stop:,.0f}"
             if signal == "LONG":
-                msg = f"🚀 LONG ${price:,.0f}\nPosition ${pos['position_size']:.2f} Margin ${pos['margin_needed']:.2f}\nTP ${price*1.18:,.0f} SL ${price*0.966:,.0f}\n{datetime.now().strftime('%d/%m %H:%M')}"
+                msg = f"🚀 LONG ${price:,.0f}\n{cdc_info}\nPosition ${pos['position_size']:.2f} Margin ${pos['margin_needed']:.2f}\nTP ${price*1.18:,.0f} SL ${price*0.966:,.0f}\n{datetime.now().strftime('%d/%m %H:%M')}"
             elif signal == "SHORT":
-                msg = f"🔻 SHORT ${price:,.0f}\nPosition ${pos['position_size']:.2f} Margin ${pos['margin_needed']:.2f}\nTP ${price*0.82:,.0f} SL ${price*1.034:,.0f}\n{datetime.now().strftime('%d/%m %H:%M')}"
+                msg = f"🔻 SHORT ${price:,.0f}\n{cdc_info}\nPosition ${pos['position_size']:.2f} Margin ${pos['margin_needed']:.2f}\nTP ${price*0.82:,.0f} SL ${price*1.034:,.0f}\n{datetime.now().strftime('%d/%m %H:%M')}"
             else:
-                msg = f"⏳ WAIT ${price:,.0f}\n{datetime.now().strftime('%d/%m %H:%M')}"
+                msg = f"⏳ WAIT ${price:,.0f}\n{cdc_info} ({cdc_dist:+.2f}%)\n{datetime.now().strftime('%d/%m %H:%M')}"
             tele_result = send_telegram(msg)
             if should_send:
                 save_last_signal(signal, price)
         
-        return {"price":price,"signal":signal,"auto":auto['enabled'],"telegram_sent": tele_result is not None}
+        return {"price":price,"signal":signal,"cdc_trend": cdc_trend_str, "cdc_stop": cdc_stop, "cdc_dist": cdc_dist, "auto":auto['enabled'],"telegram_sent": tele_result is not None}
     except Exception as e:
         return {"error": str(e)}
 
