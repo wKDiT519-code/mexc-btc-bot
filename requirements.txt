@@ -1,5 +1,3 @@
-# G_POWER FIXED for Render Python 3.11 - No pandas_ta
-# แก้ Build failed: pandas + pkg_resources
 fastapi
 uvicorn[standard]
 pandas
