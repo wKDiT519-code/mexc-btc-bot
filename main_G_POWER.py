@@ -399,7 +399,9 @@ def dashboard():
         color = "#00ff88" if t.get('result') == 'WIN' else "#ff4444" if t.get('result') == 'LOSS' else "#ffcc00"
         status = t.get('status', 'UNKNOWN')
         pnl = f"{t.get('pnl_usd', 0):+.2f}$" if status == 'CLOSED' else f"{t.get('pnl_usd', 0):+.2f}$ OPEN"
-        trades_html += f"<tr style='border-bottom:1px solid #333'><td style='padding:6px'>{t.get('id')}</td><td style='padding:6px'><span style='background:{color};color:#000;padding:2px 6px;border-radius:4px;font-weight:bold'>{t.get('signal')}</span></td><td style='padding:6px'>${t.get('entry')}</td><td style='padding:6px'>{f\"${t.get('exit')}\" if t.get('exit') else '-'}</td><td style='padding:6px;color:{color}'>{pnl}</td><td style='padding:6px'>{status}</td></tr>"
+        exit_val = t.get('exit')
+        exit_str = f"${exit_val}" if exit_val else "-"
+        trades_html += f"<tr style='border-bottom:1px solid #333'><td style='padding:6px'>{t.get('id')}</td><td style='padding:6px'><span style='background:{color};color:#000;padding:2px 6px;border-radius:4px;font-weight:bold'>{t.get('signal')}</span></td><td style='padding:6px'>${t.get('entry')}</td><td style='padding:6px'>{exit_str}</td><td style='padding:6px;color:{color}'>{pnl}</td><td style='padding:6px'>{status}</td></tr>"
     return f"""
     <html><head><title>Dashboard</title><meta name="viewport" content="width=device-width, initial-scale=1.0">
     <style>body{{background:#0a0e1a;color:#fff;font-family:Arial;padding:15px;margin:0}}
