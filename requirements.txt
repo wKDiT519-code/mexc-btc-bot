@@ -1,5 +1,28 @@
-flask
-ccxt
-pandas
-pytz
-requests
+# G_POWER - BTC Ultimate - Requirement
+# สำหรับ BT 1 ปี กราฟจริง + Render Deploy + Telegram
+
+# Core - BT & Indicators
+pandas==2.0.3
+numpy==1.24.3
+pandas_ta==0.3.14b0
+
+# Exchange - ดึงกราฟจริง Binance 1 ปี 35k แท่ง
+ccxt==4.1.64
+
+# API - Render Deploy
+fastapi==0.104.1
+uvicorn==0.24.0
+pydantic==2.5.0
+
+# Utils
+python-dotenv==1.0.0
+requests==2.31.0
+
+# Telegram Alert & Google Sheet Log (ขั้นต่อไป)
+python-telegram-bot==20.7
+gspread==5.12.0
+oauth2client==4.1.3
+
+# Colab Only (ไม่ต้องใส่ Render)
+# matplotlib==3.8.2
+# plotly==5.17.0
