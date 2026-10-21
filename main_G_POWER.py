@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, Query, Request
 from fastapi.responses import HTMLResponse
 from strategy_G_POWER import Strategy_G_Power
 from datetime import datetime, timedelta
@@ -9,7 +9,7 @@ import json
 import requests
 from pathlib import Path
 
-app = FastAPI(title="G_POWER FUTURES $40 LIVE + TELEGRAM")
+app = FastAPI(title="G_POWER FUTURES $40 LIVE + TELEGRAM INTERACTIVE")
 strat = Strategy_G_Power()
 
 CAPITAL = 40
@@ -20,6 +20,7 @@ strat.config["risk_per_trade"] = RISK_PCT
 
 TRADES_FILE = Path("/tmp/g_power_trades.json")
 LAST_SIGNAL_FILE = Path("/tmp/last_signal.json")
+AUTO_STATE_FILE = Path("/tmp/auto_state.json")
 
 def load_trades():
     if TRADES_FILE.exists():
@@ -53,23 +54,79 @@ def save_last_signal(signal, price):
     except:
         pass
 
-def send_telegram(message):
-    """ส่ง Telegram - ใช้ ENV จาก Render"""
+def get_auto_state():
+    if AUTO_STATE_FILE.exists():
+        try:
+            with open(AUTO_STATE_FILE, 'r') as f:
+                return json.load(f)
+        except:
+            return {"enabled": False, "since": ""}
+    return {"enabled": False, "since": ""}
+
+def set_auto_state(enabled):
+    try:
+        data = {"enabled": enabled, "since": datetime.now().isoformat()}
+        with open(AUTO_STATE_FILE, 'w') as f:
+            json.dump(data, f)
+        return data
+    except:
+        return {"enabled": enabled, "since": datetime.now().isoformat()}
+
+def send_telegram(message, chat_id_override=None):
     token = os.environ.get("TELEGRAM_BOT_TOKEN", "") or os.environ.get("BOT_TOKEN", "") or os.environ.get("TELEGRAM_TOKEN", "")
-    chat_id = os.environ.get("TELEGRAM_CHAT_ID", "") or os.environ.get("CHAT_ID", "") or os.environ.get("TG_CHAT_ID", "")
-    
+    chat_id = chat_id_override or os.environ.get("TELEGRAM_CHAT_ID", "") or os.environ.get("CHAT_ID", "") or os.environ.get("TG_CHAT_ID", "")
     if not token or not chat_id:
-        return {"ok": False, "error": "ยังไม่ได้ตั้ง BOT_TOKEN / CHAT_ID บน Render"}
-    
+        return {"ok": False, "error": "ยังไม่ได้ตั้ง BOT_TOKEN / CHAT_ID"}
     try:
         url = f"https://api.telegram.org/bot{token}/sendMessage"
-        data = {
-            "chat_id": chat_id,
-            "text": message,
-            "parse_mode": "HTML"
-        }
+        data = {"chat_id": chat_id, "text": message, "parse_mode": "HTML"}
         r = requests.post(url, json=data, timeout=10)
         return {"ok": r.status_code == 200, "response": r.json() if r.status_code == 200 else r.text}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+def get_mexc_futures_data():
+    try:
+        try:
+            exchange = ccxt.mexc({"options": {"defaultType": "swap"}})
+            ohlcv = exchange.fetch_ohlcv('BTC/USDT', '15m', limit=250)
+        except:
+            exchange = ccxt.mexc()
+            ohlcv = exchange.fetch_ohlcv('BTC/USDT', '15m', limit=250)
+        df = pd.DataFrame(ohlcv, columns=['timestamp','open','high','low','close','volume'])
+        df['datetime'] = pd.to_datetime(df['timestamp'], unit='ms')
+        return df
+    except Exception as e:
+        return None, str(e)
+
+def get_mexc_balance_and_positions():
+    api_key = os.environ.get("MEXC_API_KEY", "")
+    api_secret = os.environ.get("MEXC_API_SECRET", "")
+    if not api_key or not api_secret:
+        return {"ok": False, "error": "ยังไม่ได้ตั้ง MEXC_API_KEY"}
+    try:
+        exchange = ccxt.mexc({
+            'apiKey': api_key,
+            'secret': api_secret,
+            'options': {'defaultType': 'swap'}
+        })
+        balance = exchange.fetch_balance()
+        positions = []
+        try:
+            positions = exchange.fetch_positions(['BTC/USDT'])
+        except:
+            try:
+                positions = exchange.fetch_positions()
+            except:
+                pass
+        usdt_free = balance.get('USDT', {}).get('free', 0) if isinstance(balance, dict) else 0
+        usdt_total = balance.get('USDT', {}).get('total', 0) if isinstance(balance, dict) else 0
+        return {
+            "ok": True,
+            "usdt_free": usdt_free,
+            "usdt_total": usdt_total,
+            "positions": positions,
+        }
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
@@ -120,20 +177,6 @@ if not TRADES_FILE.exists():
     ]
     save_trades(sample)
 
-def get_mexc_futures_data():
-    try:
-        try:
-            exchange = ccxt.mexc({"options": {"defaultType": "swap"}})
-            ohlcv = exchange.fetch_ohlcv('BTC/USDT', '15m', limit=250)
-        except:
-            exchange = ccxt.mexc()
-            ohlcv = exchange.fetch_ohlcv('BTC/USDT', '15m', limit=250)
-        df = pd.DataFrame(ohlcv, columns=['timestamp','open','high','low','close','volume'])
-        df['datetime'] = pd.to_datetime(df['timestamp'], unit='ms')
-        return df
-    except Exception as e:
-        return None, str(e)
-
 def calc_position_40():
     risk_amount = CAPITAL * RISK_PCT
     pos_size = risk_amount / 0.034
@@ -152,11 +195,153 @@ def calc_position_40():
         "loss_if_sl": risk_amount
     }
 
+@app.post("/telegram/webhook")
+async def telegram_webhook(request: Request):
+    try:
+        data = await request.json()
+        message = data.get('message', {}) or data.get('edited_message', {})
+        chat = message.get('chat', {})
+        chat_id = str(chat.get('id', ''))
+        text = message.get('text', '').strip()
+        allowed_chat = os.environ.get("CHAT_ID", "") or os.environ.get("TELEGRAM_CHAT_ID", "")
+        if allowed_chat and chat_id != str(allowed_chat):
+            return {"ok": False, "error": "chat_id not allowed"}
+        if not text:
+            return {"ok": True}
+        text_lower = text.lower()
+        
+        if text_lower.startswith('/check') or text_lower.startswith('/status') or text_lower == 'check':
+            perf = calc_performance()
+            pos = calc_position_40()
+            auto = get_auto_state()
+            price = 0
+            try:
+                df_result = get_mexc_futures_data()
+                if not isinstance(df_result, tuple):
+                    price = float(df_result.iloc[-1]['close'])
+            except:
+                pass
+            mexc_info = get_mexc_balance_and_positions()
+            msg = f"""📊 <b>G_POWER CHECK</b>
+
+💰 <b>ทุนตั้งต้น:</b> ${CAPITAL}
+📈 <b>ราคาปัจจุบัน:</b> ${price:,.0f}
+
+<b>📜 ผลงาน Paper:</b>
+Trades: {perf['closed_trades']} ปิด | {perf['open_trades']} เปิด
+Win Rate: {perf['win_rate']}% ({perf['win']}W/{perf['loss']}L)
+PnL รวม: ${perf['total_pnl_usd']:+.2f}
+Expectancy: ${perf['expectancy']}/ไม้
+
+<b>💵 Risk:</b> ${pos['risk_amount']:.2f}/ไม้ | Position ${pos['position_size']:.2f} | Margin ${pos['margin_needed']:.2f} (3x)
+
+<b>🤖 Auto:</b> {'🟢 ON' if auto['enabled'] else '🔴 OFF'}
+"""
+            if mexc_info.get('ok'):
+                msg += f"""
+<b>🏦 MEXC จริง:</b>
+USDT Free: {mexc_info.get('usdt_free')}
+USDT Total: {mexc_info.get('usdt_total')}
+Positions: {len(mexc_info.get('positions', []))} ไม้
+"""
+                for p in mexc_info.get('positions', [])[:2]:
+                    try:
+                        side = p.get('side', '?')
+                        entry = p.get('entryPrice', 0)
+                        pnl = p.get('unrealizedPnl', 0)
+                        msg += f"{side} Entry ${entry} PnL ${pnl}\n"
+                    except:
+                        pass
+            else:
+                msg += f"\n<b>MEXC:</b> {mexc_info.get('error','ไม่ได้ต่อ API')}"
+            msg += f"\n\n⏰ {datetime.now().strftime('%d/%m %H:%M')}"
+            send_telegram(msg, chat_id)
+            return {"ok": True, "command": "check"}
+        
+        elif text_lower.startswith('/on'):
+            state = set_auto_state(True)
+            msg = f"""🟢 <b>Auto ON แล้ว</b>
+
+บอทจะส่งสัญญาณ LONG/SHORT อัตโนมัติ
+
+ทุน $40 | 3x Isolated | SL 3.4% TP 18%
+
+พิมพ์ /off เพื่อปิด
+⏰ {datetime.now().strftime('%d/%m %H:%M')}"""
+            send_telegram(msg, chat_id)
+            return {"ok": True, "command": "on"}
+        
+        elif text_lower.startswith('/off'):
+            state = set_auto_state(False)
+            msg = f"""🔴 <b>Auto OFF แล้ว</b>
+
+บอทหยุดส่งสัญญาณอัตโนมัติ
+พิมพ์ /check หรือ /on เพื่อดู/เปิดใหม่
+
+⏰ {datetime.now().strftime('%d/%m %H:%M')}"""
+            send_telegram(msg, chat_id)
+            return {"ok": True, "command": "off"}
+        
+        elif text_lower.startswith('/help') or text_lower.startswith('/start'):
+            msg = f"""⚡ <b>G_POWER BOT $40</b>
+
+<b>คำสั่ง:</b>
+/check - ดูสถานะ กำไร ทุน ออเดอร์
+/on - เปิดรันออโต้
+/off - ปิดรันออโต้
+
+Dashboard: https://mexc-btc-bot.onrender.com/dashboard
+
+ทุน $40 | 3x | SL 3.4% TP 18%"""
+            send_telegram(msg, chat_id)
+            return {"ok": True, "command": "help"}
+        
+        else:
+            msg = f"""❓ ไม่เข้าใจ: {text}
+
+พิมพ์:
+/check - ดูสถานะ
+/on - เปิดออโต้
+/off - ปิดออโต้
+/help - ดูคำสั่ง"""
+            send_telegram(msg, chat_id)
+            return {"ok": True, "command": "unknown"}
+            
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+@app.get("/telegram/setwebhook")
+def set_webhook():
+    token = os.environ.get("BOT_TOKEN", "") or os.environ.get("TELEGRAM_BOT_TOKEN", "")
+    if not token:
+        return {"ok": False, "error": "ไม่มี BOT_TOKEN"}
+    base_url = os.environ.get("RENDER_EXTERNAL_URL", "") or "https://mexc-btc-bot.onrender.com"
+    webhook_url = f"{base_url}/telegram/webhook"
+    try:
+        url = f"https://api.telegram.org/bot{token}/setWebhook"
+        r = requests.post(url, json={"url": webhook_url}, timeout=10)
+        return {"ok": True, "webhook_url": webhook_url, "telegram_response": r.json()}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+@app.get("/telegram/info")
+def telegram_info():
+    token = os.environ.get("BOT_TOKEN", "") or os.environ.get("TELEGRAM_BOT_TOKEN", "")
+    if not token:
+        return {"ok": False, "error": "ไม่มี BOT_TOKEN"}
+    try:
+        r = requests.get(f"https://api.telegram.org/bot{token}/getWebhookInfo", timeout=10)
+        return r.json()
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
 @app.get("/", response_class=HTMLResponse)
 def home():
     pos = calc_position_40()
     perf = calc_performance()
+    auto = get_auto_state()
     tele_status = "✅ ตั้งแล้ว" if (os.environ.get("TELEGRAM_BOT_TOKEN") or os.environ.get("BOT_TOKEN")) else "❌ ยังไม่ได้ตั้ง"
+    auto_status = "🟢 ON" if auto['enabled'] else "🔴 OFF"
     return f"""
     <html><head><title>G_POWER TELE $40</title>
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -170,60 +355,45 @@ def home():
     .stat div{{background:#0f172a;padding:10px;border-radius:8px;text-align:center}}
     .stat b{{font-size:18px;display:block}}
     </style></head><body>
-    <h1>⚡ G_POWER TELE $40 LIVE</h1>
+    <h1>⚡ G_POWER TELE $40</h1>
     <div class="stat">
         <div><b style="color:{'#00ff88' if perf['total_pnl_usd']>=0 else '#ff4444'}">${perf['total_pnl_usd']:+.2f}</b>PnL</div>
         <div><b>{perf['win_rate']}%</b>Win Rate</div>
-        <div><b>{perf['closed_trades']}</b>Trades</div>
-        <div><b>{tele_status}</b>Telegram</div>
+        <div><b>{auto_status}</b>Auto</div>
+        <div><b>{tele_status}</b>Tele</div>
     </div>
     <div class="card green">
-    <h3>💰 ทุน ${CAPITAL} Futures 3x</h3>
+    <h3>💰 ทุน ${CAPITAL} Futures 3x | Auto {auto_status}</h3>
     <p>เสี่ยง: <b>{pos['risk_pct']}% = ${pos['risk_amount']:.2f}</b> | Position: <b>${pos['position_size']:.2f}</b> | Margin: <b>${pos['margin_needed']:.2f}</b></p>
-    <p>TP 18%: <b>+${pos['profit_if_tp']:.2f}</b> | SL 3.4%: <b>-${pos['loss_if_sl']:.2f}</b></p>
     </div>
-    <a class="btn" href="/dashboard">📊 ดูผลงาน</a>
-    <a class="btn" href="/live" style="background:#1a2332;color:#ffcc00;border:1px solid #ffcc00">📡 สัญญาณตอนนี้ + ส่ง Tele</a>
-    <a class="btn" href="/telegram/test" style="background:#1a2332;color:#00aaff;border:1px solid #00aaff">✈️ ทดสอบ Telegram</a>
-    <p style="font-size:11px;color:#888">ตั้ง ENV บน Render: TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID</p>
+    <div class="card blue">
+    <h3>📱 คำสั่ง Telegram</h3>
+    <p>/check - ดูสถานะ กำไร ทุน ออเดอร์</p>
+    <p>/on - เปิดรันออโต้</p>
+    <p>/off - ปิดรันออโต้</p>
+    </div>
+    <a class="btn" href="/dashboard">📊 Dashboard</a>
+    <a class="btn" href="/live?send_tele=true" style="background:#1a2332;color:#ffcc00;border:1px solid #ffcc00">📡 สัญญาณ + ส่ง Tele</a>
+    <a class="btn" href="/telegram/setwebhook" style="background:#1a2332;color:#00aaff;border:1px solid #00aaff">🔗 ตั้ง Webhook Tele</a>
+    <a class="btn" href="/telegram/test" style="background:#1a2332;color:#fff;border:1px solid #333">✈️ เทส Tele</a>
     </body></html>
     """
 
 @app.get("/telegram/test")
 def telegram_test():
-    """ทดสอบส่ง Telegram"""
-    token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
-    chat_id = os.environ.get("TELEGRAM_CHAT_ID", "")
-    
+    token = os.environ.get("BOT_TOKEN", "") or os.environ.get("TELEGRAM_BOT_TOKEN", "")
+    chat_id = os.environ.get("CHAT_ID", "") or os.environ.get("TELEGRAM_CHAT_ID", "")
     if not token or not chat_id:
-        return {
-            "ok": False,
-            "error": "ยังไม่ได้ตั้ง ENV บน Render",
-            "how_to": "Render Dashboard -> Environment -> Add: TELEGRAM_BOT_TOKEN และ TELEGRAM_CHAT_ID",
-            "current": {"has_token": bool(token), "has_chat_id": bool(chat_id)}
-        }
-    
-    msg = f"""⚡ G_POWER TEST
-
-✅ Telegram ต่อแล้ว!
-ทุน $40 Futures 3x
-เวลา {datetime.now().strftime('%d/%m %H:%M')}
-
-ทดสอบส่งจาก Render สำเร็จ
-"""
+        return {"ok": False, "error": "ไม่มี BOT_TOKEN/CHAT_ID"}
+    msg = f"⚡ G_POWER TEST\n\n✅ ต่อ Tele แล้ว!\nทุน $40 Futures 3x\n{datetime.now().strftime('%d/%m %H:%M')}"
     result = send_telegram(msg)
-    return {"ok": result['ok'], "telegram_response": result, "message_sent": msg}
-
-@app.get("/telegram/send")
-def telegram_send(msg: str = Query(..., description="ข้อความที่จะส่ง")):
-    """ส่งข้อความ Telegram แบบกำหนดเอง"""
-    result = send_telegram(msg)
-    return result
+    return {"ok": result['ok'], "result": result}
 
 @app.get("/dashboard", response_class=HTMLResponse)
 def dashboard():
     perf = calc_performance()
     pos = calc_position_40()
+    auto = get_auto_state()
     trades_html = ""
     for t in reversed(perf['trades'][-10:]):
         color = "#00ff88" if t.get('result') == 'WIN' else "#ff4444" if t.get('result') == 'LOSS' else "#ffcc00"
@@ -231,10 +401,9 @@ def dashboard():
         pnl = f"{t.get('pnl_usd', 0):+.2f}$" if status == 'CLOSED' else f"{t.get('pnl_usd', 0):+.2f}$ OPEN"
         trades_html += f"<tr style='border-bottom:1px solid #333'><td style='padding:6px'>{t.get('id')}</td><td style='padding:6px'><span style='background:{color};color:#000;padding:2px 6px;border-radius:4px;font-weight:bold'>{t.get('signal')}</span></td><td style='padding:6px'>${t.get('entry')}</td><td style='padding:6px'>{f\"${t.get('exit')}\" if t.get('exit') else '-'}</td><td style='padding:6px;color:{color}'>{pnl}</td><td style='padding:6px'>{status}</td></tr>"
     return f"""
-    <html><head><title>Dashboard $40</title><meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <html><head><title>Dashboard</title><meta name="viewport" content="width=device-width, initial-scale=1.0">
     <style>body{{background:#0a0e1a;color:#fff;font-family:Arial;padding:15px;margin:0}}
     .card{{background:#1a2332;padding:12px;border-radius:12px;margin:8px 0;border-left:4px solid #ffcc00}}
-    .green{{border-left-color:#00ff88}}.blue{{border-left-color:#00aaff}}
     h1{{color:#ffcc00;font-size:18px}}b{{color:#ffcc00}}
     .stat{{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:8px 0}}
     .stat div{{background:#0f172a;padding:10px;border-radius:8px;text-align:center}}
@@ -242,45 +411,21 @@ def dashboard():
     table{{width:100%;font-size:11px;border-collapse:collapse}}
     .btn{{background:#ffcc00;color:#000;border:0;padding:8px 12px;border-radius:6px;font-weight:bold;text-decoration:none;display:inline-block;margin:3px;font-size:11px}}
     .btn2{{background:#1a2332;color:#ffcc00;border:1px solid #ffcc00}}</style></head><body>
-    <h1>📊 G_POWER Dashboard $40</h1>
+    <h1>📊 Dashboard - Auto {'🟢 ON' if auto['enabled'] else '🔴 OFF'}</h1>
     <div class="stat">
-        <div><b style="color:{'#00ff88' if perf['total_pnl_usd']>=0 else '#ff4444'}">${perf['total_pnl_usd']:+.2f}</b>PnL รวม</div>
+        <div><b style="color:{'#00ff88' if perf['total_pnl_usd']>=0 else '#ff4444'}">${perf['total_pnl_usd']:+.2f}</b>PnL</div>
         <div><b>{perf['win_rate']}%</b>Win Rate</div>
-        <div><b>{perf['closed_trades']}</b>ปิดแล้ว</div>
-        <div><b>{perf['win']}/{perf['loss']}</b>WIN/LOSS</div>
+        <div><b>{perf['closed_trades']}</b>ปิด</div>
+        <div><b>{perf['win']}/{perf['loss']}</b>W/L</div>
     </div>
-    <div class="card"><h3>📜 10 ไม้ล่าสุด</h3><table><tr style="background:#0f172a"><th>ID</th><th>Signal</th><th>Entry</th><th>Exit</th><th>PnL</th><th>Status</th></tr>{trades_html}</table></div>
-    <a class="btn" href="/live">📡 สัญญาณ + Tele</a>
-    <a class="btn btn2" href="/telegram/test">✈️ Test Tele</a>
+    <div class="card"><table><tr style="background:#0f172a"><th>ID</th><th>Signal</th><th>Entry</th><th>Exit</th><th>PnL</th><th>Status</th></tr>{trades_html}</table></div>
+    <a class="btn" href="/live">📡 สัญญาณ</a>
     <a class="btn btn2" href="/">🏠 หน้าแรก</a>
     </body></html>
     """
 
-@app.get("/performance")
-def performance():
-    perf = calc_performance()
-    pos = calc_position_40()
-    return {
-        "capital": f"${CAPITAL}",
-        "summary": {
-            "total_trades": perf['total_trades'],
-            "win_rate": f"{perf['win_rate']}%",
-            "total_pnl_usd": f"${perf['total_pnl_usd']}",
-        },
-        "telegram": "✅ ตั้งแล้ว" if (os.environ.get("TELEGRAM_BOT_TOKEN") or os.environ.get("BOT_TOKEN")) else "❌ ยังไม่ได้ตั้ง ENV"
-    }
-
-@app.get("/trades")
-def trades_list():
-    perf = calc_performance()
-    return {"performance": {"win_rate": f"{perf['win_rate']}%", "pnl": f"${perf['total_pnl_usd']}"}, "trades": perf['trades'][-20:][::-1]}
-
-@app.get("/health")
-def health():
-    return {"status":"OK","capital":CAPITAL,"leverage":LEVERAGE,"telegram": bool(os.environ.get("TELEGRAM_BOT_TOKEN") or os.environ.get("BOT_TOKEN")), "time":datetime.now().isoformat()}
-
 @app.get("/live")
-def live_signal(send_tele: bool = Query(False, description="ส่ง Telegram ด้วยไหม?")):
+def live_signal(send_tele: bool = Query(False)):
     try:
         result = get_mexc_futures_data()
         if isinstance(result, tuple):
@@ -294,6 +439,7 @@ def live_signal(send_tele: bool = Query(False, description="ส่ง Telegram �
         mom = strat.check_momentum(curr)
         price = float(curr['close'])
         pos = calc_position_40()
+        auto = get_auto_state()
         
         signal = "WAIT"
         if rev['long'] and trend['long'] and mom['long'] and not trend['sideway']:
@@ -302,72 +448,27 @@ def live_signal(send_tele: bool = Query(False, description="ส่ง Telegram �
             signal = "SHORT"
         
         last = get_last_signal()
-        should_send = signal != last.get('signal') and signal != "WAIT"
+        should_send = (signal != last.get('signal') and signal != "WAIT" and auto['enabled'])
         
         tele_result = None
         if should_send or send_tele:
             if signal == "LONG":
-                msg = f"""🚀 G_POWER LONG SIGNAL
-
-💰 ราคา: ${price:,.0f}
-📊 สัญญาณ: LONG (Buy)
-💵 ทุน $40 | Position ${pos['position_size']:.2f}
-🔒 Margin 3x: ${pos['margin_needed']:.2f}
-
-🎯 TP 18%: ${price*1.18:,.0f} (+${pos['profit_if_tp']:.2f})
-🛑 SL 3.4%: ${price*0.966:,.0f} (-${pos['loss_if_sl']:.2f})
-
-EMA12x26 Cross + Sweep + Fractal
-Trend >EMA200 + ADX20
-
-เวลา: {datetime.now().strftime('%d/%m %H:%M')}
-"""
+                msg = f"🚀 LONG ${price:,.0f}\nPosition ${pos['position_size']:.2f} Margin ${pos['margin_needed']:.2f}\nTP ${price*1.18:,.0f} SL ${price*0.966:,.0f}\n{datetime.now().strftime('%d/%m %H:%M')}"
             elif signal == "SHORT":
-                msg = f"""🔻 G_POWER SHORT SIGNAL
-
-💰 ราคา: ${price:,.0f}
-📊 สัญญาณ: SHORT (Sell)
-💵 ทุน $40 | Position ${pos['position_size']:.2f}
-🔒 Margin 3x: ${pos['margin_needed']:.2f}
-
-🎯 TP 18%: ${price*0.82:,.0f} (+${pos['profit_if_tp']:.2f})
-🛑 SL 3.4%: ${price*1.034:,.0f} (-${pos['loss_if_sl']:.2f})
-
-เวลา: {datetime.now().strftime('%d/%m %H:%M')}
-"""
+                msg = f"🔻 SHORT ${price:,.0f}\nPosition ${pos['position_size']:.2f} Margin ${pos['margin_needed']:.2f}\nTP ${price*0.82:,.0f} SL ${price*1.034:,.0f}\n{datetime.now().strftime('%d/%m %H:%M')}"
             else:
-                msg = f"""⏳ G_POWER WAIT
-
-ราคา ${price:,.0f} - รอสัญญาณ
-ยังไม่เข้าเงื่อนไข EMA+Sweep
-
-เวลา {datetime.now().strftime('%d/%m %H:%M')}
-"""
+                msg = f"⏳ WAIT ${price:,.0f}\n{datetime.now().strftime('%d/%m %H:%M')}"
             tele_result = send_telegram(msg)
             if should_send:
                 save_last_signal(signal, price)
         
-        return {
-            "exchange":"MEXC",
-            "price":price,
-            "signal":signal,
-            "last_signal": last.get('signal'),
-            "telegram_sent": tele_result is not None,
-            "telegram_result": tele_result,
-            "position_for_40": {"size": f"${pos['position_size']:.2f}","margin_3x": f"${pos['margin_needed']:.2f}"}
-        }
+        return {"price":price,"signal":signal,"auto":auto['enabled'],"telegram_sent": tele_result is not None}
     except Exception as e:
         return {"error": str(e)}
 
-@app.get("/calc")
-def calc():
-    pos = calc_position_40()
-    return {"capital": f"${CAPITAL}","leverage": f"{LEVERAGE}x","position_size": f"${pos['position_size']:.2f}","margin": f"${pos['margin_needed']:.2f}"}
-
-@app.get("/signal")
-def signal():
-    pos = calc_position_40()
-    return {"strategy":"G_POWER_FUTURES_40","capital":CAPITAL,"time":datetime.now().isoformat(),"telegram": bool(os.environ.get("TELEGRAM_BOT_TOKEN"))}
+@app.get("/health")
+def health():
+    return {"status":"OK","capital":CAPITAL,"auto": get_auto_state()['enabled'], "telegram": bool(os.environ.get("BOT_TOKEN") or os.environ.get("TELEGRAM_BOT_TOKEN"))}
 
 if __name__ == "__main__":
     import uvicorn
