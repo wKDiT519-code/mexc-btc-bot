@@ -103,24 +103,46 @@ def get_mexc_balance_and_positions():
     api_key = os.environ.get("MEXC_API_KEY", "")
     api_secret = os.environ.get("MEXC_API_SECRET", "")
     if not api_key or not api_secret:
-        return {"ok": False, "error": "ยังไม่ได้ตั้ง MEXC_API_KEY"}
+        return {"ok": False, "error": "ไม่ได้ตั้ง MEXC API"}
     try:
+        # ลองแบบ Futures ก่อน
         exchange = ccxt.mexc({
             'apiKey': api_key,
             'secret': api_secret,
-            'options': {'defaultType': 'swap'}
+            'options': {'defaultType': 'swap'},
+            'enableRateLimit': True,
         })
-        balance = exchange.fetch_balance()
+        # ดึง positions ก่อน (สำคัญกว่า balance)
         positions = []
         try:
-            positions = exchange.fetch_positions(['BTC/USDT'])
+            positions = exchange.fetch_positions(['BTC/USDT:USDT'])
         except:
             try:
-                positions = exchange.fetch_positions()
+                positions = exchange.fetch_positions(['BTC/USDT'])
+            except:
+                try:
+                    positions = exchange.fetch_positions()
+                except:
+                    positions = []
+        
+        # ดึง balance แบบไม่ให้ error ยาว
+        usdt_free = 0
+        usdt_total = 0
+        try:
+            balance = exchange.fetch_balance({'type': 'swap'})
+            if isinstance(balance, dict):
+                usdt_free = balance.get('USDT', {}).get('free', 0) or balance.get('free', {}).get('USDT', 0)
+                usdt_total = balance.get('USDT', {}).get('total', 0) or balance.get('total', {}).get('USDT', 0)
+        except:
+            # ถ้าไม่ได้ ลองแบบปกติ
+            try:
+                balance = exchange.fetch_balance()
+                if isinstance(balance, dict):
+                    usdt_free = balance.get('USDT', {}).get('free', 0)
+                    usdt_total = balance.get('USDT', {}).get('total', 0)
             except:
                 pass
-        usdt_free = balance.get('USDT', {}).get('free', 0) if isinstance(balance, dict) else 0
-        usdt_total = balance.get('USDT', {}).get('total', 0) if isinstance(balance, dict) else 0
+        
         return {
             "ok": True,
             "usdt_free": usdt_free,
@@ -128,7 +150,13 @@ def get_mexc_balance_and_positions():
             "positions": positions,
         }
     except Exception as e:
-        return {"ok": False, "error": str(e)}
+        # ตัด error ไม่ให้โชว์ URL ยาว
+        err = str(e)
+        if 'https://' in err:
+            err = err.split('https://')[0][:100]
+        if len(err) > 120:
+            err = err[:120] + "..."
+        return {"ok": False, "error": err[:80]}
 
 def calc_performance():
     trades = load_trades()
