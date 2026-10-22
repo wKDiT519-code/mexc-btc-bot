@@ -145,35 +145,70 @@ def get_mexc_data(symbol='BTC/USDT'):
     except Exception as e:
         return None,str(e)
 
+def get_mexc_futures_balance_direct():
+    """เรียกตรง contract.mexc.com เพื่อเลี่ยงบั๊ก ccxt capital/config/getAll"""
+    key=os.environ.get("MEXC_API_KEY"); sec=os.environ.get("MEXC_API_SECRET")
+    if not key or not sec: return None
+    try:
+        import hmac, hashlib
+        import time as _time
+        ts = str(int(_time.time()*1000))
+        # MEXC contract sign = HMAC_SHA256(secret, apiKey + timestamp)
+        msg = (key + ts).encode()
+        sign = hmac.new(sec.encode(), msg, hashlib.sha256).hexdigest()
+        headers = {"ApiKey": key, "Request-Time": ts, "Signature": sign, "Content-Type": "application/json"}
+        # endpoint Futures assets
+        url = "https://contract.mexc.com/api/v1/private/account/assets"
+        r = requests.get(url, headers=headers, timeout=10)
+        j = r.json()
+        # ตัวอย่าง: {"success":true,"code":0,"data":[{"currency":"USDT","availableBalance":38.27,"equity":38.27}]}
+        if isinstance(j, dict):
+            data = j.get("data", [])
+            if isinstance(data, list):
+                for item in data:
+                    if isinstance(item, dict) and item.get("currency")=="USDT":
+                        avail = float(item.get("availableBalance",0) or item.get("available",0) or 0)
+                        eq = float(item.get("equity",0) or avail)
+                        return {"free": avail, "total": eq, "raw": item}
+            # บางเวอร์ชั่น data เป็น dict
+            if isinstance(data, dict) and data.get("currency")=="USDT":
+                avail = float(data.get("availableBalance",0) or 0)
+                eq = float(data.get("equity",0) or avail)
+                return {"free": avail, "total": eq, "raw": data}
+    except Exception as e:
+        print(f"direct balance err {e}")
+    return None
+
 def get_balance():
     key=os.environ.get("MEXC_API_KEY"); sec=os.environ.get("MEXC_API_SECRET")
     if not key or not sec: return {"ok":False,"error":"No API key - ใส่ใน Render ENV"}
+    # 1. ลองเรียกตรง Futures ก่อน จะได้ 38.27 จริง
+    direct = get_mexc_futures_balance_direct()
+    pos=[]
     try:
         ex=ccxt.mexc({'apiKey':key,'secret':sec,'options':{'defaultType':'swap'},'enableRateLimit':True})
-        # positions แยก try ไม่ให้ balance พังแล้ว positions หาย
-        pos=[]
-        try:
-            pos=ex.fetch_positions(['BTC/USDT:USDT'])
+        try: pos=ex.fetch_positions(['BTC/USDT:USDT'])
         except:
             try: pos=ex.fetch_positions()
             except: pos=[]
-        free=0; total=0
-        bal=None
-        # ลอง 3 แบบ กัน MEXC error capital/config/getAll
+    except: ex=None
+
+    if direct:
+        return {"ok":True,"usdt_free":direct["free"],"usdt_total":direct["total"],"positions":pos}
+
+    # 2. fallback ccxt แบบเดิม กัน capital/config/getAll
+    try:
+        if not ex: ex=ccxt.mexc({'apiKey':key,'secret':sec,'options':{'defaultType':'swap'},'enableRateLimit':True})
+        free=0; total=0; bal=None
         for attempt in [{'type':'swap'}, {}, {'type':'future'}]:
             try:
-                if attempt:
-                    bal=ex.fetch_balance(attempt)
-                else:
-                    bal=ex.fetch_balance()
+                if attempt: bal=ex.fetch_balance(attempt)
+                else: bal=ex.fetch_balance()
                 break
             except Exception as e:
-                # ถ้า error เป็น capital/config/getAll ให้ข้าม ไม่ต้องโชว์ error ยาว
                 err=str(e)
-                if 'capital/config/getAll' in err or 'capital/config/getall' in err.lower():
-                    continue
-                if attempt == {'type':'future'}:
-                    bal=None
+                if 'capital/config/getAll' in err or 'capital/config/getall' in err.lower(): continue
+                if attempt == {'type':'future'}: bal=None
         if bal:
             try:
                 if 'USDT' in bal and isinstance(bal['USDT'],dict):
@@ -182,25 +217,12 @@ def get_balance():
                 elif 'free' in bal and isinstance(bal['free'],dict):
                     free=bal['free'].get('USDT',0) or 0
                     total=bal.get('total',{}).get('USDT',0) or free
-                else:
-                    # ลองอ่านจาก info
-                    info=bal.get('info',{}) if isinstance(bal,dict) else {}
-                    if isinstance(info,dict) and 'data' in info:
-                        data=info['data']
-                        if isinstance(data,list):
-                            for item in data:
-                                if isinstance(item,dict) and item.get('currency')=='USDT':
-                                    free=float(item.get('availableBalance',0) or 0)
-                                    total=float(item.get('equity',0) or free)
             except: pass
-        # ถ้าได้ positions แต่ไม่ได้ balance ก็ถือว่า ok แบบเตือน
-        if free==0 and total==0 and pos:
-            return {"ok":True,"usdt_free":0,"usdt_total":0,"positions":pos,"warn":"Balance API ขัดข้อง แต่เห็น Position"}
         return {"ok":True,"usdt_free":float(free),"usdt_total":float(total),"positions":pos}
     except Exception as e:
         err=str(e)
         if 'capital/config/getAll' in err:
-            return {"ok":True,"usdt_free":0,"usdt_total":0,"positions":[],"warn":"MEXC capital/config/getAll error - เช็ค API Permission Futures"}
+            return {"ok":True,"usdt_free":0,"usdt_total":0,"positions":pos,"warn":"MEXC capital/config/getAll - ลองเรียกตรงแล้ว"}
         return {"ok":False,"error":err[:150]}
 
 # === REAL ORDER 100% ===
