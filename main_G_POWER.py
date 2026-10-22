@@ -130,7 +130,7 @@ def send_telegram(message, chat_id_override=None):
 
 # === MEXC ===
 def get_exchange():
-    key=os.environ.get("MEXC_API_KEY"); sec=os.environ.get("MEXC_API_SECRET")
+    key=(os.environ.get("MEXC_API_KEY") or "").strip(); sec=(os.environ.get("MEXC_API_SECRET") or "").strip()
     if not key or not sec: return None,"No MEXC_API_KEY/SECRET"
     try: return ccxt.mexc({'apiKey':key,'secret':sec,'options':{'defaultType':'swap'},'enableRateLimit':True}),None
     except Exception as e: return None,str(e)
@@ -147,14 +147,15 @@ def get_mexc_data(symbol='BTC/USDT'):
 
 def get_mexc_futures_balance_direct():
     """เรียกตรง contract.mexc.com เพื่อเลี่ยงบั๊ก ccxt capital/config/getAll - จะได้ 38.27 จริง"""
-    key=os.environ.get("MEXC_API_KEY"); sec=os.environ.get("MEXC_API_SECRET")
+    key=(os.environ.get("MEXC_API_KEY") or "").strip(); sec=(os.environ.get("MEXC_API_SECRET") or "").strip()
     if not key or not sec: return None
     try:
         import hmac, hashlib, time as _time
         ts = str(int(_time.time()*1000))
         msg = (key + ts).encode()
         sign = hmac.new(sec.encode(), msg, hashlib.sha256).hexdigest()
-        headers = {"ApiKey": key, "Request-Time": ts, "Signature": sign, "Content-Type": "application/json"}
+        # strip ทุก header กัน \n
+        headers = {"ApiKey": key.strip(), "Request-Time": ts.strip(), "Signature": sign.strip(), "Content-Type": "application/json"}
         url = "https://contract.mexc.com/api/v1/private/account/assets"
         r = requests.get(url, headers=headers, timeout=10)
         j = r.json()
@@ -173,7 +174,7 @@ def get_mexc_futures_balance_direct():
     return None
 
 def get_balance():
-    key=os.environ.get("MEXC_API_KEY"); sec=os.environ.get("MEXC_API_SECRET")
+    key=(os.environ.get("MEXC_API_KEY") or "").strip(); sec=(os.environ.get("MEXC_API_SECRET") or "").strip()
     if not key or not sec: return {"ok":False,"error":"No API key - ใส่ใน Render ENV"}
     # 1. ลองเรียกตรง Futures ก่อน จะได้ 38.27
     try:
@@ -408,7 +409,7 @@ def teleinfo():
     try: r=requests.get(f"https://api.telegram.org/bot{token}/getWebhookInfo", timeout=10); return r.json()
     except Exception as e: return {"ok":False}
 
-@app.get("/", response_class=HTMLResponse)
+@app.api_route("/", methods=["GET","HEAD"], response_class=HTMLResponse)
 def home():
     perf=calc_performance(); pos=calc_position(); auto=get_auto_state(); bal=get_balance(); last=get_last_trade()
     real=os.environ.get("REAL_TRADE","false")
