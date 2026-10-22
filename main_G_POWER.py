@@ -158,6 +158,7 @@ def get_mexc_futures_balance_direct():
         headers = {"ApiKey": key.strip(), "Request-Time": ts.strip(), "Signature": sign.strip(), "Content-Type": "application/json"}
         url = "https://contract.mexc.com/api/v1/private/account/assets"
         r = requests.get(url, headers=headers, timeout=10)
+        if not r.text: return None
         j = r.json()
         if isinstance(j, dict):
             data = j.get("data", [])
@@ -166,11 +167,13 @@ def get_mexc_futures_balance_direct():
                     if isinstance(item, dict) and item.get("currency")=="USDT":
                         avail = float(item.get("availableBalance",0) or item.get("available",0) or 0)
                         eq = float(item.get("equity",0) or avail)
-                        return {"free": avail, "total": eq}
+                        if avail>0 or eq>0:
+                            return {"free": avail, "total": eq}
             if isinstance(data, dict) and data.get("currency")=="USDT":
                 return {"free": float(data.get("availableBalance",0) or 0), "total": float(data.get("equity",0) or 0)}
     except Exception as e:
-        print(f"direct balance err {e}")
+        # ไม่ print error รก log แล้ว ให้ fallback ไป ccxt
+        pass
     return None
 
 def get_balance():
@@ -257,14 +260,23 @@ def close_positions(ex, symbol='BTC/USDT:USDT'):
                 except: amt=0
             if abs(amt)>0.000001:
                 side='sell' if amt>0 or p.get('side')=='long' else 'buy'
+                # ลองปิดด้วย contracts ก่อน
                 try:
-                    o=ex.create_order(symbol,'market',side,abs(amt),None,{'reduceOnly':True})
+                    o=ex.create_order(symbol,'market',side,abs(amt),None,{'reduceOnly':True,'openType':2})
                     closed.append(side)
-                except:
-                    try: o=ex.create_order(symbol,'market',side,abs(amt)); closed.append(side)
-                    except Exception as e: return {"ok":False,"error":str(e)}
+                    print(f"[CLOSE OK] {side} {abs(amt)}")
+                except Exception as e1:
+                    print(f"[CLOSE FAIL] {e1}")
+                    try: 
+                        o=ex.create_order(symbol,'market',side,abs(amt))
+                        closed.append(side)
+                    except Exception as e2: 
+                        print(f"[CLOSE FAIL2] {e2}")
+                        return {"ok":False,"error":str(e2)}
         return {"ok":True,"closed":closed}
-    except Exception as e: return {"ok":False,"error":str(e)}
+    except Exception as e: 
+        print(f"close_positions err {e}")
+        return {"ok":False,"error":str(e)}
 
 def place_order(symbol, signal, price):
     real=os.environ.get("REAL_TRADE","false").lower() in ["true","1","yes","on"]
@@ -273,24 +285,68 @@ def place_order(symbol, signal, price):
     ex,err=get_exchange()
     if not ex: return {"ok":False,"error":err}
     try:
-        try: ex.set_leverage(LEVERAGE,symbol)
+        # 1. Set leverage Cross + One-way
+        try: 
+            ex.set_leverage(LEVERAGE,symbol,{'openType':2})  # 2=Cross
+        except Exception as le:
+            try: ex.set_leverage(LEVERAGE,symbol)
+            except: print(f"leverage err {le}")
+        try:
+            # one-way mode
+            ex.set_position_mode(False, symbol)
         except: pass
+
         pos=calc_position()
-        amt=round(pos['position_size']/price,6)
-        if amt<0.0001: amt=0.0001
-        close_positions(ex,symbol)
+        btc_amt = pos['position_size']/price  # เช่น 70/81500=0.000858 BTC
+        contracts = max(1, int(btc_amt / 0.0001))  # MEXC 1 contract = 0.0001 BTC -> 8 contracts
+        amt_btc = round(btc_amt,6)
+        if amt_btc < 0.0001: amt_btc = 0.0001
+
+        print(f"[ORDER] {signal} price={price} btc={amt_btc} contracts={contracts} pos=${pos['position_size']:.2f}")
+
+        # 2. Close old positions first
+        cp = close_positions(ex,symbol)
+        print(f"[CLOSE] {cp}")
+        time.sleep(1)
+
         side='buy' if signal=='LONG' else 'sell'
-        order=ex.create_order(symbol,'market',side,amt)
+        order = None
+        last_err = ""
+
+        # 3. Try open order - ลอง contracts ก่อน (MEXC ใช้ contracts)
+        for try_amt in [contracts, amt_btc]:
+            try:
+                print(f"[TRY] {side} amt={try_amt}")
+                order = ex.create_order(symbol,'market',side,try_amt,None,{'openType':2})
+                print(f"[ORDER OK] {order}")
+                break
+            except Exception as e:
+                last_err = str(e)
+                print(f"[ORDER FAIL amt={try_amt}] {last_err[:300]}")
+                # ถ้า error เกี่ยวกับ amount ลองอีกแบบ
+                continue
+
+        if not order:
+            return {"ok":False,"error":f"Order fail: {last_err[:300]} | tried contracts={contracts} btc={amt_btc}"}
+
         sl=price*0.966 if signal=='LONG' else price*1.034
         tp=price*1.18 if signal=='LONG' else price*0.82
-        try: ex.create_order(symbol,'market','sell' if signal=='LONG' else 'buy',amt,None,{'stopPrice':sl,'reduceOnly':True})
-        except: pass
-        try: ex.create_order(symbol,'limit','sell' if signal=='LONG' else 'buy',amt,tp,None,{'reduceOnly':True})
-        except: pass
-        trade={"id":f"G29-{now_bkk().strftime('%y%m%d-%H%M')}-{signal}","symbol":symbol,"signal":signal,"entry":price,"amount":amt,"sl":sl,"tp":tp,"status":"OPEN","time":now_bkk().isoformat(),"order_id":str(order.get('id','')),"real":True}
+
+        # SL/TP แบบ reduceOnly - ไม่บังคับ ถ้า fail ก็ข้าม
+        try: 
+            ex.create_order(symbol,'market','sell' if signal=='LONG' else 'buy',order.get('amount',contracts),None,{'stopPrice':sl,'reduceOnly':True,'openType':2})
+        except Exception as e: print(f"SL fail {e}")
+        try: 
+            ex.create_order(symbol,'limit','sell' if signal=='LONG' else 'buy',order.get('amount',contracts),tp,None,{'reduceOnly':True,'openType':2})
+        except Exception as e: print(f"TP fail {e}")
+
+        used_amt = order.get('amount', contracts)
+        trade={"id":f"G29-{now_bkk().strftime('%y%m%d-%H%M')}-{signal}","symbol":symbol,"signal":signal,"entry":price,"amount":used_amt,"btc_amount":amt_btc,"contracts":contracts,"sl":sl,"tp":tp,"status":"OPEN","time":now_bkk().isoformat(),"order_id":str(order.get('id','')),"real":True}
         trades=load_trades(); trades.append(trade); save_trades(trades); save_last_trade(trade); save_last_signal(signal,price,symbol)
-        return {"ok":True,"real":True,"trade":trade,"amount":amt,"order":order}
-    except Exception as e: return {"ok":False,"error":str(e)}
+        return {"ok":True,"real":True,"trade":trade,"amount":used_amt,"order":order}
+    except Exception as e:
+        import traceback; traceback.print_exc()
+        return {"ok":False,"error":str(e)[:500]}
 
 def execute_auto(symbol='BTC/USDT'):
     auto=get_auto_state()
