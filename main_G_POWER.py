@@ -128,6 +128,173 @@ def send_telegram(message, chat_id_override=None):
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
+# === TELEGRAM WEBHOOK FIX V2.7.1 - ที่หายไปทำให้เงียบ ===
+@app.post("/telegram/webhook")
+async def telegram_webhook(request: Request):
+    try:
+        data = await request.json()
+        message = data.get('message', {}) or data.get('edited_message', {}) or data.get('channel_post', {})
+        chat = message.get('chat', {})
+        chat_id = str(chat.get('id', ''))
+        text = message.get('text', '').strip() if message.get('text') else ""
+        if not chat_id:
+            return {"ok": True}
+        if not text:
+            return {"ok": True}
+        text_lower = text.lower()
+        
+        # รองรับ /check, /on, /off, /help, /open, /close, /data, /live
+        if text_lower.startswith('/check') or text_lower.startswith('/status') or text_lower.startswith('/data') or text_lower.startswith('/balance') or text == 'check' or text == 'data':
+            perf = calc_performance()
+            pos = calc_position_40()
+            auto = get_auto_state()
+            price = 0
+            cdc_info = ""
+            di_info = ""
+            try:
+                df_result = get_mexc_futures_data('BTC/USDT')
+                if not isinstance(df_result, tuple):
+                    df_result = strat.add_indicators(df_result)
+                    curr = df_result.iloc[-1]
+                    price = float(curr['close'])
+                    cdc_up = bool(curr.get('cdc_up', False))
+                    cdc_stop = float(curr.get('cdc_stop', 0))
+                    cdc_dist = float(curr.get('cdc_dist_pct', 0))
+                    plus_di = float(curr.get('plus_di', 0))
+                    minus_di = float(curr.get('minus_di', 0))
+                    adx_v = float(curr.get('adx', 0))
+                    cdc_trend = "🟢 UPTREND" if cdc_up else "🔴 DOWNTREND"
+                    cdc_info = f"\n📡 CDC: {cdc_trend} Stop ${cdc_stop:,.0f} ({cdc_dist:+.2f}%)"
+                    di_info = f"\n📊 DI: +DI {plus_di:.1f} -DI {minus_di:.1f} ADX {adx_v:.1f}"
+            except Exception as e:
+                cdc_info = f"\nCDC error: {str(e)[:50]}"
+            bal = get_mexc_balance_and_positions()
+            bal_str = ""
+            if bal.get('ok'):
+                bal_str = f"\n🏦 MEXC: Free ${bal.get('usdt_free',0):.2f} Total ${bal.get('usdt_total',0):.2f} | Pos {len(bal.get('positions',[]))}"
+            else:
+                bal_str = f"\n🏦 MEXC: {bal.get('error','No API')[:60]}"
+            msg = f"""📊 <b>G_POWER V2.7 ADX+DI CHECK</b>
+
+💰 ทุน: $40 | BTC: ${price:,.0f}{cdc_info}{di_info}{bal_str}
+
+📜 Paper: {perf['closed_trades']} ปิด | {perf['open_trades'] if 'open_trades' in perf else 0} เปิด
+WinRate: {perf['win_rate']}% | PnL: ${perf['total_pnl_usd']:+.2f}
+
+💵 Risk: ${pos['risk_usd']:.2f} | Pos ${pos['position_size']:.2f} | Margin ${pos['margin_needed']:.2f}
+
+🤖 Auto: {'🟢 ON' if auto['enabled'] else '🔴 OFF'}
+
+⏰ {datetime.now().strftime('%d/%m %H:%M')}"""
+            send_telegram(msg, chat_id)
+            return {"ok": True, "command": "check"}
+        
+        elif text_lower.startswith('/on') or text_lower.startswith('/open') or text_lower.startswith('/start_auto') or text == 'on' or text == 'open':
+            state = set_auto_state(True)
+            msg = f"""🟢 <b>Auto ON แล้ว V2.7</b>
+
+บอทจะส่งสัญญาณ LONG/SHORT อัตโนมัติ
+DI Cross เร็วกว่า EMA 1-2 แท่ง
+
+ทุน $40 | 3x | SL 3.4% TP 18%
+ADX+DI FULL: +DI/-DI/ADX
+
+พิมพ์ /off เพื่อปิด
+⏰ {datetime.now().strftime('%d/%m %H:%M')}"""
+            send_telegram(msg, chat_id)
+            return {"ok": True, "command": "on"}
+        
+        elif text_lower.startswith('/off') or text_lower.startswith('/close') or text_lower.startswith('/stop') or text == 'off' or text == 'close':
+            state = set_auto_state(False)
+            msg = f"""🔴 <b>Auto OFF แล้ว</b>
+
+บอทหยุดส่งสัญญาณอัตโนมัติ
+พิมพ์ /check หรือ /on เพื่อดู/เปิดใหม่
+
+⏰ {datetime.now().strftime('%d/%m %H:%M')}"""
+            send_telegram(msg, chat_id)
+            return {"ok": True, "command": "off"}
+        
+        elif text_lower.startswith('/help') or text_lower.startswith('/start'):
+            msg = f"""⚡ <b>G_POWER BOT $40 V2.7 ADX+DI</b>
+
+<b>คำสั่ง:</b>
+/check - ดูสถานะ กำไร ทุน ออเดอร์ + DI/ADX
+/on หรือ /open - เปิดรันออโต้
+/off หรือ /close - ปิดรันออโต้
+/live - ดูสัญญาณล่าสุด
+
+Dashboard: https://mexc-btc-bot.onrender.com/dashboard
+
+ทุน $40 | 3x | SL 3.4% TP 18% | ADX+DI FULL"""
+            send_telegram(msg, chat_id)
+            return {"ok": True, "command": "help"}
+        
+        elif text_lower.startswith('/live') or text_lower.startswith('/signal'):
+            try:
+                df_result = get_mexc_futures_data('BTC/USDT')
+                if isinstance(df_result, tuple):
+                    msg = f"❌ MEXC fetch fail: {df_result[1][:100]}"
+                else:
+                    df_result = strat.add_indicators(df_result)
+                    curr = df_result.iloc[-1]
+                    prev = df_result.iloc[-2]
+                    rev = strat.check_reversal(prev, curr)
+                    trend = strat.check_trend(curr)
+                    mom = strat.check_momentum(curr)
+                    price = float(curr['close'])
+                    signal = "WAIT"
+                    if rev['long'] and trend['long'] and mom['long'] and not trend['sideway']:
+                        signal = "LONG"
+                    elif rev['short'] and trend['short'] and mom['short'] and not trend['sideway']:
+                        signal = "SHORT"
+                    msg = f"📡 {signal} ${price:,.0f} | +DI {curr.get('plus_di',0):.1f} -DI {curr.get('minus_di',0):.1f} ADX {curr.get('adx',0):.1f}"
+                send_telegram(msg, chat_id)
+            except Exception as e:
+                send_telegram(f"❌ Error /live: {str(e)[:100]}", chat_id)
+            return {"ok": True, "command": "live"}
+        
+        else:
+            msg = f"""❓ ไม่เข้าใจ: {text}
+
+ใช้:
+/check - ดูสถานะ + DI/ADX
+/on - เปิดออโต้
+/off - ปิดออโต้
+/help - ดูคำสั่ง
+/live - สัญญาณล่าสุด"""
+            send_telegram(msg, chat_id)
+            return {"ok": True, "command": "unknown"}
+            
+    except Exception as e:
+        print(f"webhook error: {e}")
+        return {"ok": False, "error": str(e)}
+
+@app.get("/telegram/setwebhook")
+def set_webhook():
+    token = os.environ.get("TELEGRAM_BOT_TOKEN","") or os.environ.get("BOT_TOKEN","") or os.environ.get("TELEGRAM_TOKEN","")
+    if not token:
+        return {"ok": False, "error": "ไม่มี BOT_TOKEN"}
+    base_url = os.environ.get("RENDER_EXTERNAL_URL","") or os.environ.get("BASE_URL","") or "https://mexc-btc-bot.onrender.com"
+    webhook_url = f"{base_url}/telegram/webhook"
+    try:
+        url = f"https://api.telegram.org/bot{token}/setWebhook"
+        r = requests.post(url, json={"url": webhook_url}, timeout=10)
+        return {"ok": r.status_code==200, "webhook_url": webhook_url, "telegram_response": r.json() if r.status_code==200 else r.text}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+@app.get("/telegram/info")
+def telegram_info():
+    token = os.environ.get("TELEGRAM_BOT_TOKEN","") or os.environ.get("BOT_TOKEN","") or os.environ.get("TELEGRAM_TOKEN","")
+    if not token:
+        return {"ok": False, "error": "ไม่มี BOT_TOKEN"}
+    try:
+        r = requests.get(f"https://api.telegram.org/bot{token}/getWebhookInfo", timeout=10)
+        return r.json()
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
 def get_mexc_futures_data(symbol='BTC/USDT'):
     """
     V2.5 - รองรับ BTC และ GOLD
