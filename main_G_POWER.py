@@ -1,10 +1,10 @@
 
 """
-G_POWER V2.9 FINAL CLEAN - AUTO 100% REAL ORDER
+G_POWER V2.9.6 FINAL CLEAN - AUTO 100% REAL ORDER V2.8 B
 รวมทุกแก้ที่เคยบอก - ไม่มีไฟล์ซ้ำ - ไฟล์เดียวจบ
 
 ระบบ:
-- สมอง: strategy_G_POWER V2.7 ADX+DI FULL
+- สมอง: strategy_G_POWER V2.8 B - LONG/SHORT ไม่ดู EMA200 + EMA12x26
 - คำนวณ Pos: ทุน $40 2% 3x = Pos $70 Margin $23
 - กดออเดอร์จริง MEXC Futures 100% Auto
 - Auto Loop ทุก 15m ในตัวบอท ไม่ต้องตั้ง Cron
@@ -26,7 +26,7 @@ BKK_TZ = timezone(timedelta(hours=7))
 def now_bkk(): return datetime.now(BKK_TZ)
 def bkk_str(fmt='%d/%m %H:%M'): return now_bkk().strftime(fmt)
 
-app = FastAPI(title="G_POWER V2.9 FINAL AUTO 100%")
+app = FastAPI(title="G_POWER V2.9.6 FINAL AUTO 100% V2.8 B")
 
 # === CONFIG ===
 strat = Strategy_G_Power()
