@@ -1,8 +1,7 @@
 fastapi
-uvicorn[standard]
+uvicorn
 pandas
 numpy
 ccxt
-python-dotenv
 requests
-pydantic
+python-multipart
