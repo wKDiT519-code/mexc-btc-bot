@@ -1,7 +1,9 @@
+
 """
 G_POWER V2.8 B - LONG/SHORT ไม่ดู EMA200 + EMA12x26 ทั้งคู่
 - LONG: ไม่ดู EMA200 เปิดได้แม้ใต้ EMA200 ถ้า CDC เขียว + DI BLUE + EMA12>EMA26
 - SHORT: ไม่ดู EMA200 เปิดได้แม้เหนือ EMA200 ถ้า CDC แดง + DI BEAR + EMA12<EMA26
+- แก้บอทเงียบ /check + Render suspend ไม่มี Disk
 """
 
 import pandas as pd
@@ -9,7 +11,7 @@ import numpy as np
 
 class Strategy_G_Power:
     def __init__(self):
-        self.name = "G_POWER V2.8 B - ไม่ดู EMA200 + EMA12x26"
+        self.name = "G_POWER V2.8 B - ไม่ดู EMA200 + EMA12x26 - NO DISK"
         self.config = {
             "ema_fast": 12,
             "ema_slow": 26,
@@ -133,13 +135,12 @@ class Strategy_G_Power:
         df['rsi12'] = self._rsi(df['close'], 12)
         df['rsi26'] = self._rsi(df['close'], 26)
         df['rsi200'] = self._rsi(df['close'], 200)
-        # fractal
-        df['fractal_high'] = (df['high'] > df['high'].shift(1)) & (df['high'] > df['high'].shift(-1)) & (df['high'] > df['high'].shift(2)) & (df['high'] > df['high'].shift(-2))
-        df['fractal_low'] = (df['low'] < df['low'].shift(1)) & (df['low'] < df['low'].shift(-1)) & (df['low'] < df['low'].shift(2)) & (df['low'] < df['low'].shift(-2))
-        # sweep
-        lookback = self.config["sweep_lookback"]
-        df['sweep_high'] = df['high'] > df['high'].rolling(lookback).max().shift(1)
-        df['sweep_low'] = df['low'] < df['low'].rolling(lookback).min().shift(1)
+        df['fractal_high'] = df['high'].rolling(5, center=True).max() == df['high']
+        df['fractal_low'] = df['low'].rolling(5, center=True).min() == df['low']
+        df['high_20'] = df['high'].rolling(20).max()
+        df['low_20'] = df['low'].rolling(20).min()
+        df['sweep_high'] = (df['high'] > df['high_20'].shift(1)) & (df['close'] < df['high_20'].shift(1))
+        df['sweep_low'] = (df['low'] < df['low_20'].shift(1)) & (df['close'] > df['low_20'].shift(1))
         df['swing_high'] = df['high'].where(df['fractal_high'])
         df['swing_low'] = df['low'].where(df['fractal_low'])
         df['last_swing_high'] = df['swing_high'].ffill()
@@ -183,7 +184,7 @@ class Strategy_G_Power:
         }
     
     def check_trend(self, curr):
-        # V2.8 B - ไม่ดู EMA200 ทั้ง LONG/SHORT + บังคับ EMA12x26 ทั้งคู่
+        # V2.8 B - ไม่ดู EMA200 ทั้ง LONG/SHORT + บังคับ EMA12x26 ทั้งคู่ - NO DISK VERSION
         ema_align_bull = curr['ema12'] > curr['ema26']
         ema_align_bear = curr['ema12'] < curr['ema26']
         sideway_thresh = self.config.get("sideway_pct", 0.015)
@@ -198,7 +199,7 @@ class Strategy_G_Power:
         di_bear = minus_di > plus_di and minus_di > self.config.get("di_min", 15)
         # LONG: CDC เขียว + DI BLUE + EMA12>EMA26 + ไม่ Sideway (ไม่ดู EMA200)
         long_trend = (cdc_up and di_bull) and ema_align_bull and not sideway
-        # SHORT: CDC แดง + DI BEAR + EMA12<EMA26 + ไม่ Sideway (ไม่ดู EMA200) - เพิ่ม EMA12x26 ตามที่ขอ
+        # SHORT: CDC แดง + DI BEAR + EMA12<EMA26 + ไม่ Sideway (ไม่ดู EMA200)
         short_trend = (cdc_down and di_bear) and ema_align_bear and not sideway
         return {
             'long': long_trend,
@@ -218,17 +219,17 @@ class Strategy_G_Power:
         rsi_double_bear = curr['rsi12']<55 and curr['rsi26']<55
         rsi_not_ob = curr['rsi12'] < 75
         rsi_not_os = curr['rsi12'] > 25
-        mfi_bull = 40 < curr['mfi'] < 85 if pd.notna(curr['mfi']) else False
-        mfi_bear = 15 < curr['mfi'] < 60 if pd.notna(curr['mfi']) else False
-        obv_bull = curr['obv_ema3'] > curr['obv_ema9'] if pd.notna(curr['obv_ema3']) else False
-        obv_bear = curr['obv_ema3'] < curr['obv_ema9'] if pd.notna(curr['obv_ema3']) else False
-        adx_ok = curr['adx'] > self.config.get("adx_min", 15) if pd.notna(curr['adx']) else False
+        mfi_bull = 40 < curr['mfi'] < 85 if curr['mfi']==curr['mfi'] else False
+        mfi_bear = 15 < curr['mfi'] < 60 if curr['mfi']==curr['mfi'] else False
+        obv_bull = curr['obv_ema3'] > curr['obv_ema9'] if curr['obv_ema3']==curr['obv_ema3'] else False
+        obv_bear = curr['obv_ema3'] < curr['obv_ema9'] if curr['obv_ema3']==curr['obv_ema3'] else False
+        adx_ok = curr['adx'] > self.config.get("adx_min", 15) if curr['adx']==curr['adx'] else False
         adx_slope_ok = curr.get('adx_slope', 0) > -1
         plus_di = curr.get('plus_di', 0)
         minus_di = curr.get('minus_di', 0)
         di_mom_bull = plus_di > minus_di
         di_mom_bear = minus_di > plus_di
-        vol_ok = curr['volume'] > curr['vol_avg']*0.6 if pd.notna(curr['vol_avg']) else False
+        vol_ok = curr['volume'] > curr['vol_avg']*0.6 if curr['vol_avg']==curr['vol_avg'] else False
         cdc_strength = abs(curr.get('cdc_dist_pct', 0)) > 0.15
         return {
             'long': rsi_double_bull and rsi_not_ob and mfi_bull and (obv_bull or adx_ok) and (di_mom_bull or cdc_strength) and adx_slope_ok,
