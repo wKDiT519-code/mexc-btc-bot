@@ -1,17 +1,9 @@
+
 """
-G_POWER V3.0 LITE - 6 อินดิหลัก - ตัดซ้ำซ้อน
-แก้พลาด 2 ไม้: 81k LONG ติด sideway 0.69% + 77k SHORT ติด RSI oversold
-
-เก็บ 6 ตัว:
-1. CDC ATR Trailing (trend หลัก)
-2. DI / ADX (แรงเทรนด์ + ทิศ)
-3. EMA12 x EMA26 (ทิศเร็ว)
-4. RSI12 (momentum ตัวเดียว)
-5. ATR (SL/TP)
-6. Vol Avg (กรองวอลุ่มแห้ง)
-
-ตัด:
-- EMA200, supertrend_dir, RSI26, RSI200, MFI, OBV, Fractal, Sweep, Swing, high_20/low_20, di_diff
+G_POWER V2.8 B - LONG/SHORT ไม่ดู EMA200 + EMA12x26 ทั้งคู่
+- LONG: ไม่ดู EMA200 เปิดได้แม้ใต้ EMA200 ถ้า CDC เขียว + DI BLUE + EMA12>EMA26
+- SHORT: ไม่ดู EMA200 เปิดได้แม้เหนือ EMA200 ถ้า CDC แดง + DI BEAR + EMA12<EMA26
+- แก้บอทเงียบ /check + Render suspend ไม่มี Disk
 """
 
 import pandas as pd
@@ -19,24 +11,38 @@ import numpy as np
 
 class Strategy_G_Power:
     def __init__(self):
-        self.name = "G_POWER V3.0 LITE - 6 อินดิ - TURBO"
+        self.name = "G_POWER V2.8 B - ไม่ดู EMA200 + EMA12x26 - NO DISK"
         self.config = {
             "ema_fast": 12,
             "ema_slow": 26,
+            "ema_trend": 200,
             "rsi_fast": 12,
-            "adx_min": 12,
-            "adx_sideway": 12,
-            "adx_turbo": 35,
-            "di_min": 10,
-            "di_turbo": 25,
+            "rsi_slow": 26,
+            "rsi_trend": 200,
+            "sweep_lookback": 20,
+            "fractal_period": 5,
+            "mfi_period": 14,
+            "obv_fast": 3,
+            "obv_slow": 9,
+            "adx_min": 15,
+            "adx_sideway": 15,
+            "di_min": 15,
             "sl_pct": 0.034,
             "tp_pct": 0.18,
+            "sl_atr_mult": 1.5,
             "risk_per_trade": 0.02,
+            "max_positions": 2,
+            "cooldown_after_2_losses": 16,
             "cdc_atr_fast": 5,
             "cdc_mult_fast": 0.5,
             "cdc_atr_slow": 10,
             "cdc_mult_slow": 2.0,
+            "cdc_use": True,
+            "sideway_pct": 0.015,
         }
+        self.loss_streak = 0
+        self.cooldown = 0
+        self.positions = []
     
     def _ema(self, series, period):
         return series.ewm(span=period, adjust=False).mean()
@@ -65,6 +71,17 @@ class Strategy_G_Power:
         adx = dx.ewm(alpha=1/period, adjust=False).mean().fillna(15)
         adx_slope = adx.diff(3)
         return plus_di.fillna(0), minus_di.fillna(0), adx, adx_slope
+    
+    def _mfi(self, high, low, close, volume, period=14):
+        tp = (high+low+close)/3
+        rmf = tp * volume
+        pos = rmf.where(tp > tp.shift(1), 0).rolling(period).sum()
+        neg = rmf.where(tp < tp.shift(1), 0).rolling(period).sum().replace(0, 0.00001)
+        mfr = pos/neg
+        return 100 - (100/(1+mfr))
+    
+    def _obv(self, close, volume):
+        return (np.sign(close.diff()) * volume).fillna(0).cumsum()
 
     def _cdc_atr_trailing(self, df):
         atr_fast = self._atr(df['high'], df['low'], df['close'], self.config["cdc_atr_fast"])
@@ -103,61 +120,86 @@ class Strategy_G_Power:
                     stop_level[i] = new_stop
         df['cdc_trend'] = trend
         df['cdc_stop'] = stop_level
+        df['cdc_long_stop'] = long_stop
+        df['cdc_short_stop'] = short_stop
         df['cdc_up'] = (trend == 1)
         df['cdc_down'] = (trend == -1)
         df['cdc_dist_pct'] = (df['close'] - df['cdc_stop']) / df['close'] * 100
         return df
     
     def add_indicators(self, df):
-        # 6 อินดิหลักเท่านั้น
         df['ema12'] = self._ema(df['close'], 12)
         df['ema26'] = self._ema(df['close'], 26)
+        df['ema200'] = self._ema(df['close'], 200)
+        df['ema200_slope'] = df['ema200'].diff(5)
         df['rsi12'] = self._rsi(df['close'], 12)
+        df['rsi26'] = self._rsi(df['close'], 26)
+        df['rsi200'] = self._rsi(df['close'], 200)
+        df['fractal_high'] = df['high'].rolling(5, center=True).max() == df['high']
+        df['fractal_low'] = df['low'].rolling(5, center=True).min() == df['low']
+        df['high_20'] = df['high'].rolling(20).max()
+        df['low_20'] = df['low'].rolling(20).min()
+        df['sweep_high'] = (df['high'] > df['high_20'].shift(1)) & (df['close'] < df['high_20'].shift(1))
+        df['sweep_low'] = (df['low'] < df['low_20'].shift(1)) & (df['close'] > df['low_20'].shift(1))
+        df['swing_high'] = df['high'].where(df['fractal_high'])
+        df['swing_low'] = df['low'].where(df['fractal_low'])
+        df['last_swing_high'] = df['swing_high'].ffill()
+        df['last_swing_low'] = df['swing_low'].ffill()
+        df['supertrend_dir'] = np.where(df['close'] > df['ema200'], 1, -1)
+        df['mfi'] = self._mfi(df['high'], df['low'], df['close'], df['volume'], 14)
+        df['obv'] = self._obv(df['close'], df['volume'])
+        df['obv_ema3'] = self._ema(df['obv'], 3)
+        df['obv_ema9'] = self._ema(df['obv'], 9)
         plus_di, minus_di, adx, adx_slope = self._adx_di(df['high'], df['low'], df['close'], 14)
         df['plus_di'] = plus_di
         df['minus_di'] = minus_di
         df['adx'] = adx
         df['adx_slope'] = adx_slope
+        df['di_diff'] = plus_di - minus_di
         df['atr'] = self._atr(df['high'], df['low'], df['close'], 14)
         df['vol_avg'] = df['volume'].rolling(20).mean()
         df = self._cdc_atr_trailing(df)
-        # compat fields สำหรับ main ที่เคยเรียก
-        df['ema200'] = df['ema26']  # dummy ไม่ใช้แล้ว
         return df
     
     def check_reversal(self, prev, curr):
-        # เร็วขึ้น - ไม่ต้องรอ EMA+RSI พร้อมกัน
         ema_cross_up = prev['ema12'] <= prev['ema26'] and curr['ema12'] > curr['ema26']
         ema_cross_down = prev['ema12'] >= prev['ema26'] and curr['ema12'] < curr['ema26']
-        di_cross_long = prev['plus_di'] <= prev['minus_di'] and curr['plus_di'] > curr['minus_di']
-        di_cross_short = prev['minus_di'] <= prev['plus_di'] and curr['minus_di'] > curr['plus_di']
+        rsi_cross_up = prev['rsi12'] <= prev['rsi26'] and curr['rsi12'] > curr['rsi26']
+        rsi_cross_down = prev['rsi12'] >= prev['rsi26'] and curr['rsi12'] < curr['rsi26']
+        new_long = ema_cross_up and rsi_cross_up
+        new_short = ema_cross_down and rsi_cross_down
+        sweep_ok_long = curr['sweep_low'] or prev['sweep_low']
+        sweep_ok_short = curr['sweep_high'] or prev['sweep_high']
+        fractal_long = curr['fractal_low']
+        fractal_short = curr['fractal_high']
         cdc_flip_long = prev['cdc_down'] and curr['cdc_up']
         cdc_flip_short = prev['cdc_up'] and curr['cdc_down']
+        di_cross_long = prev['plus_di'] <= prev['minus_di'] and curr['plus_di'] > curr['minus_di']
+        di_cross_short = prev['minus_di'] <= prev['plus_di'] and curr['minus_di'] > curr['plus_di']
         return {
-            'long': ema_cross_up or di_cross_long or cdc_flip_long,
-            'short': ema_cross_down or di_cross_short or cdc_flip_short,
+            'long': (new_long and (sweep_ok_long or fractal_long)) or cdc_flip_long or di_cross_long,
+            'short': (new_short and (sweep_ok_short or fractal_short)) or cdc_flip_short or di_cross_short,
             'di_cross_long': di_cross_long,
             'di_cross_short': di_cross_short,
-            'ema_cross_up': ema_cross_up,
-            'ema_cross_down': ema_cross_down,
-            'cdc_flip_long': cdc_flip_long,
-            'cdc_flip_short': cdc_flip_short,
         }
     
     def check_trend(self, curr):
-        # V3 LITE - ไม่ดู EMA200 แล้ว
+        # V2.8 B - ไม่ดู EMA200 ทั้ง LONG/SHORT + บังคับ EMA12x26 ทั้งคู่ - NO DISK VERSION
         ema_align_bull = curr['ema12'] > curr['ema26']
         ema_align_bear = curr['ema12'] < curr['ema26']
-        # Sideway ดูแค่ ADX อย่างเดียว - ตัด EMA200 0.69% ออก
-        adx_sideway = curr['adx'] < self.config.get("adx_sideway", 12)
-        sideway = adx_sideway
-        cdc_up = bool(curr.get('cdc_up', False))
+        sideway_thresh = self.config.get("sideway_pct", 0.015)
+        adx_sideway = curr['adx'] < self.config.get("adx_sideway", 15)
+        ema_sideway = abs(curr['close'] - curr['ema200']) / curr['ema200'] < sideway_thresh if curr['ema200']>0 else False
+        sideway = adx_sideway or ema_sideway
+        cdc_up = bool(curr.get('cdc_up', True))
         cdc_down = bool(curr.get('cdc_down', False))
         plus_di = curr.get('plus_di', 0)
         minus_di = curr.get('minus_di', 0)
-        di_bull = plus_di > minus_di and plus_di > self.config.get("di_min", 10)
-        di_bear = minus_di > plus_di and minus_di > self.config.get("di_min", 10)
+        di_bull = plus_di > minus_di and plus_di > self.config.get("di_min", 15)
+        di_bear = minus_di > plus_di and minus_di > self.config.get("di_min", 15)
+        # LONG: CDC เขียว + DI BLUE + EMA12>EMA26 + ไม่ Sideway (ไม่ดู EMA200)
         long_trend = (cdc_up and di_bull) and ema_align_bull and not sideway
+        # SHORT: CDC แดง + DI BEAR + EMA12<EMA26 + ไม่ Sideway (ไม่ดู EMA200)
         short_trend = (cdc_down and di_bear) and ema_align_bear and not sideway
         return {
             'long': long_trend,
@@ -169,42 +211,27 @@ class Strategy_G_Power:
             'di_bear': di_bear,
             'plus_di': plus_di,
             'minus_di': minus_di,
-            'cdc_dist': curr.get('cdc_dist_pct', 0),
-            'adx': curr.get('adx', 0),
+            'cdc_dist': curr.get('cdc_dist_pct', 0)
         }
     
     def check_momentum(self, curr):
-        # V3 LITE - Bypass oversold/overbought ถ้าเทรนด์แรง
-        rsi = curr.get('rsi12', 50)
+        rsi_double_bull = curr['rsi12']>45 and curr['rsi26']>45
+        rsi_double_bear = curr['rsi12']<55 and curr['rsi26']<55
+        rsi_not_ob = curr['rsi12'] < 75
+        rsi_not_os = curr['rsi12'] > 25
+        mfi_bull = 40 < curr['mfi'] < 85 if curr['mfi']==curr['mfi'] else False
+        mfi_bear = 15 < curr['mfi'] < 60 if curr['mfi']==curr['mfi'] else False
+        obv_bull = curr['obv_ema3'] > curr['obv_ema9'] if curr['obv_ema3']==curr['obv_ema3'] else False
+        obv_bear = curr['obv_ema3'] < curr['obv_ema9'] if curr['obv_ema3']==curr['obv_ema3'] else False
+        adx_ok = curr['adx'] > self.config.get("adx_min", 15) if curr['adx']==curr['adx'] else False
+        adx_slope_ok = curr.get('adx_slope', 0) > -1
         plus_di = curr.get('plus_di', 0)
         minus_di = curr.get('minus_di', 0)
-        adx = curr.get('adx', 0)
-        vol = curr.get('volume', 0)
-        vol_avg = curr.get('vol_avg', 0)
-        
-        adx_turbo = adx > self.config.get("adx_turbo", 35)
-        plus_turbo = plus_di > self.config.get("di_turbo", 25)
-        minus_turbo = minus_di > self.config.get("di_turbo", 25)
-        
-        # LONG: RSI 30-78 ปกติ, แต่ถ้า ADX>35 + +DI>25 ให้ผ่านแม้ RSI 80
-        rsi_long_normal = 30 < rsi < 78
-        rsi_long_bypass = adx_turbo and plus_turbo
-        rsi_long = rsi_long_normal or rsi_long_bypass
-        
-        # SHORT: RSI 22-70 ปกติ, แต่ถ้า ADX>35 + -DI>25 ให้ผ่านแม้ RSI 15
-        rsi_short_normal = 22 < rsi < 70
-        rsi_short_bypass = adx_turbo and minus_turbo
-        rsi_short = rsi_short_normal or rsi_short_bypass
-        
-        adx_ok = adx > self.config.get("adx_min", 12)
-        vol_ok = vol > vol_avg*0.5 if vol_avg==vol_avg else True
-        cdc_strength = abs(curr.get('cdc_dist_pct', 0)) > 0.1
-        
+        di_mom_bull = plus_di > minus_di
+        di_mom_bear = minus_di > plus_di
+        vol_ok = curr['volume'] > curr['vol_avg']*0.6 if curr['vol_avg']==curr['vol_avg'] else False
+        cdc_strength = abs(curr.get('cdc_dist_pct', 0)) > 0.15
         return {
-            'long': rsi_long and (adx_ok or cdc_strength) and vol_ok,
-            'short': rsi_short and (adx_ok or cdc_strength) and vol_ok,
-            'rsi_long': rsi_long,
-            'rsi_short': rsi_short,
-            'bypass_long': rsi_long_bypass,
-            'bypass_short': rsi_short_bypass,
+            'long': rsi_double_bull and rsi_not_ob and mfi_bull and (obv_bull or adx_ok) and (di_mom_bull or cdc_strength) and adx_slope_ok,
+            'short': rsi_double_bear and rsi_not_os and mfi_bear and (obv_bear or adx_ok) and (di_mom_bear or cdc_strength) and vol_ok and adx_slope_ok
         }
