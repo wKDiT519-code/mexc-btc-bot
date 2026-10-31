@@ -1,563 +1,341 @@
+"""
+G_POWER V5.1 AUDIT FIX - แก้รอยรั่วที่ตรวจเจอ
+- PING HEAD 405 -> ใช้ api_route GET,HEAD
+- SAVE atomic temp+rename กันไฟล์ corrupt
+- MAX_POS 1 ต่อสัญลักษณ์ กันเปิดซ้ำทุก 15m
+- COOLDOWN 1 ชม. ต่อสัญลักษณ์
+- ENV strip ครบ
+- REAL=false ปลอดภัย Paper ก่อน
+- 3 หัวใจครบ Retest+Trailing+Trend TP
+"""
+
 from fastapi import FastAPI, Query, Request
 from fastapi.responses import HTMLResponse
-from strategy_G_POWER import Strategy_G_Power
+try:
+    from strategy_G_POWER_V5_TREND import Strategy_G_Power as StrategyMulti
+    print("[V5.1 AUDIT FIX] 3 HEARTS + NO LEAK")
+    USE_V5=True
+except:
+    from strategy_G_POWER import Strategy_G_Power as StrategyMulti
+    USE_V5=False
+
 from datetime import datetime, timedelta
-import os
-import ccxt
-import pandas as pd
-import json
-import requests
+import os, ccxt, pandas as pd, json, requests, tempfile, shutil
 from pathlib import Path
 
-app = FastAPI(title="G_POWER FUTURES $40 LIVE + TELEGRAM INTERACTIVE")
-strat = Strategy_G_Power()
+app = FastAPI(title="G_POWER V5.1 AUDIT NO LEAK")
+
+STRATS = {
+    "btc": StrategyMulti("btc"),
+    "gold": StrategyMulti("gold"),
+    "silver": StrategyMulti("silver"),
+}
+strat = STRATS["btc"]
 
 CAPITAL = 40
 RISK_PCT = 0.02
 LEVERAGE = 3
-strat.config["max_positions"] = 1
-strat.config["risk_per_trade"] = RISK_PCT
 
-# V2.6 PERSISTENT FIX - ใช้ /data ถ้ามี (Render Disk) ไม่งั้น /tmp
+SYMBOLS = {
+    "btc": "BTC/USDT",
+    "gold": "XAU/USDT",
+    "silver": "XAG/USDT",
+    "xau": "XAU/USDT",
+    "xag": "XAG/USDT",
+    "paxg": "PAXG/USDT",
+}
+
 DATA_DIR = Path("/data") if Path("/data").exists() else Path("/tmp")
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 TRADES_FILE = DATA_DIR / "g_power_trades.json"
-LAST_SIGNAL_FILE = DATA_DIR / "last_signal.json"
 AUTO_STATE_FILE = DATA_DIR / "auto_state.json"
-print(f"[G_POWER V2.6] DATA_DIR = {DATA_DIR}")
+LAST_TRADE_TIME_FILE = DATA_DIR / "last_trade_time.json"
+print(f"[V5.1] DATA_DIR={DATA_DIR} exists={DATA_DIR.exists()}")
+
+def atomic_save(path: Path, data):
+    """กันไฟล์ corrupt ตอน Render ดับ - เขียน temp แล้ว rename"""
+    try:
+        tmp = path.with_suffix('.tmp')
+        with open(tmp, 'w') as f:
+            json.dump(data, f, default=str, indent=2)
+        tmp.replace(path)
+    except Exception as e:
+        print(f"atomic_save {path} err {e}")
+        try:
+            with open(path, 'w') as f:
+                json.dump(data, f, default=str, indent=2)
+        except: pass
 
 def load_trades():
     if TRADES_FILE.exists():
         try:
-            with open(TRADES_FILE, 'r') as f:
-                return json.load(f)
-        except:
-            return []
+            with open(TRADES_FILE,'r') as f:
+                d=json.load(f)
+                # clean sample trades
+                clean=[t for t in d if not str(t.get('note','')).lower().startswith('sample')]
+                return clean
+        except: return []
     return []
 
-def save_trades(trades):
-    try:
-        with open(TRADES_FILE, 'w') as f:
-            json.dump(trades, f, default=str)
-    except:
-        pass
-
-def get_last_signal():
-    if LAST_SIGNAL_FILE.exists():
-        try:
-            with open(LAST_SIGNAL_FILE, 'r') as f:
-                return json.load(f)
-        except:
-            return {"signal": "WAIT", "time": ""}
-    return {"signal": "WAIT", "time": ""}
-
-def save_last_signal(signal, price):
-    try:
-        with open(LAST_SIGNAL_FILE, 'w') as f:
-            json.dump({"signal": signal, "price": price, "time": datetime.now().isoformat()}, f)
-    except:
-        pass
+def save_trades(t): atomic_save(TRADES_FILE, t)
 
 def get_auto_state():
     if AUTO_STATE_FILE.exists():
         try:
-            with open(AUTO_STATE_FILE, 'r') as f:
-                return json.load(f)
-        except:
-            return {"enabled": False, "since": ""}
-    return {"enabled": False, "since": ""}
+            with open(AUTO_STATE_FILE,'r') as f:
+                d=json.load(f)
+                if isinstance(d,bool): return {"btc":d,"gold":False,"silver":False}
+                if "enabled" in d: return {"btc":d.get("enabled",False),"gold":False,"silver":False}
+                return d
+        except: pass
+    return {"btc":False,"gold":False,"silver":False}
 
-def set_auto_state(enabled):
-    try:
-        data = {"enabled": enabled, "since": datetime.now().isoformat()}
-        with open(AUTO_STATE_FILE, 'w') as f:
-            json.dump(data, f)
-        return data
-    except:
-        return {"enabled": enabled, "since": datetime.now().isoformat()}
+def set_auto_state(k, en):
+    s=get_auto_state()
+    if k=='all':
+        for kk in s: s[kk]=en
+    else: s[k]=en
+    atomic_save(AUTO_STATE_FILE, s)
+    return s
 
-def send_telegram(message, chat_id_override=None):
-    token = os.environ.get("TELEGRAM_BOT_TOKEN", "") or os.environ.get("BOT_TOKEN", "") or os.environ.get("TELEGRAM_TOKEN", "")
-    chat_id = chat_id_override or os.environ.get("TELEGRAM_CHAT_ID", "") or os.environ.get("CHAT_ID", "") or os.environ.get("TG_CHAT_ID", "")
-    if not token or not chat_id:
-        return {"ok": False, "error": "ยังไม่ได้ตั้ง BOT_TOKEN / CHAT_ID"}
-    try:
-        url = f"https://api.telegram.org/bot{token}/sendMessage"
-        data = {"chat_id": chat_id, "text": message, "parse_mode": "HTML"}
-        r = requests.post(url, json=data, timeout=10)
-        return {"ok": r.status_code == 200, "response": r.json() if r.status_code == 200 else r.text}
-    except Exception as e:
-        print(f"[WEBHOOK ERROR] {e}")
-        # Always return 200 to Telegram to avoid retry loop - send error to admin
+def get_last_trade_times():
+    if LAST_TRADE_TIME_FILE.exists():
         try:
-            send_telegram(f"⚠️ Webhook Error: {str(e)[:100]}", None)
-        except:
-            pass
-        return {"ok": True, "error": str(e), "note": "returned 200 to Telegram"}
+            with open(LAST_TRADE_TIME_FILE,'r') as f: return json.load(f)
+        except: pass
+    return {}
 
-def get_mexc_futures_data():
+def set_last_trade_time(symbol_key):
+    times=get_last_trade_times()
+    times[symbol_key]=datetime.now().isoformat()
+    atomic_save(LAST_TRADE_TIME_FILE, times)
+
+def can_open_new(symbol_key, cooldown_hours=1):
+    """กันเปิดถี่ - ต้องห่างกัน 1 ชม."""
+    times=get_last_trade_times()
+    last_str=times.get(symbol_key)
+    if not last_str: return True
     try:
-        try:
-            exchange = ccxt.mexc({"options": {"defaultType": "swap"}})
-            ohlcv = exchange.fetch_ohlcv('BTC/USDT', '15m', limit=250)
-        except:
-            exchange = ccxt.mexc()
-            ohlcv = exchange.fetch_ohlcv('BTC/USDT', '15m', limit=250)
-        df = pd.DataFrame(ohlcv, columns=['timestamp','open','high','low','close','volume'])
-        df['datetime'] = pd.to_datetime(df['timestamp'], unit='ms')
+        last=datetime.fromisoformat(last_str)
+        if datetime.now() - last < timedelta(hours=cooldown_hours):
+            return False
+        return True
+    except: return True
+
+def calc_position(symbol_key="btc"):
+    cfg=STRATS.get(symbol_key, STRATS['btc']).config
+    sl=cfg['sl_pct']; tp=cfg['tp_pct']
+    risk=CAPITAL*RISK_PCT
+    pos=risk/sl if sl else risk/0.034
+    return {"risk":risk,"pos":pos,"margin":pos/LEVERAGE,"sl":sl*100,"tp":tp*100,"rr":round(tp/sl,1)}
+
+def get_data(symbol="BTC/USDT"):
+    try:
+        ex=ccxt.mexc({"options":{"defaultType":"swap"}})
+        ohlcv=ex.fetch_ohlcv(symbol,'15m',limit=250)
+        df=pd.DataFrame(ohlcv,columns=['timestamp','open','high','low','close','volume'])
+        df['datetime']=pd.to_datetime(df['timestamp'],unit='ms')
         return df
-    except Exception as e:
-        return None, str(e)
+    except Exception as e: return (None,str(e))
 
-def get_mexc_balance_and_positions():
-    api_key = os.environ.get("MEXC_API_KEY", "")
-    api_secret = os.environ.get("MEXC_API_SECRET", "")
-    if not api_key or not api_secret:
-        return {"ok": False, "error": "ไม่ได้ตั้ง MEXC API - ใส่ใน Render Env"}
+def get_mexc_balance():
     try:
-        exchange = ccxt.mexc({
-            'apiKey': api_key,
-            'secret': api_secret,
-            'options': {'defaultType': 'swap'},
-            'enableRateLimit': True,
-        })
-        positions = []
+        key=os.environ.get("MEXC_API_KEY","").strip(); sec=os.environ.get("MEXC_API_SECRET","").strip()
+        if not key or not sec: return {"ok":False,"error":"No API"}
+        ex=ccxt.mexc({'apiKey':key,'secret':sec,'options':{'defaultType':'swap'},'enableRateLimit':True})
+        bal=ex.fetch_balance({'type':'swap'}); usdt=bal.get('USDT',{})
+        poss=[]
         try:
-            positions = exchange.fetch_positions(['BTC/USDT:USDT'])
-        except:
-            try:
-                positions = exchange.fetch_positions(['BTC/USDT'])
-            except:
-                try:
-                    positions = exchange.fetch_positions()
-                except Exception as e:
-                    positions = []
-        
-        usdt_free = 0
-        usdt_total = 0
-        raw_balance = {}
-        try:
-            raw_balance = exchange.fetch_balance({'type': 'swap'})
-        except:
-            try:
-                raw_balance = exchange.fetch_balance()
-            except Exception as e:
-                raw_balance = {}
-        
-        if isinstance(raw_balance, dict):
-            # ccxt unified: balance['USDT']['free'] / ['total']
-            if 'USDT' in raw_balance and isinstance(raw_balance['USDT'], dict):
-                usdt_free = raw_balance['USDT'].get('free', 0) or 0
-                usdt_total = raw_balance['USDT'].get('total', 0) or raw_balance['USDT'].get('free', 0) or 0
-            # บางเวอร์ชัน: balance['free']['USDT']
-            elif 'free' in raw_balance and isinstance(raw_balance['free'], dict):
-                usdt_free = raw_balance['free'].get('USDT', 0) or 0
-                usdt_total = raw_balance.get('total', {}).get('USDT', 0) or usdt_free
-            # MEXC info ดิบ
-            elif 'info' in raw_balance:
-                info = raw_balance['info']
-                # Futures wallet อยู่ลึก
-                try:
-                    if isinstance(info, dict):
-                        # ลองหา USDT ใน data
-                        if 'data' in info:
-                            data = info['data']
-                            if isinstance(data, list):
-                                for item in data:
-                                    if isinstance(item, dict) and item.get('currency') == 'USDT':
-                                        usdt_free = float(item.get('availableBalance', 0) or item.get('available', 0) or 0)
-                                        usdt_total = float(item.get('equity', 0) or item.get('balance', 0) or usdt_free)
-                            elif isinstance(data, dict) and 'availableBalance' in data:
-                                usdt_free = float(data.get('availableBalance', 0))
-                                usdt_total = float(data.get('equity', data.get('availableBalance', 0)))
-                except:
-                    pass
-        
-        return {
-            "ok": True,
-            "usdt_free": float(usdt_free) if usdt_free else 0,
-            "usdt_total": float(usdt_total) if usdt_total else 0,
-            "positions": positions,
-            "raw_keys": list(raw_balance.keys()) if isinstance(raw_balance, dict) else [],
-        }
+            for p in ex.fetch_positions():
+                if float(p.get('contracts',0) or 0)>0: poss.append(p)
+        except: pass
+        return {"ok":True,"free":usdt.get('free',0),"total":usdt.get('total',0),"positions":poss}
+    except Exception as e: return {"ok":False,"error":str(e)[:150]}
+
+def send_tele(msg, chat_id=None):
+    token=os.environ.get("TELEGRAM_BOT_TOKEN","").strip() or os.environ.get("BOT_TOKEN","").strip()
+    chat=chat_id or os.environ.get("TELEGRAM_CHAT_ID","").strip() or os.environ.get("CHAT_ID","").strip()
+    if not token or not chat: return {"ok":False}
+    try:
+        r=requests.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id":chat,"text":msg,"parse_mode":"HTML"}, timeout=10)
+        return {"ok":r.status_code==200}
+    except: return {"ok":False}
+
+def get_strat(symbol):
+    s=symbol.upper()
+    if 'BTC' in s: return STRATS['btc']
+    if 'XAU' in s or 'PAXG' in s or 'GOLD' in s: return STRATS['gold']
+    if 'XAG' in s or 'SILVER' in s: return STRATS['silver']
+    return STRATS['btc']
+
+def execute_symbol(symbol, manage_open=True):
+    try:
+        st=get_strat(symbol)
+        symbol_key=st.symbol_key
+        df=get_data(symbol)
+        if isinstance(df,tuple): return {"ok":False,"symbol":symbol,"error":df[1]}
+        df=st.add_indicators(df)
+        curr=df.iloc[-1]; prev=df.iloc[-2]
+        price=float(curr['close'])
+        trades=load_trades()
+        open_trades=[t for t in trades if t.get('symbol')==symbol and str(t.get('status')).upper() in ['OPEN','PAPER_OPEN','PAPER']]
+
+        actions=[]
+        # 2+3 Trailing + TP Trend Change
+        for ot in open_trades:
+            entry=float(ot['entry']); sig=ot['signal']
+            new_sl=st.get_trailing_sl(entry, price, float(curr['cdc_stop']), sig)
+            old_sl=float(ot.get('sl', entry*(1-st.config['sl_pct']) if sig=='LONG' else entry*(1+st.config['sl_pct'])))
+            if sig=='LONG' and new_sl>old_sl:
+                ot['sl']=new_sl; ot['trailing']=f"Trail {old_sl:.0f}->{new_sl:.0f}"; actions.append(f"Trailing LONG {symbol} SL {old_sl:.0f}->{new_sl:.0f}")
+            elif sig=='SHORT' and new_sl<old_sl:
+                ot['sl']=new_sl; ot['trailing']=f"Trail {old_sl:.0f}->{new_sl:.0f}"; actions.append(f"Trailing SHORT {symbol} SL {old_sl:.0f}->{new_sl:.0f}")
+            exit_info=st.check_exit_trend_change(curr, prev, sig)
+            if exit_info['tp']:
+                ot['status']='CLOSED'; ot['result']='WIN' if (price>entry and sig=='LONG') or (price<entry and sig=='SHORT') else 'LOSS'
+                ot['exit']=price; ot['exit_time']=datetime.now().isoformat(); ot['exit_reason']='TREND CHANGE: '+','.join(exit_info['reasons'])
+                pnl=(price-entry)/entry*ot.get('position_size', calc_position(symbol_key)['pos']) if sig=='LONG' else (entry-price)/entry*ot.get('position_size',0)
+                ot['pnl_usd']=pnl
+                actions.append(f"TP TREND CHANGE {symbol} {sig} {','.join(exit_info['reasons'])} PnL ${pnl:+.2f}")
+        if actions:
+            save_trades(trades)
+
+        # 1. จุดเข้าแม่น + กันเปิดซ้ำ
+        rev=st.check_reversal(prev,curr)
+        trend=st.check_trend(curr)
+        mom=st.check_momentum(curr)
+        signal="WAIT"
+        can_open=len(open_trades)==0 and can_open_new(symbol_key, cooldown_hours=1)  # MAX_POS + COOLDOWN
+        if can_open:
+            if rev['long'] and trend['long'] and mom['long'] and not trend['sideway']: signal="LONG"
+            elif rev['short'] and trend['short'] and mom['short'] and not trend['sideway']: signal="SHORT"
+        else:
+            if len(open_trades)>0:
+                signal=f"HOLD {open_trades[0]['signal']}"
+            else:
+                signal="COOLDOWN"
+
+        # ถ้า signal ใหม่ไม่ใช่ WAIT ให้บันทึก Paper
+        if signal in ['LONG','SHORT'] and can_open:
+            pos_info=calc_position(symbol_key)
+            new_trade={
+                "id":len(trades)+1,
+                "symbol":symbol,
+                "symbol_key":symbol_key,
+                "signal":signal,
+                "entry":price,
+                "entry_time":datetime.now().isoformat(),
+                "position_size":pos_info['pos'],
+                "sl":price*(1-st.config['sl_pct']) if signal=='LONG' else price*(1+st.config['sl_pct']),
+                "tp":price*(1+st.config['tp_pct']) if signal=='LONG' else price*(1-st.config['tp_pct']),
+                "status":"PAPER_OPEN",
+                "real":False,
+            }
+            trades.append(new_trade)
+            save_trades(trades)
+            set_last_trade_time(symbol_key)
+            actions.append(f"OPEN {signal} {symbol} ${price:.2f} SL {new_trade['sl']:.2f}")
+
+        return {"ok":True,"symbol":symbol,"symbol_key":symbol_key,"signal":signal,"price":price,
+                "plus_di":float(curr['plus_di']),"minus_di":float(curr['minus_di']),"adx":float(curr['adx']),
+                "cdc_up":bool(curr['cdc_up']),"cdc_stop":float(curr['cdc_stop']),
+                "rsi":float(curr['rsi']),"ema_fast":float(curr['ema_fast']),"ema_slow":float(curr['ema_slow']),
+                "retest":bool(trend.get('retest')), "vol_ok":bool(trend.get('vol_ok')),
+                "sl_pct":st.config['sl_pct']*100,"tp_pct":st.config['tp_pct']*100,
+                "actions":actions, "can_open":can_open, "open_count":len(open_trades)}
     except Exception as e:
-        err = str(e)
-        if 'https://' in err:
-            err = err.split('https://')[0][:120]
-        if len(err) > 200:
-            err = err[:200] + "..."
-        return {"ok": False, "error": err}
-
-def calc_performance():
-    trades = load_trades()
-    closed = [t for t in trades if t.get('status') == 'CLOSED']
-    if not closed:
-        return {
-            'total_trades': len(trades),
-            'closed_trades': 0,
-            'open_trades': len([t for t in trades if t.get('status') == 'OPEN']),
-            'win': 0, 'loss': 0, 'win_rate': 0,
-            'total_pnl_usd': 0, 'total_pnl_pct': 0,
-            'avg_win': 0, 'avg_loss': 0, 'expectancy': 0,
-            'trades': trades
-        }
-    win_trades = [t for t in closed if t.get('result') == 'WIN']
-    loss_trades = [t for t in closed if t.get('result') == 'LOSS']
-    total_pnl_usd = sum(t.get('pnl_usd', 0) for t in closed)
-    total_pnl_pct = sum(t.get('pnl_pct', 0) for t in closed)
-    win_rate = len(win_trades) / len(closed) * 100 if closed else 0
-    avg_win = sum(t.get('pnl_usd', 0) for t in win_trades) / len(win_trades) if win_trades else 0
-    avg_loss = sum(t.get('pnl_usd', 0) for t in loss_trades) / len(loss_trades) if loss_trades else 0
-    expectancy = (win_rate/100 * avg_win + (100-win_rate)/100 * avg_loss) if closed else 0
-    return {
-        'total_trades': len(trades),
-        'closed_trades': len(closed),
-        'open_trades': len([t for t in trades if t.get('status') == 'OPEN']),
-        'win': len(win_trades),
-        'loss': len(loss_trades),
-        'win_rate': round(win_rate, 1),
-        'total_pnl_usd': round(total_pnl_usd, 2),
-        'total_pnl_pct': round(total_pnl_pct, 2),
-        'avg_win': round(avg_win, 2),
-        'avg_loss': round(avg_loss, 2),
-        'expectancy': round(expectancy, 2),
-        'trades': trades
-    }
-
-if not TRADES_FILE.exists():
-    # ไม่สร้างเทรดปลอมแล้ว - Render เคยเทรดจริง ข้อมูลต้องมาจาก MEXC จริงเท่านั้น
-    # ถ้าไม่มีไฟล์ ให้เริ่มว่างๆ ไม่ใช่สร้าง PnL +$11.09 ปลอม
-    save_trades([])
-
-def calc_position_40():
-    risk_amount = CAPITAL * RISK_PCT
-    pos_size = risk_amount / 0.034
-    return {
-        "capital": CAPITAL,
-        "risk_pct": RISK_PCT*100,
-        "risk_amount": risk_amount,
-        "position_size": pos_size,
-        "leverage": LEVERAGE,
-        "margin_needed": pos_size / LEVERAGE,
-        "sl_pct": 3.4,
-        "tp_pct": 18.0,
-        "rr": 5.3,
-        "profit_if_tp": pos_size * 0.18,
-        "profit_pct_cap": (pos_size * 0.18)/CAPITAL*100,
-        "loss_if_sl": risk_amount
-    }
+        import traceback; traceback.print_exc()
+        return {"ok":False,"symbol":symbol,"error":str(e)[:300]}
 
 @app.post("/telegram/webhook")
-async def telegram_webhook(request: Request):
+async def webhook(request: Request):
     try:
-        data = await request.json()
-        message = data.get('message', {}) or data.get('edited_message', {})
-        chat = message.get('chat', {})
-        chat_id = str(chat.get('id', ''))
-        text = message.get('text', '').strip()
-        allowed_chat = os.environ.get("CHAT_ID", "") or os.environ.get("TELEGRAM_CHAT_ID", "")
-        if allowed_chat and chat_id != str(allowed_chat):
-            return {"ok": False, "error": "chat_id not allowed"}
-        if not text:
-            return {"ok": True}
-        text_lower = text.lower()
-        
-        if text_lower.startswith('/check') or text_lower.startswith('/status') or text_lower == 'check':
-            perf = calc_performance()
-            pos = calc_position_40()
-            auto = get_auto_state()
-            price = 0
-            cdc_info = ""
-            try:
-                df_result = get_mexc_futures_data()
-                if not isinstance(df_result, tuple):
-                    df_result = strat.add_indicators(df_result)
-                    curr = df_result.iloc[-1]
-                    price = float(curr['close'])
-                    cdc_up = bool(curr.get('cdc_up', False))
-                    cdc_stop = float(curr.get('cdc_stop', 0))
-                    cdc_dist = float(curr.get('cdc_dist_pct', 0))
-                    cdc_trend = "🟢 CDC UPTREND" if cdc_up else "🔴 CDC DOWNTREND"
-                    cdc_info = f"\n<b>📡 CDC:</b> {cdc_trend}\nStop: ${cdc_stop:,.0f} ({cdc_dist:+.2f}%)"
-            except Exception as e:
-                cdc_info = ""
-            mexc_info = get_mexc_balance_and_positions()
-            msg = f"""📊 <b>G_POWER + CDC CHECK</b>
+        data=await request.json()
+        msg=data.get('message',{}) or data.get('edited_message',{})
+        chat_id=str(msg.get('chat',{}).get('id',''))
+        text=msg.get('text','').strip(); tl=text.lower()
+        allowed=os.environ.get("CHAT_ID","").strip() or os.environ.get("TELEGRAM_CHAT_ID","").strip()
+        if allowed and chat_id!=str(allowed): return {"ok":True}
+        if not text: return {"ok":True}
 
-💰 <b>ทุนตั้งต้น:</b> ${CAPITAL}
-📈 <b>ราคาปัจจุบัน:</b> ${price:,.0f}{cdc_info}
+        def parse_sym(a):
+            a=a.lower()
+            if a in ['btc','bitcoin']: return 'btc', SYMBOLS['btc']
+            if a in ['gold','xau','paxg']: return 'gold', SYMBOLS['gold']
+            if a in ['silver','xag']: return 'silver', SYMBOLS['silver']
+            if a in ['all']: return 'all', None
+            return 'btc', SYMBOLS['btc']
 
-<b>📜 ผลงาน Paper:</b>
-Trades: {perf['closed_trades']} ปิด | {perf['open_trades']} เปิด
-Win Rate: {perf['win_rate']}% ({perf['win']}W/{perf['loss']}L)
-PnL รวม: ${perf['total_pnl_usd']:+.2f}
-Expectancy: ${perf['expectancy']}/ไม้
+        if tl.startswith('/check'):
+            parts=tl.split(); key='all' if len(parts)<2 else parse_sym(parts[1])[0]
+            results={}
+            for k in ['btc','gold','silver']:
+                if key!='all' and k!=key: continue
+                results[k]=execute_symbol(SYMBOLS[k])
+            trades=load_trades(); auto=get_auto_state(); bal=get_mexc_balance()
+            out=f"📊 <b>G_POWER V5.1 AUDIT CHECK {key.upper()}</b> {datetime.now().strftime('%d/%m %H:%M')}\n"
+            for k,r in results.items():
+                if not r.get('ok'): out+=f"\n{k.upper()} ❌ {r.get('error')}\n"
+                else:
+                    cfg=STRATS[k].config
+                    out+=f"\n<b>{k.upper()} {r['symbol']}</b> {'🟢 ON' if auto.get(k) else '🔴 OFF'} {r['signal']}\n${r['price']:,.2f} CDC {'🟢' if r['cdc_up'] else '🔴'} Stop ${r['cdc_stop']:,.2f}\nEMA{cfg['ema_fast']}/{cfg['ema_slow']} +DI {r['plus_di']:.1f} -DI {r['minus_di']:.1f} ADX {r['adx']:.1f} RSI {r['rsi']:.0f}\nRetest {'✅' if r['retest'] else '❌'} Vol {'✅' if r['vol_ok'] else '❌'} CanOpen {'✅' if r['can_open'] else '❌'} Open {r['open_count']} SL {r['sl_pct']:.1f}% TP {r['tp_pct']:.0f}%\n"
+                    if r['actions']: out+=f"⚡ {'; '.join(r['actions'])}\n"
+            opens=[t for t in trades if str(t.get('status')).upper() in ['OPEN','PAPER_OPEN','PAPER']]
+            if opens:
+                out+=f"\n📌 ถือ {len(opens)} ไม้:\n"
+                for ot in opens[-3:]:
+                    entry=float(ot['entry']); curr_p=results.get(ot.get('symbol_key','btc'),{}).get('price',entry)
+                    sig=ot['signal']; ps=ot.get('position_size',0)
+                    if sig=='LONG': upnl=(curr_p-entry)/entry*ps if entry else 0; upp=(curr_p-entry)/entry*100 if entry else 0
+                    else: upnl=(entry-curr_p)/entry*ps if entry else 0; upp=(entry-curr_p)/entry*100 if entry else 0
+                    sl=ot.get('sl',0)
+                    out+=f"{sig} {ot['symbol']} Entry ${entry:,.2f} Now ${curr_p:,.2f} UnPnL ${upnl:+.2f} ({upp:+.1f}%) SL ${sl:,.2f} {ot.get('trailing','')}\n"
+            else: out+=f"\n📌 ไม่มีไม้ถืออยู่ - WAIT\n"
+            if bal.get('ok'): out+=f"\n🏦 MEXC {bal.get('total')} USDT | Pos {len(bal.get('positions',[]))}\n"
+            out+=f"\n✅ AUDIT: HEAD OK | Atomic Save | MAX_POS 1 | COOLDOWN 1h | ENV strip | REAL=false\n💡 1.Retest 2.Trailing BE Lock CDC 3.TP Trend Change"
+            send_tele(out, chat_id)
+            return {"ok":True}
 
-<b>💵 Risk:</b> ${pos['risk_amount']:.2f}/ไม้ | Position ${pos['position_size']:.2f} | Margin ${pos['margin_needed']:.2f} (3x)
-
-<b>🤖 Auto:</b> {'🟢 ON' if auto['enabled'] else '🔴 OFF'}
-"""
-            if mexc_info.get('ok'):
-                msg += f"""
-<b>🏦 MEXC จริง:</b>
-USDT Free: {mexc_info.get('usdt_free')}
-USDT Total: {mexc_info.get('usdt_total')}
-Positions: {len(mexc_info.get('positions', []))} ไม้
-"""
-                for p in mexc_info.get('positions', [])[:2]:
-                    try:
-                        side = p.get('side', '?')
-                        entry = p.get('entryPrice', 0)
-                        pnl = p.get('unrealizedPnl', 0)
-                        msg += f"{side} Entry ${entry} PnL ${pnl}\n"
-                    except:
-                        pass
-            else:
-                msg += f"\n<b>MEXC:</b> {mexc_info.get('error','ไม่ได้ต่อ API')}"
-            msg += f"\n\n⏰ {datetime.now().strftime('%d/%m %H:%M')}"
-            send_telegram(msg, chat_id)
-            return {"ok": True, "command": "check"}
-        
-        elif text_lower.startswith('/on'):
-            state = set_auto_state(True)
-            msg = f"""🟢 <b>Auto ON แล้ว</b>
-
-บอทจะส่งสัญญาณ LONG/SHORT อัตโนมัติ
-
-ทุน $40 | 3x Isolated | SL 3.4% TP 18%
-
-พิมพ์ /off เพื่อปิด
-⏰ {datetime.now().strftime('%d/%m %H:%M')}"""
-            send_telegram(msg, chat_id)
-            return {"ok": True, "command": "on"}
-        
-        elif text_lower.startswith('/off'):
-            state = set_auto_state(False)
-            msg = f"""🔴 <b>Auto OFF แล้ว</b>
-
-บอทหยุดส่งสัญญาณอัตโนมัติ
-พิมพ์ /check หรือ /on เพื่อดู/เปิดใหม่
-
-⏰ {datetime.now().strftime('%d/%m %H:%M')}"""
-            send_telegram(msg, chat_id)
-            return {"ok": True, "command": "off"}
-        
-        elif text_lower.startswith('/help') or text_lower.startswith('/start'):
-            msg = f"""⚡ <b>G_POWER BOT $40</b>
-
-<b>คำสั่ง:</b>
-/check - ดูสถานะ กำไร ทุน ออเดอร์
-/on - เปิดรันออโต้
-/off - ปิดรันออโต้
-
-Dashboard: https://mexc-btc-bot.onrender.com/dashboard
-
-ทุน $40 | 3x | SL 3.4% TP 18%"""
-            send_telegram(msg, chat_id)
-            return {"ok": True, "command": "help"}
-        
+        elif tl.startswith('/on'):
+            parts=tl.split(); key='all' if len(parts)<2 else parse_sym(parts[1])[0]
+            set_auto_state(key, True)
+            send_tele(f"🟢 Auto ON {key.upper()} {datetime.now().strftime('%d/%m %H:%M')} V5.1 AUDIT", chat_id)
+            return {"ok":True}
+        elif tl.startswith('/off'):
+            parts=tl.split(); key='all' if len(parts)<2 else parse_sym(parts[1])[0]
+            set_auto_state(key, False)
+            send_tele(f"🔴 Auto OFF {key.upper()}", chat_id)
+            return {"ok":True}
+        elif tl.startswith('/live'):
+            parts=tl.split(); key='btc' if len(parts)<2 else parse_sym(parts[1])[0]
+            sym=SYMBOLS.get(key, SYMBOLS['btc']); r=execute_symbol(sym)
+            send_tele(f"📡 {sym} {r.get('signal')} ${r.get('price',0):,.2f} +DI {r.get('plus_di',0):.1f} -DI {r.get('minus_di',0):.1f} ADX {r.get('adx',0):.1f} RSI {r.get('rsi',0):.0f} Retest {'✅' if r.get('retest') else '❌'}", chat_id)
+            return {"ok":True}
         else:
-            msg = f"""❓ ไม่เข้าใจ: {text}
-
-พิมพ์:
-/check - ดูสถานะ
-/on - เปิดออโต้
-/off - ปิดออโต้
-/help - ดูคำสั่ง"""
-            send_telegram(msg, chat_id)
-            return {"ok": True, "command": "unknown"}
-            
+            send_tele(f"❓ {text}\n/check [btc|gold|silver|all]\n/on [btc|gold|silver|all]\n/off [btc|gold|silver|all]\n/live [btc|gold|silver]", chat_id)
+            return {"ok":True}
     except Exception as e:
-        print(f"[WEBHOOK ERROR] {e}")
-        # Always return 200 to Telegram to avoid retry loop - send error to admin
-        try:
-            send_telegram(f"⚠️ Webhook Error: {str(e)[:100]}", None)
-        except:
-            pass
-        return {"ok": True, "error": str(e), "note": "returned 200 to Telegram"}
+        print(f"ERR {e}"); return {"ok":True}
 
-@app.get("/telegram/setwebhook")
-def set_webhook():
-    token = os.environ.get("BOT_TOKEN", "") or os.environ.get("TELEGRAM_BOT_TOKEN", "")
-    if not token:
-        return {"ok": False, "error": "ไม่มี BOT_TOKEN"}
-    base_url = os.environ.get("RENDER_EXTERNAL_URL", "") or "https://mexc-btc-bot.onrender.com"
-    webhook_url = f"{base_url}/telegram/webhook"
-    try:
-        url = f"https://api.telegram.org/bot{token}/setWebhook"
-        r = requests.post(url, json={"url": webhook_url}, timeout=10)
-        return {"ok": True, "webhook_url": webhook_url, "telegram_response": r.json()}
-    except Exception as e:
-        print(f"[WEBHOOK ERROR] {e}")
-        # Always return 200 to Telegram to avoid retry loop - send error to admin
-        try:
-            send_telegram(f"⚠️ Webhook Error: {str(e)[:100]}", None)
-        except:
-            pass
-        return {"ok": True, "error": str(e), "note": "returned 200 to Telegram"}
+@app.api_route("/ping", methods=["GET","HEAD"])
+def ping():
+    return {"status":"ok V5.1 AUDIT","auto":get_auto_state(),"dir":str(DATA_DIR),"trades":len(load_trades())}
 
-@app.get("/telegram/info")
-def telegram_info():
-    token = os.environ.get("BOT_TOKEN", "") or os.environ.get("TELEGRAM_BOT_TOKEN", "")
-    if not token:
-        return {"ok": False, "error": "ไม่มี BOT_TOKEN"}
-    try:
-        r = requests.get(f"https://api.telegram.org/bot{token}/getWebhookInfo", timeout=10)
-        return r.json()
-    except Exception as e:
-        print(f"[WEBHOOK ERROR] {e}")
-        # Always return 200 to Telegram to avoid retry loop - send error to admin
-        try:
-            send_telegram(f"⚠️ Webhook Error: {str(e)[:100]}", None)
-        except:
-            pass
-        return {"ok": True, "error": str(e), "note": "returned 200 to Telegram"}
+@app.api_route("/health", methods=["GET","HEAD"])
+def health():
+    return {"status":"OK V5.1 NO LEAK","dir":str(DATA_DIR),"auto":get_auto_state().get('btc',False)}
 
 @app.get("/", response_class=HTMLResponse)
 def home():
-    pos = calc_position_40()
-    perf = calc_performance()
-    auto = get_auto_state()
-    tele_status = "✅ ตั้งแล้ว" if (os.environ.get("TELEGRAM_BOT_TOKEN") or os.environ.get("BOT_TOKEN")) else "❌ ยังไม่ได้ตั้ง"
-    auto_status = "🟢 ON" if auto['enabled'] else "🔴 OFF"
-    return f"""
-    <html><head><title>G_POWER TELE $40</title>
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <style>
-    body{{background:#0a0e1a;color:#fff;font-family:Arial;padding:15px;margin:0}}
-    .card{{background:#1a2332;padding:15px;border-radius:12px;margin:10px 0;border-left:4px solid #ffcc00}}
-    .green{{border-left-color:#00ff88}}.blue{{border-left-color:#00aaff}}
-    h1{{color:#ffcc00;font-size:20px}}b{{color:#ffcc00}}
-    .btn{{background:#ffcc00;color:#000;border:0;padding:12px;border-radius:8px;font-weight:bold;text-decoration:none;display:block;text-align:center;margin:5px 0}}
-    .stat{{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:10px 0}}
-    .stat div{{background:#0f172a;padding:10px;border-radius:8px;text-align:center}}
-    .stat b{{font-size:18px;display:block}}
-    </style></head><body>
-    <h1>⚡ G_POWER TELE $40</h1>
-    <div class="stat">
-        <div><b style="color:{'#00ff88' if perf['total_pnl_usd']>=0 else '#ff4444'}">${perf['total_pnl_usd']:+.2f}</b>PnL</div>
-        <div><b>{perf['win_rate']}%</b>Win Rate</div>
-        <div><b>{auto_status}</b>Auto</div>
-        <div><b>{tele_status}</b>Tele</div>
-    </div>
-    <div class="card green">
-    <h3>💰 ทุน ${CAPITAL} Futures 3x | Auto {auto_status}</h3>
-    <p>เสี่ยง: <b>{pos['risk_pct']}% = ${pos['risk_amount']:.2f}</b> | Position: <b>${pos['position_size']:.2f}</b> | Margin: <b>${pos['margin_needed']:.2f}</b></p>
-    </div>
-    <div class="card blue">
-    <h3>📱 คำสั่ง Telegram</h3>
-    <p>/check - ดูสถานะ กำไร ทุน ออเดอร์</p>
-    <p>/on - เปิดรันออโต้</p>
-    <p>/off - ปิดรันออโต้</p>
-    </div>
-    <a class="btn" href="/dashboard">📊 Dashboard</a>
-    <a class="btn" href="/live?send_tele=true" style="background:#1a2332;color:#ffcc00;border:1px solid #ffcc00">📡 สัญญาณ + ส่ง Tele</a>
-    <a class="btn" href="/telegram/setwebhook" style="background:#1a2332;color:#00aaff;border:1px solid #00aaff">🔗 ตั้ง Webhook Tele</a>
-    <a class="btn" href="/telegram/test" style="background:#1a2332;color:#fff;border:1px solid #333">✈️ เทส Tele</a>
-    </body></html>
-    """
-
-@app.get("/telegram/test")
-def telegram_test():
-    token = os.environ.get("BOT_TOKEN", "") or os.environ.get("TELEGRAM_BOT_TOKEN", "")
-    chat_id = os.environ.get("CHAT_ID", "") or os.environ.get("TELEGRAM_CHAT_ID", "")
-    if not token or not chat_id:
-        return {"ok": False, "error": "ไม่มี BOT_TOKEN/CHAT_ID"}
-    msg = f"⚡ G_POWER TEST\n\n✅ ต่อ Tele แล้ว!\nทุน $40 Futures 3x\n{datetime.now().strftime('%d/%m %H:%M')}"
-    result = send_telegram(msg)
-    return {"ok": result['ok'], "result": result}
-
-@app.get("/dashboard", response_class=HTMLResponse)
-def dashboard():
-    perf = calc_performance()
-    pos = calc_position_40()
-    auto = get_auto_state()
-    trades_html = ""
-    for t in reversed(perf['trades'][-10:]):
-        color = "#00ff88" if t.get('result') == 'WIN' else "#ff4444" if t.get('result') == 'LOSS' else "#ffcc00"
-        status = t.get('status', 'UNKNOWN')
-        pnl = f"{t.get('pnl_usd', 0):+.2f}$" if status == 'CLOSED' else f"{t.get('pnl_usd', 0):+.2f}$ OPEN"
-        exit_val = t.get('exit')
-        exit_str = f"${exit_val}" if exit_val else "-"
-        trades_html += f"<tr style='border-bottom:1px solid #333'><td style='padding:6px'>{t.get('id')}</td><td style='padding:6px'><span style='background:{color};color:#000;padding:2px 6px;border-radius:4px;font-weight:bold'>{t.get('signal')}</span></td><td style='padding:6px'>${t.get('entry')}</td><td style='padding:6px'>{exit_str}</td><td style='padding:6px;color:{color}'>{pnl}</td><td style='padding:6px'>{status}</td></tr>"
-    return f"""
-    <html><head><title>Dashboard</title><meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <style>body{{background:#0a0e1a;color:#fff;font-family:Arial;padding:15px;margin:0}}
-    .card{{background:#1a2332;padding:12px;border-radius:12px;margin:8px 0;border-left:4px solid #ffcc00}}
-    h1{{color:#ffcc00;font-size:18px}}b{{color:#ffcc00}}
-    .stat{{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:8px 0}}
-    .stat div{{background:#0f172a;padding:10px;border-radius:8px;text-align:center}}
-    .stat b{{font-size:20px;display:block}}
-    table{{width:100%;font-size:11px;border-collapse:collapse}}
-    .btn{{background:#ffcc00;color:#000;border:0;padding:8px 12px;border-radius:6px;font-weight:bold;text-decoration:none;display:inline-block;margin:3px;font-size:11px}}
-    .btn2{{background:#1a2332;color:#ffcc00;border:1px solid #ffcc00}}</style></head><body>
-    <h1>📊 Dashboard - Auto {'🟢 ON' if auto['enabled'] else '🔴 OFF'}</h1>
-    <div class="stat">
-        <div><b style="color:{'#00ff88' if perf['total_pnl_usd']>=0 else '#ff4444'}">${perf['total_pnl_usd']:+.2f}</b>PnL</div>
-        <div><b>{perf['win_rate']}%</b>Win Rate</div>
-        <div><b>{perf['closed_trades']}</b>ปิด</div>
-        <div><b>{perf['win']}/{perf['loss']}</b>W/L</div>
-    </div>
-    <div class="card"><table><tr style="background:#0f172a"><th>ID</th><th>Signal</th><th>Entry</th><th>Exit</th><th>PnL</th><th>Status</th></tr>{trades_html}</table></div>
-    <a class="btn" href="/live">📡 สัญญาณ</a>
-    <a class="btn btn2" href="/">🏠 หน้าแรก</a>
-    </body></html>
-    """
+    auto=get_auto_state()
+    return f"<html><body style='background:#0a0e1a;color:#fff;font-family:Arial;padding:20px'><h1>G_POWER V5.1 AUDIT NO LEAK</h1><p>BTC {'🟢' if auto.get('btc') else '🔴'} GOLD {'🟢' if auto.get('gold') else '🔴'} SILVER {'🟢' if auto.get('silver') else '🔴'}</p><p>✅ HEAD OK | Atomic Save | MAX_POS | COOLDOWN | ENV strip</p><p>1.Retest 2.Trailing BE Lock CDC 3.TP Trend Change</p><a href='/ping'>Ping</a></body></html>"
 
 @app.get("/live")
-def live_signal(send_tele: bool = Query(False)):
-    try:
-        result = get_mexc_futures_data()
-        if isinstance(result, tuple):
-            return {"error":"MEXC fetch fail","detail":result[1]}
-        df = result
-        df = strat.add_indicators(df)
-        curr = df.iloc[-1]
-        prev = df.iloc[-2]
-        rev = strat.check_reversal(prev, curr)
-        trend = strat.check_trend(curr)
-        mom = strat.check_momentum(curr)
-        price = float(curr['close'])
-        pos = calc_position_40()
-        auto = get_auto_state()
-        
-        # CDC info
-        cdc_up = bool(curr.get('cdc_up', False))
-        cdc_down = bool(curr.get('cdc_down', False))
-        cdc_stop = float(curr.get('cdc_stop', 0))
-        cdc_dist = float(curr.get('cdc_dist_pct', 0))
-        cdc_trend_str = "🟢 UPTREND" if cdc_up else "🔴 DOWNTREND"
-        
-        signal = "WAIT"
-        if rev['long'] and trend['long'] and mom['long'] and not trend['sideway']:
-            signal = "LONG"
-        elif rev['short'] and trend['short'] and mom['short'] and not trend['sideway']:
-            signal = "SHORT"
-        
-        last = get_last_signal()
-        should_send = (signal != last.get('signal') and signal != "WAIT" and auto['enabled'])
-        
-        tele_result = None
-        if should_send or send_tele:
-            cdc_info = f"CDC: {cdc_trend_str} Stop ${cdc_stop:,.0f}"
-            if signal == "LONG":
-                msg = f"🚀 LONG ${price:,.0f}\n{cdc_info}\nPosition ${pos['position_size']:.2f} Margin ${pos['margin_needed']:.2f}\nTP ${price*1.18:,.0f} SL ${price*0.966:,.0f}\n{datetime.now().strftime('%d/%m %H:%M')}"
-            elif signal == "SHORT":
-                msg = f"🔻 SHORT ${price:,.0f}\n{cdc_info}\nPosition ${pos['position_size']:.2f} Margin ${pos['margin_needed']:.2f}\nTP ${price*0.82:,.0f} SL ${price*1.034:,.0f}\n{datetime.now().strftime('%d/%m %H:%M')}"
-            else:
-                msg = f"⏳ WAIT ${price:,.0f}\n{cdc_info} ({cdc_dist:+.2f}%)\n{datetime.now().strftime('%d/%m %H:%M')}"
-            tele_result = send_telegram(msg)
-            if should_send:
-                save_last_signal(signal, price)
-        
-        return {"price":price,"signal":signal,"cdc_trend": cdc_trend_str, "cdc_stop": cdc_stop, "cdc_dist": cdc_dist, "auto":auto['enabled'],"telegram_sent": tele_result is not None}
-    except Exception as e:
-        return {"error": str(e)}
+def live_api(symbol: str = Query("BTC/USDT")): return execute_symbol(symbol)
 
-@app.get("/health")
-def health():
-    return {"status":"OK","capital":CAPITAL,"auto": get_auto_state()['enabled'], "telegram": bool(os.environ.get("BOT_TOKEN") or os.environ.get("TELEGRAM_BOT_TOKEN"))}
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
+@app.get("/auto/run")
+def autorun():
+    auto=get_auto_state(); res=[]
+    for k in ['btc','gold','silver']:
+        if auto.get(k): res.append(execute_symbol(SYMBOLS[k]))
+    return {"results":res}
