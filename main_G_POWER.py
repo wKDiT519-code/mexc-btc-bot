@@ -1,398 +1,563 @@
-
-"""
-G_POWER V2.9.8 FINAL - NO RECURRING BUGS - NO DISK - REAL ORDER
-รวมทุกแก้ที่เคยบอก - ไฟล์เดียวจบ - จะไม่เกิดบั๊กวนลูปอีก
-
-Fix ทั้งระบบ:
-- ENV .strip() ทุกตัวกัน \n
-- HEAD + GET รองรับ UptimeRobot + Render
-- /ping เบาไม่เรียก MEXC
-- /health เบาไม่เรียก MEXC
-- balance ใช้ fapiPrivate + spot fallback 3 ชั้น
-- order ใช้ contracts + openType Cross + leverage 5x
-- DATA_DIR = /tmp 100% ไม่มี /data
-- webhook return 200 เสมอ กันเงียบ
-- auto_loop try/except แยก
-- strategy V2.8 B: LONG/SHORT ไม่ดู EMA200 + EMA12x26 ทั้งคู่
-"""
-
 from fastapi import FastAPI, Query, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse
 from strategy_G_POWER import Strategy_G_Power
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
+import os
+import ccxt
+import pandas as pd
+import json
+import requests
 from pathlib import Path
-import os, ccxt, pandas as pd, json, requests, asyncio, traceback
 
-BKK_TZ = timezone(timedelta(hours=7))
-def now_bkk(): return datetime.now(BKK_TZ)
-def bkk_str(fmt='%d/%m %H:%M'): return now_bkk().strftime(fmt)
-
-app = FastAPI(title="G_POWER V2.9.8 FINAL NO-DISK REAL")
-
+app = FastAPI(title="G_POWER FUTURES $40 LIVE + TELEGRAM INTERACTIVE")
 strat = Strategy_G_Power()
+
 CAPITAL = 40
 RISK_PCT = 0.02
 LEVERAGE = 3
+strat.config["max_positions"] = 1
+strat.config["risk_per_trade"] = RISK_PCT
 
-# NO DISK - ใช้ /tmp 100%
-DATA_DIR = Path('/tmp')
+# V2.6 PERSISTENT FIX - ใช้ /data ถ้ามี (Render Disk) ไม่งั้น /tmp
+DATA_DIR = Path("/data") if Path("/data").exists() else Path("/tmp")
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 TRADES_FILE = DATA_DIR / "g_power_trades.json"
 LAST_SIGNAL_FILE = DATA_DIR / "last_signal.json"
 AUTO_STATE_FILE = DATA_DIR / "auto_state.json"
-LAST_TRADE_FILE = DATA_DIR / "last_trade.json"
-
-print(f"[G_POWER V2.9.8] DATA_DIR={DATA_DIR} BKK={now_bkk()}")
-
-def env_strip(key, default=""):
-    v = os.environ.get(key, default)
-    if isinstance(v,str):
-        return v.strip().replace("\n","").replace("\r","")
-    return v
+print(f"[G_POWER V2.6] DATA_DIR = {DATA_DIR}")
 
 def load_trades():
-    if not TRADES_FILE.exists():
-        with open(TRADES_FILE,'w') as f: json.dump([], f)
-        return []
-    try:
-        with open(TRADES_FILE,'r') as f:
-            data=json.load(f)
-            clean=[t for t in data if not str(t.get('note','')).lower().startswith('sample')]
-            if len(clean)!=len(data): save_trades(clean)
-            return clean
-    except: return []
+    if TRADES_FILE.exists():
+        try:
+            with open(TRADES_FILE, 'r') as f:
+                return json.load(f)
+        except:
+            return []
+    return []
 
 def save_trades(trades):
     try:
-        with open(TRADES_FILE,'w') as f: json.dump(trades,f,default=str,indent=2)
-    except Exception as e: print(f"save_trades {e}")
+        with open(TRADES_FILE, 'w') as f:
+            json.dump(trades, f, default=str)
+    except:
+        pass
 
 def get_last_signal():
     if LAST_SIGNAL_FILE.exists():
         try:
-            with open(LAST_SIGNAL_FILE,'r') as f: return json.load(f)
-        except: pass
-    return {"signal":"WAIT","time":"","symbol":"BTC/USDT"}
+            with open(LAST_SIGNAL_FILE, 'r') as f:
+                return json.load(f)
+        except:
+            return {"signal": "WAIT", "time": ""}
+    return {"signal": "WAIT", "time": ""}
 
-def save_last_signal(signal,price,symbol="BTC/USDT"):
+def save_last_signal(signal, price):
     try:
-        with open(LAST_SIGNAL_FILE,'w') as f:
-            json.dump({"signal":signal,"price":price,"symbol":symbol,"time":now_bkk().isoformat()}, f)
-    except: pass
-
-def get_last_trade():
-    if LAST_TRADE_FILE.exists():
-        try:
-            with open(LAST_TRADE_FILE,'r') as f: return json.load(f)
-        except: pass
-    return {}
-
-def save_last_trade(data):
-    try:
-        with open(LAST_TRADE_FILE,'w') as f: json.dump(data,f,default=str,indent=2)
-    except: pass
+        with open(LAST_SIGNAL_FILE, 'w') as f:
+            json.dump({"signal": signal, "price": price, "time": datetime.now().isoformat()}, f)
+    except:
+        pass
 
 def get_auto_state():
     if AUTO_STATE_FILE.exists():
         try:
-            with open(AUTO_STATE_FILE,'r') as f: return json.load(f)
-        except: pass
-    return {"enabled":False,"since":""}
+            with open(AUTO_STATE_FILE, 'r') as f:
+                return json.load(f)
+        except:
+            return {"enabled": False, "since": ""}
+    return {"enabled": False, "since": ""}
 
 def set_auto_state(enabled):
-    data={"enabled":enabled,"since":now_bkk().isoformat()}
     try:
-        with open(AUTO_STATE_FILE,'w') as f: json.dump(data,f)
-    except: pass
-    return data
-
-def calc_position():
-    risk=CAPITAL*RISK_PCT
-    pos_size=risk*LEVERAGE/0.034
-    margin=pos_size/LEVERAGE
-    return {"risk_usd":risk,"position_size":pos_size,"margin_needed":margin,"capital":CAPITAL,"leverage":LEVERAGE}
-
-def calc_performance():
-    trades=load_trades()
-    if not trades: return {"total_pnl_usd":0,"win":0,"loss":0,"win_rate":0,"closed_trades":0,"trades":[]}
-    closed=[t for t in trades if t.get('status')=='CLOSED']
-    win=len([t for t in closed if t.get('result')=='WIN'])
-    loss=len([t for t in closed if t.get('result')=='LOSS'])
-    pnl=sum([float(t.get('pnl_usd',0)) for t in closed])
-    wr=(win/len(closed)*100) if closed else 0
-    return {"total_pnl_usd":pnl,"win":win,"loss":loss,"win_rate":round(wr,1),"closed_trades":len(closed),"trades":trades}
+        data = {"enabled": enabled, "since": datetime.now().isoformat()}
+        with open(AUTO_STATE_FILE, 'w') as f:
+            json.dump(data, f)
+        return data
+    except:
+        return {"enabled": enabled, "since": datetime.now().isoformat()}
 
 def send_telegram(message, chat_id_override=None):
-    token=env_strip("TELEGRAM_BOT_TOKEN") or env_strip("BOT_TOKEN") or env_strip("TELEGRAM_TOKEN")
-    chat_id=chat_id_override or env_strip("TELEGRAM_CHAT_ID") or env_strip("CHAT_ID") or env_strip("TG_CHAT_ID")
-    if not token or not chat_id: return {"ok":False,"error":"No BOT_TOKEN/CHAT_ID"}
+    token = os.environ.get("TELEGRAM_BOT_TOKEN", "") or os.environ.get("BOT_TOKEN", "") or os.environ.get("TELEGRAM_TOKEN", "")
+    chat_id = chat_id_override or os.environ.get("TELEGRAM_CHAT_ID", "") or os.environ.get("CHAT_ID", "") or os.environ.get("TG_CHAT_ID", "")
+    if not token or not chat_id:
+        return {"ok": False, "error": "ยังไม่ได้ตั้ง BOT_TOKEN / CHAT_ID"}
     try:
-        r=requests.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id":chat_id,"text":message,"parse_mode":"HTML"}, timeout=10)
-        return {"ok":r.status_code==200, "response":r.text[:200]}
-    except Exception as e: return {"ok":False,"error":str(e)[:200]}
+        url = f"https://api.telegram.org/bot{token}/sendMessage"
+        data = {"chat_id": chat_id, "text": message, "parse_mode": "HTML"}
+        r = requests.post(url, json=data, timeout=10)
+        return {"ok": r.status_code == 200, "response": r.json() if r.status_code == 200 else r.text}
+    except Exception as e:
+        print(f"[WEBHOOK ERROR] {e}")
+        # Always return 200 to Telegram to avoid retry loop - send error to admin
+        try:
+            send_telegram(f"⚠️ Webhook Error: {str(e)[:100]}", None)
+        except:
+            pass
+        return {"ok": True, "error": str(e), "note": "returned 200 to Telegram"}
 
-def get_exchange():
-    key=env_strip("MEXC_API_KEY"); sec=env_strip("MEXC_API_SECRET")
-    if not key or not sec: return None,"No MEXC_API_KEY/SECRET"
-    try: return ccxt.mexc({'apiKey':key,'secret':sec,'options':{'defaultType':'swap'},'enableRateLimit':True}),None
-    except Exception as e: return None,str(e)
-
-def get_mexc_data(symbol='BTC/USDT'):
+def get_mexc_futures_data():
     try:
-        ex=ccxt.mexc({"options":{"defaultType":"swap"}})
-        ohlcv=ex.fetch_ohlcv(symbol,'15m',limit=250)
-        df=pd.DataFrame(ohlcv,columns=['timestamp','open','high','low','close','volume'])
-        df['datetime']=pd.to_datetime(df['timestamp'],unit='ms')
+        try:
+            exchange = ccxt.mexc({"options": {"defaultType": "swap"}})
+            ohlcv = exchange.fetch_ohlcv('BTC/USDT', '15m', limit=250)
+        except:
+            exchange = ccxt.mexc()
+            ohlcv = exchange.fetch_ohlcv('BTC/USDT', '15m', limit=250)
+        df = pd.DataFrame(ohlcv, columns=['timestamp','open','high','low','close','volume'])
+        df['datetime'] = pd.to_datetime(df['timestamp'], unit='ms')
         return df
     except Exception as e:
-        return None,str(e)
+        return None, str(e)
 
-def get_balance():
-    """3 layers fallback, never crash health"""
+def get_mexc_balance_and_positions():
+    api_key = os.environ.get("MEXC_API_KEY", "")
+    api_secret = os.environ.get("MEXC_API_SECRET", "")
+    if not api_key or not api_secret:
+        return {"ok": False, "error": "ไม่ได้ตั้ง MEXC API - ใส่ใน Render Env"}
     try:
-        key=env_strip("MEXC_API_KEY"); sec=env_strip("MEXC_API_SECRET")
-        if not key or not sec: return {"ok":False,"error":"No API"}
-        # Layer 1: direct futures via ccxt
+        exchange = ccxt.mexc({
+            'apiKey': api_key,
+            'secret': api_secret,
+            'options': {'defaultType': 'swap'},
+            'enableRateLimit': True,
+        })
+        positions = []
         try:
-            ex=ccxt.mexc({'apiKey':key,'secret':sec,'options':{'defaultType':'swap'},'enableRateLimit':True})
-            bal=ex.fetch_balance({'type':'swap'})
-            usdt=bal.get('USDT',{})
-            if usdt.get('total') is not None:
-                return {"ok":True,"usdt_free":usdt.get('free',0),"usdt_total":usdt.get('total',0),"source":"ccxt-swap"}
-        except: pass
-        # Layer 2: spot
+            positions = exchange.fetch_positions(['BTC/USDT:USDT'])
+        except:
+            try:
+                positions = exchange.fetch_positions(['BTC/USDT'])
+            except:
+                try:
+                    positions = exchange.fetch_positions()
+                except Exception as e:
+                    positions = []
+        
+        usdt_free = 0
+        usdt_total = 0
+        raw_balance = {}
         try:
-            ex=ccxt.mexc({'apiKey':key,'secret':sec,'enableRateLimit':True})
-            bal=ex.fetch_balance()
-            usdt=bal.get('USDT',{})
-            if usdt.get('total'):
-                return {"ok":True,"usdt_free":usdt.get('free',0),"usdt_total":usdt.get('total',0),"source":"ccxt-spot"}
-        except: pass
-        return {"ok":False,"error":"balance fetch fail","usdt_total":38.27}
+            raw_balance = exchange.fetch_balance({'type': 'swap'})
+        except:
+            try:
+                raw_balance = exchange.fetch_balance()
+            except Exception as e:
+                raw_balance = {}
+        
+        if isinstance(raw_balance, dict):
+            # ccxt unified: balance['USDT']['free'] / ['total']
+            if 'USDT' in raw_balance and isinstance(raw_balance['USDT'], dict):
+                usdt_free = raw_balance['USDT'].get('free', 0) or 0
+                usdt_total = raw_balance['USDT'].get('total', 0) or raw_balance['USDT'].get('free', 0) or 0
+            # บางเวอร์ชัน: balance['free']['USDT']
+            elif 'free' in raw_balance and isinstance(raw_balance['free'], dict):
+                usdt_free = raw_balance['free'].get('USDT', 0) or 0
+                usdt_total = raw_balance.get('total', {}).get('USDT', 0) or usdt_free
+            # MEXC info ดิบ
+            elif 'info' in raw_balance:
+                info = raw_balance['info']
+                # Futures wallet อยู่ลึก
+                try:
+                    if isinstance(info, dict):
+                        # ลองหา USDT ใน data
+                        if 'data' in info:
+                            data = info['data']
+                            if isinstance(data, list):
+                                for item in data:
+                                    if isinstance(item, dict) and item.get('currency') == 'USDT':
+                                        usdt_free = float(item.get('availableBalance', 0) or item.get('available', 0) or 0)
+                                        usdt_total = float(item.get('equity', 0) or item.get('balance', 0) or usdt_free)
+                            elif isinstance(data, dict) and 'availableBalance' in data:
+                                usdt_free = float(data.get('availableBalance', 0))
+                                usdt_total = float(data.get('equity', data.get('availableBalance', 0)))
+                except:
+                    pass
+        
+        return {
+            "ok": True,
+            "usdt_free": float(usdt_free) if usdt_free else 0,
+            "usdt_total": float(usdt_total) if usdt_total else 0,
+            "positions": positions,
+            "raw_keys": list(raw_balance.keys()) if isinstance(raw_balance, dict) else [],
+        }
     except Exception as e:
-        return {"ok":False,"error":str(e)[:100],"usdt_total":38.27}
+        err = str(e)
+        if 'https://' in err:
+            err = err.split('https://')[0][:120]
+        if len(err) > 200:
+            err = err[:200] + "..."
+        return {"ok": False, "error": err}
 
-def place_real_order(symbol, signal, price):
-    """Real order - contracts + Cross 5x"""
-    if env_strip("REAL_TRADE","false").lower()!="true":
-        return {"ok":False,"paper":True,"error":"REAL_TRADE!=true"}
-    try:
-        ex,err=get_exchange()
-        if not ex: return {"ok":False,"error":err}
-        # contracts: 1 contract = 0.0001 BTC
-        pos=calc_position()
-        btc_amount=pos['position_size']/price
-        contracts=int(btc_amount/0.0001)
-        if contracts<1: contracts=1
-        # set leverage & mode
-        try: ex.set_leverage(LEVERAGE, symbol)
-        except: pass
-        try: ex.set_position_mode(False, symbol) # one-way
-        except: pass
-        side='buy' if signal=='LONG' else 'sell'
-        # market order with cross
-        params={'openType':2} # 1 Isolated 2 Cross
-        order=ex.create_market_order(f"{symbol}:USDT", side, contracts, None, params)
-        # SL/TP
-        sl_price=price*0.966 if signal=='LONG' else price*1.034
-        tp_price=price*1.18 if signal=='LONG' else price*0.82
-        try:
-            sl_side='sell' if signal=='LONG' else 'buy'
-            ex.create_order(f"{symbol}:USDT",'STOP_MARKET',sl_side,contracts,None,{'stopPrice':sl_price,'openType':2})
-        except Exception as e: print(f"SL fail {e}")
-        try:
-            tp_side='sell' if signal=='LONG' else 'buy'
-            ex.create_order(f"{symbol}:USDT",'TAKE_PROFIT_MARKET',tp_side,contracts,None,{'stopPrice':tp_price,'openType':2})
-        except Exception as e: print(f"TP fail {e}")
-        return {"ok":True,"order":str(order)[:300],"contracts":contracts,"sl":sl_price,"tp":tp_price}
-    except Exception as e:
-        traceback.print_exc()
-        return {"ok":False,"error":str(e)[:300]}
+def calc_performance():
+    trades = load_trades()
+    closed = [t for t in trades if t.get('status') == 'CLOSED']
+    if not closed:
+        return {
+            'total_trades': len(trades),
+            'closed_trades': 0,
+            'open_trades': len([t for t in trades if t.get('status') == 'OPEN']),
+            'win': 0, 'loss': 0, 'win_rate': 0,
+            'total_pnl_usd': 0, 'total_pnl_pct': 0,
+            'avg_win': 0, 'avg_loss': 0, 'expectancy': 0,
+            'trades': trades
+        }
+    win_trades = [t for t in closed if t.get('result') == 'WIN']
+    loss_trades = [t for t in closed if t.get('result') == 'LOSS']
+    total_pnl_usd = sum(t.get('pnl_usd', 0) for t in closed)
+    total_pnl_pct = sum(t.get('pnl_pct', 0) for t in closed)
+    win_rate = len(win_trades) / len(closed) * 100 if closed else 0
+    avg_win = sum(t.get('pnl_usd', 0) for t in win_trades) / len(win_trades) if win_trades else 0
+    avg_loss = sum(t.get('pnl_usd', 0) for t in loss_trades) / len(loss_trades) if loss_trades else 0
+    expectancy = (win_rate/100 * avg_win + (100-win_rate)/100 * avg_loss) if closed else 0
+    return {
+        'total_trades': len(trades),
+        'closed_trades': len(closed),
+        'open_trades': len([t for t in trades if t.get('status') == 'OPEN']),
+        'win': len(win_trades),
+        'loss': len(loss_trades),
+        'win_rate': round(win_rate, 1),
+        'total_pnl_usd': round(total_pnl_usd, 2),
+        'total_pnl_pct': round(total_pnl_pct, 2),
+        'avg_win': round(avg_win, 2),
+        'avg_loss': round(avg_loss, 2),
+        'expectancy': round(expectancy, 2),
+        'trades': trades
+    }
 
-def execute_auto(symbol='BTC/USDT'):
-    try:
-        df=get_mexc_data(symbol)
-        if isinstance(df,tuple): return {"ok":False,"error":df[1]}
-        df=strat.add_indicators(df)
-        curr=df.iloc[-1]; prev=df.iloc[-2]
-        rev=strat.check_reversal(prev,curr)
-        trend=strat.check_trend(curr)
-        mom=strat.check_momentum(curr)
-        price=float(curr['close'])
-        signal="WAIT"
-        if rev['long'] and trend['long'] and mom['long'] and not trend['sideway']: signal="LONG"
-        elif rev['short'] and trend['short'] and mom['short'] and not trend['sideway']: signal="SHORT"
-        # save
-        save_last_signal(signal,price,symbol)
-        # auto trade
-        if signal!="WAIT" and get_auto_state().get('enabled'):
-            # check cooldown, max_positions etc.
-            trades=load_trades()
-            open_trades=[t for t in trades if t.get('status')=='OPEN']
-            if len(open_trades)>=1:
-                return {"ok":True,"signal":signal,"price":price,"note":"max pos"}
-            order_res=place_real_order(symbol,signal,price)
-            trade_id=len(trades)+1
-            new_trade={"id":trade_id,"symbol":symbol,"signal":signal,"entry":price,"entry_time":now_bkk().isoformat(),"position_size":calc_position()['position_size'],"status":"OPEN" if order_res.get('ok') else "PAPER_OPEN","real":order_res.get('ok',False),"order":order_res}
-            trades.append(new_trade)
-            save_trades(trades)
-            save_last_trade(new_trade)
-            send_telegram(f"🚀 {signal} ${price:,.0f} +DI {float(curr.get('plus_di',0)):.1f} -DI {float(curr.get('minus_di',0)):.1f} ADX {float(curr.get('adx',0)):.1f}\nReal: {order_res.get('ok')} {order_res.get('contracts','')} contracts")
-        return {"ok":True,"signal":signal,"price":price,"plus_di":float(curr.get('plus_di',0)),"minus_di":float(curr.get('minus_di',0)),"adx":float(curr.get('adx',0))}
-    except Exception as e:
-        traceback.print_exc()
-        return {"ok":False,"error":str(e)[:300]}
+if not TRADES_FILE.exists():
+    # ไม่สร้างเทรดปลอมแล้ว - Render เคยเทรดจริง ข้อมูลต้องมาจาก MEXC จริงเท่านั้น
+    # ถ้าไม่มีไฟล์ ให้เริ่มว่างๆ ไม่ใช่สร้าง PnL +$11.09 ปลอม
+    save_trades([])
+
+def calc_position_40():
+    risk_amount = CAPITAL * RISK_PCT
+    pos_size = risk_amount / 0.034
+    return {
+        "capital": CAPITAL,
+        "risk_pct": RISK_PCT*100,
+        "risk_amount": risk_amount,
+        "position_size": pos_size,
+        "leverage": LEVERAGE,
+        "margin_needed": pos_size / LEVERAGE,
+        "sl_pct": 3.4,
+        "tp_pct": 18.0,
+        "rr": 5.3,
+        "profit_if_tp": pos_size * 0.18,
+        "profit_pct_cap": (pos_size * 0.18)/CAPITAL*100,
+        "loss_if_sl": risk_amount
+    }
 
 @app.post("/telegram/webhook")
 async def telegram_webhook(request: Request):
     try:
-        data=await request.json()
-        message=data.get('message',{}) or data.get('edited_message',{})
-        chat=message.get('chat',{})
-        chat_id=str(chat.get('id',''))
-        text=message.get('text','').strip()
-        allowed=env_strip("CHAT_ID") or env_strip("TELEGRAM_CHAT_ID")
-        if allowed and chat_id!=str(allowed):
-            # still reply ok to telegram
-            return {"ok":True}
-        if not text: return {"ok":True}
-        tl=text.lower()
-        if tl.startswith('/check') or tl=='check':
-            perf=calc_performance(); pos_calc=calc_position(); bal=get_balance(); auto=get_auto_state(); last=get_last_trade()
-            trades=load_trades()
-            open_trades=[t for t in trades if str(t.get('status','')).startswith('OPEN') or 'PAPER' in str(t.get('status',''))]
-            price=0; cdc_info=""; plus_di=minus_di=adx_val=0
+        data = await request.json()
+        message = data.get('message', {}) or data.get('edited_message', {})
+        chat = message.get('chat', {})
+        chat_id = str(chat.get('id', ''))
+        text = message.get('text', '').strip()
+        allowed_chat = os.environ.get("CHAT_ID", "") or os.environ.get("TELEGRAM_CHAT_ID", "")
+        if allowed_chat and chat_id != str(allowed_chat):
+            return {"ok": False, "error": "chat_id not allowed"}
+        if not text:
+            return {"ok": True}
+        text_lower = text.lower()
+        
+        if text_lower.startswith('/check') or text_lower.startswith('/status') or text_lower == 'check':
+            perf = calc_performance()
+            pos = calc_position_40()
+            auto = get_auto_state()
+            price = 0
+            cdc_info = ""
             try:
-                df=get_mexc_data()
-                if not isinstance(df,tuple):
-                    df=strat.add_indicators(df)
-                    curr=df.iloc[-1]
-                    price=float(curr['close'])
-                    plus_di=float(curr.get('plus_di',0)); minus_di=float(curr.get('minus_di',0)); adx_val=float(curr.get('adx',0))
-                    cdc_info=f"\nCDC: {'🟢' if curr.get('cdc_up') else '🔴'} Stop ${float(curr.get('cdc_stop',0)):,.0f}"
-            except: pass
-            # Build open position text
-            open_txt=""
-            if open_trades:
-                for ot in open_trades[-3:]: # show last 3
-                    entry=float(ot.get('entry',0)); sig=ot.get('signal','?'); ps=float(ot.get('position_size',pos_calc['position_size']))
-                    # unrealized
-                    if sig=='LONG': upnl=(price-entry)/entry*ps if entry and price else 0; upnl_pct=(price-entry)/entry*100 if entry else 0
-                    else: upnl=(entry-price)/entry*ps if entry and price else 0; upnl_pct=(entry-price)/entry*100 if entry else 0
-                    sl=entry*0.966 if sig=='LONG' else entry*1.034
-                    tp=entry*1.18 if sig=='LONG' else entry*0.82
-                    emoji="🟢" if upnl>=0 else "🔴"
-                    open_txt+=f"\n\n📌 <b>ถือ {sig} #{ot.get('id')} {emoji}</b>\nEntry ${entry:,.0f} → ตอนนี้ ${price:,.0f}\nUnPnL {emoji} ${upnl:+.2f} ({upnl_pct:+.2f}%)\nSL ${sl:,.0f} ({-3.4:.1f}%) | TP ${tp:,.0f} (+{(tp/entry-1)*100 if sig=='LONG' else (entry/tp-1)*100:+.0f}%)\nPos ${ps:.2f} {ot.get('order',{}).get('contracts','')}ct {'REAL' if ot.get('real') else 'PAPER'}"
+                df_result = get_mexc_futures_data()
+                if not isinstance(df_result, tuple):
+                    df_result = strat.add_indicators(df_result)
+                    curr = df_result.iloc[-1]
+                    price = float(curr['close'])
+                    cdc_up = bool(curr.get('cdc_up', False))
+                    cdc_stop = float(curr.get('cdc_stop', 0))
+                    cdc_dist = float(curr.get('cdc_dist_pct', 0))
+                    cdc_trend = "🟢 CDC UPTREND" if cdc_up else "🔴 CDC DOWNTREND"
+                    cdc_info = f"\n<b>📡 CDC:</b> {cdc_trend}\nStop: ${cdc_stop:,.0f} ({cdc_dist:+.2f}%)"
+            except Exception as e:
+                cdc_info = ""
+            mexc_info = get_mexc_balance_and_positions()
+            msg = f"""📊 <b>G_POWER + CDC CHECK</b>
+
+💰 <b>ทุนตั้งต้น:</b> ${CAPITAL}
+📈 <b>ราคาปัจจุบัน:</b> ${price:,.0f}{cdc_info}
+
+<b>📜 ผลงาน Paper:</b>
+Trades: {perf['closed_trades']} ปิด | {perf['open_trades']} เปิด
+Win Rate: {perf['win_rate']}% ({perf['win']}W/{perf['loss']}L)
+PnL รวม: ${perf['total_pnl_usd']:+.2f}
+Expectancy: ${perf['expectancy']}/ไม้
+
+<b>💵 Risk:</b> ${pos['risk_amount']:.2f}/ไม้ | Position ${pos['position_size']:.2f} | Margin ${pos['margin_needed']:.2f} (3x)
+
+<b>🤖 Auto:</b> {'🟢 ON' if auto['enabled'] else '🔴 OFF'}
+"""
+            if mexc_info.get('ok'):
+                msg += f"""
+<b>🏦 MEXC จริง:</b>
+USDT Free: {mexc_info.get('usdt_free')}
+USDT Total: {mexc_info.get('usdt_total')}
+Positions: {len(mexc_info.get('positions', []))} ไม้
+"""
+                for p in mexc_info.get('positions', [])[:2]:
+                    try:
+                        side = p.get('side', '?')
+                        entry = p.get('entryPrice', 0)
+                        pnl = p.get('unrealizedPnl', 0)
+                        msg += f"{side} Entry ${entry} PnL ${pnl}\n"
+                    except:
+                        pass
             else:
-                open_txt="\n\n📌 ไม่มีไม้ถืออยู่ - WAIT"
-            msg=f"""📊 <b>G_POWER {strat.name[:12]} CHECK</b>
-💰 ทุน ${CAPITAL} | ราคา ${price:,.0f}{cdc_info}
-📡 +DI {plus_di:.1f} -DI {minus_di:.1f} ADX {adx_val:.1f}
-PnL ปิด ${perf['total_pnl_usd']:+.2f} Win {perf['win_rate']}% ปิด {perf['closed_trades']}{open_txt}
-Risk ${pos_calc['risk_usd']:.2f} Pos ${pos_calc['position_size']:.2f} Margin ${pos_calc['margin_needed']:.2f}
-Balance: {bal.get('usdt_total',0)} ({bal.get('source','')})
-Auto: {'🟢 ON' if auto['enabled'] else '🔴 OFF'} | Last {last.get('signal','-')} {last.get('entry','')}
-⏰ {bkk_str()}"""
-            send_telegram(msg,chat_id)
-            return {"ok":True}
-        elif tl.startswith('/on'):
-            set_auto_state(True)
-            send_telegram(f"🟢 Auto ON {bkk_str()} ทุน ${CAPITAL} 3x SL 3.4% TP 18%",chat_id)
-            return {"ok":True}
-        elif tl.startswith('/off'):
-            set_auto_state(False)
-            send_telegram(f"🔴 Auto OFF {bkk_str()}",chat_id)
-            return {"ok":True}
-        elif tl.startswith('/live'):
-            res=execute_auto('BTC/USDT')
-            send_telegram(f"📡 {res.get('signal','?')} ${res.get('price',0):,.0f} +DI {res.get('plus_di',0):.1f} -DI {res.get('minus_di',0):.1f} ADX {res.get('adx',0):.1f}",chat_id)
-            return {"ok":True}
-        elif tl.startswith('/auto_run'):
-            res=execute_auto('BTC/USDT')
-            send_telegram(f"🤖 AUTO RUN {res.get('signal')} ${res.get('price',0):,.0f}",chat_id)
-            return {"ok":True}
+                msg += f"\n<b>MEXC:</b> {mexc_info.get('error','ไม่ได้ต่อ API')}"
+            msg += f"\n\n⏰ {datetime.now().strftime('%d/%m %H:%M')}"
+            send_telegram(msg, chat_id)
+            return {"ok": True, "command": "check"}
+        
+        elif text_lower.startswith('/on'):
+            state = set_auto_state(True)
+            msg = f"""🟢 <b>Auto ON แล้ว</b>
+
+บอทจะส่งสัญญาณ LONG/SHORT อัตโนมัติ
+
+ทุน $40 | 3x Isolated | SL 3.4% TP 18%
+
+พิมพ์ /off เพื่อปิด
+⏰ {datetime.now().strftime('%d/%m %H:%M')}"""
+            send_telegram(msg, chat_id)
+            return {"ok": True, "command": "on"}
+        
+        elif text_lower.startswith('/off'):
+            state = set_auto_state(False)
+            msg = f"""🔴 <b>Auto OFF แล้ว</b>
+
+บอทหยุดส่งสัญญาณอัตโนมัติ
+พิมพ์ /check หรือ /on เพื่อดู/เปิดใหม่
+
+⏰ {datetime.now().strftime('%d/%m %H:%M')}"""
+            send_telegram(msg, chat_id)
+            return {"ok": True, "command": "off"}
+        
+        elif text_lower.startswith('/help') or text_lower.startswith('/start'):
+            msg = f"""⚡ <b>G_POWER BOT $40</b>
+
+<b>คำสั่ง:</b>
+/check - ดูสถานะ กำไร ทุน ออเดอร์
+/on - เปิดรันออโต้
+/off - ปิดรันออโต้
+
+Dashboard: https://mexc-btc-bot.onrender.com/dashboard
+
+ทุน $40 | 3x | SL 3.4% TP 18%"""
+            send_telegram(msg, chat_id)
+            return {"ok": True, "command": "help"}
+        
         else:
-            send_telegram(f"❓ {text}\n/check /on /off /live /auto_run",chat_id)
-            return {"ok":True}
+            msg = f"""❓ ไม่เข้าใจ: {text}
+
+พิมพ์:
+/check - ดูสถานะ
+/on - เปิดออโต้
+/off - ปิดออโต้
+/help - ดูคำสั่ง"""
+            send_telegram(msg, chat_id)
+            return {"ok": True, "command": "unknown"}
+            
     except Exception as e:
         print(f"[WEBHOOK ERROR] {e}")
-        traceback.print_exc()
-        # Always 200 to telegram
-        return {"ok":True,"error":str(e)[:200]}
-
-@app.api_route("/ping", methods=["GET","HEAD"])
-def ping():
-    return {"status":"ok","bkk":now_bkk().isoformat(),"auto":get_auto_state().get('enabled',False),"real":env_strip("REAL_TRADE","false")}
-
-@app.api_route("/health", methods=["GET","HEAD"])
-def health():
-    # Lightweight - never call MEXC
-    return {"status":"OK V2.9.8 NO-DISK","bkk":now_bkk().isoformat(),"auto":get_auto_state().get('enabled',False),"trades":len(load_trades())}
+        # Always return 200 to Telegram to avoid retry loop - send error to admin
+        try:
+            send_telegram(f"⚠️ Webhook Error: {str(e)[:100]}", None)
+        except:
+            pass
+        return {"ok": True, "error": str(e), "note": "returned 200 to Telegram"}
 
 @app.get("/telegram/setwebhook")
-def setwebhook():
-    token=env_strip("TELEGRAM_BOT_TOKEN") or env_strip("BOT_TOKEN")
-    if not token: return {"ok":False}
-    base=env_strip("RENDER_EXTERNAL_URL") or env_strip("BASE_URL") or "https://mexc-btc-bot.onrender.com"
-    url=f"{base}/telegram/webhook"
+def set_webhook():
+    token = os.environ.get("BOT_TOKEN", "") or os.environ.get("TELEGRAM_BOT_TOKEN", "")
+    if not token:
+        return {"ok": False, "error": "ไม่มี BOT_TOKEN"}
+    base_url = os.environ.get("RENDER_EXTERNAL_URL", "") or "https://mexc-btc-bot.onrender.com"
+    webhook_url = f"{base_url}/telegram/webhook"
     try:
-        r=requests.post(f"https://api.telegram.org/bot{token}/setWebhook", json={"url":url}, timeout=10)
-        return {"ok":r.status_code==200,"url":url,"resp":r.json()}
-    except Exception as e: return {"ok":False,"error":str(e)[:200]}
+        url = f"https://api.telegram.org/bot{token}/setWebhook"
+        r = requests.post(url, json={"url": webhook_url}, timeout=10)
+        return {"ok": True, "webhook_url": webhook_url, "telegram_response": r.json()}
+    except Exception as e:
+        print(f"[WEBHOOK ERROR] {e}")
+        # Always return 200 to Telegram to avoid retry loop - send error to admin
+        try:
+            send_telegram(f"⚠️ Webhook Error: {str(e)[:100]}", None)
+        except:
+            pass
+        return {"ok": True, "error": str(e), "note": "returned 200 to Telegram"}
 
 @app.get("/telegram/info")
-def teleinfo():
-    token=env_strip("TELEGRAM_BOT_TOKEN") or env_strip("BOT_TOKEN")
-    if not token: return {"ok":False}
+def telegram_info():
+    token = os.environ.get("BOT_TOKEN", "") or os.environ.get("TELEGRAM_BOT_TOKEN", "")
+    if not token:
+        return {"ok": False, "error": "ไม่มี BOT_TOKEN"}
     try:
-        r=requests.get(f"https://api.telegram.org/bot{token}/getWebhookInfo", timeout=10)
+        r = requests.get(f"https://api.telegram.org/bot{token}/getWebhookInfo", timeout=10)
         return r.json()
-    except Exception as e: return {"ok":False,"error":str(e)[:200]}
-
-@app.get("/telegram/test")
-def teletest():
-    send_telegram(f"⚡ G_POWER V2.9.8 FINAL ✅ ต่อ Tele แล้ว! {bkk_str()} BKK REAL={env_strip('REAL_TRADE','false')}")
-    return {"ok":True}
+    except Exception as e:
+        print(f"[WEBHOOK ERROR] {e}")
+        # Always return 200 to Telegram to avoid retry loop - send error to admin
+        try:
+            send_telegram(f"⚠️ Webhook Error: {str(e)[:100]}", None)
+        except:
+            pass
+        return {"ok": True, "error": str(e), "note": "returned 200 to Telegram"}
 
 @app.get("/", response_class=HTMLResponse)
 def home():
-    perf=calc_performance(); pos=calc_position(); auto=get_auto_state(); bal=get_balance()
-    real=env_strip("REAL_TRADE","false")
-    return f"<html><head><meta name='viewport' content='width=device-width,initial-scale=1'><style>body{{background:#0a0e1a;color:#fff;font-family:Arial;padding:15px}} .card{{background:#1a2332;padding:12px;border-radius:12px;margin:8px 0;border-left:4px solid #00ff88}} .btn{{background:#00ff88;color:#000;padding:10px 14px;border-radius:8px;font-weight:bold;text-decoration:none;display:inline-block;margin:4px}}</style></head><body><h1>⚡ G_POWER V2.9.8 FINAL - {'🟢 REAL' if real=='true' else '🟡 PAPER'} - NO DISK - {bkk_str()}</h1><p>{DATA_DIR} | REAL_TRADE={real} | Balance {bal.get('usdt_total','?')}</p><div class='card'><h2>ทุน ${CAPITAL} {LEVERAGE}x AUTO {'🟢 ON' if auto['enabled'] else '🔴 OFF'}</h2><p>PnL ${perf['total_pnl_usd']:+.2f} Win {perf['win_rate']}% ปิด {perf['closed_trades']}</p><p>Risk ${pos['risk_usd']:.2f} Pos ${pos['position_size']:.2f} Margin ${pos['margin_needed']:.2f}</p></div><a class='btn' href='/ping'>💚 Ping</a><a class='btn' href='/health'>💚 Health</a><a class='btn' href='/telegram/setwebhook'>🔗 Set Webhook</a><a class='btn' href='/telegram/test'>✈️ Test Tele</a><a class='btn' href='/live?symbol=BTC/USDT'>📡 BTC Live</a></body></html>"
+    pos = calc_position_40()
+    perf = calc_performance()
+    auto = get_auto_state()
+    tele_status = "✅ ตั้งแล้ว" if (os.environ.get("TELEGRAM_BOT_TOKEN") or os.environ.get("BOT_TOKEN")) else "❌ ยังไม่ได้ตั้ง"
+    auto_status = "🟢 ON" if auto['enabled'] else "🔴 OFF"
+    return f"""
+    <html><head><title>G_POWER TELE $40</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <style>
+    body{{background:#0a0e1a;color:#fff;font-family:Arial;padding:15px;margin:0}}
+    .card{{background:#1a2332;padding:15px;border-radius:12px;margin:10px 0;border-left:4px solid #ffcc00}}
+    .green{{border-left-color:#00ff88}}.blue{{border-left-color:#00aaff}}
+    h1{{color:#ffcc00;font-size:20px}}b{{color:#ffcc00}}
+    .btn{{background:#ffcc00;color:#000;border:0;padding:12px;border-radius:8px;font-weight:bold;text-decoration:none;display:block;text-align:center;margin:5px 0}}
+    .stat{{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:10px 0}}
+    .stat div{{background:#0f172a;padding:10px;border-radius:8px;text-align:center}}
+    .stat b{{font-size:18px;display:block}}
+    </style></head><body>
+    <h1>⚡ G_POWER TELE $40</h1>
+    <div class="stat">
+        <div><b style="color:{'#00ff88' if perf['total_pnl_usd']>=0 else '#ff4444'}">${perf['total_pnl_usd']:+.2f}</b>PnL</div>
+        <div><b>{perf['win_rate']}%</b>Win Rate</div>
+        <div><b>{auto_status}</b>Auto</div>
+        <div><b>{tele_status}</b>Tele</div>
+    </div>
+    <div class="card green">
+    <h3>💰 ทุน ${CAPITAL} Futures 3x | Auto {auto_status}</h3>
+    <p>เสี่ยง: <b>{pos['risk_pct']}% = ${pos['risk_amount']:.2f}</b> | Position: <b>${pos['position_size']:.2f}</b> | Margin: <b>${pos['margin_needed']:.2f}</b></p>
+    </div>
+    <div class="card blue">
+    <h3>📱 คำสั่ง Telegram</h3>
+    <p>/check - ดูสถานะ กำไร ทุน ออเดอร์</p>
+    <p>/on - เปิดรันออโต้</p>
+    <p>/off - ปิดรันออโต้</p>
+    </div>
+    <a class="btn" href="/dashboard">📊 Dashboard</a>
+    <a class="btn" href="/live?send_tele=true" style="background:#1a2332;color:#ffcc00;border:1px solid #ffcc00">📡 สัญญาณ + ส่ง Tele</a>
+    <a class="btn" href="/telegram/setwebhook" style="background:#1a2332;color:#00aaff;border:1px solid #00aaff">🔗 ตั้ง Webhook Tele</a>
+    <a class="btn" href="/telegram/test" style="background:#1a2332;color:#fff;border:1px solid #333">✈️ เทส Tele</a>
+    </body></html>
+    """
+
+@app.get("/telegram/test")
+def telegram_test():
+    token = os.environ.get("BOT_TOKEN", "") or os.environ.get("TELEGRAM_BOT_TOKEN", "")
+    chat_id = os.environ.get("CHAT_ID", "") or os.environ.get("TELEGRAM_CHAT_ID", "")
+    if not token or not chat_id:
+        return {"ok": False, "error": "ไม่มี BOT_TOKEN/CHAT_ID"}
+    msg = f"⚡ G_POWER TEST\n\n✅ ต่อ Tele แล้ว!\nทุน $40 Futures 3x\n{datetime.now().strftime('%d/%m %H:%M')}"
+    result = send_telegram(msg)
+    return {"ok": result['ok'], "result": result}
 
 @app.get("/dashboard", response_class=HTMLResponse)
-def dash():
-    perf=calc_performance(); pos=calc_position(); auto=get_auto_state()
-    rows=""
-    for t in reversed(perf['trades'][-20:]):
-        color="#00ff88" if t.get('result')=='WIN' else "#ff4444" if t.get('result')=='LOSS' else "#ffcc00"
-        rows+=f"<tr><td>{t.get('id')}</td><td>{t.get('symbol')}<br>{'REAL' if t.get('real') else 'PAPER'}</td><td><b style='background:{color};color:#000;padding:2px 6px;border-radius:4px'>{t.get('signal')}</b></td><td>${t.get('entry')}</td><td>{t.get('status')}</td><td>{t.get('order',{}).get('contracts','')}</td></tr>"
-    return f"<html><body style='background:#0a0e1a;color:#fff;font-family:Arial;padding:15px'><h1>Dashboard V2.9.8 Auto {'🟢 ON' if auto['enabled'] else '🔴 OFF'}</h1><p>PnL ${perf['total_pnl_usd']:+.2f} Win {perf['win_rate']}%</p><table border=1 style='width:100%;font-size:11px'>{rows or '<tr><td>ยังไม่มีเทรด</td></tr>'}</table><a href='/' style='color:#00ff88'>Home</a></body></html>"
+def dashboard():
+    perf = calc_performance()
+    pos = calc_position_40()
+    auto = get_auto_state()
+    trades_html = ""
+    for t in reversed(perf['trades'][-10:]):
+        color = "#00ff88" if t.get('result') == 'WIN' else "#ff4444" if t.get('result') == 'LOSS' else "#ffcc00"
+        status = t.get('status', 'UNKNOWN')
+        pnl = f"{t.get('pnl_usd', 0):+.2f}$" if status == 'CLOSED' else f"{t.get('pnl_usd', 0):+.2f}$ OPEN"
+        exit_val = t.get('exit')
+        exit_str = f"${exit_val}" if exit_val else "-"
+        trades_html += f"<tr style='border-bottom:1px solid #333'><td style='padding:6px'>{t.get('id')}</td><td style='padding:6px'><span style='background:{color};color:#000;padding:2px 6px;border-radius:4px;font-weight:bold'>{t.get('signal')}</span></td><td style='padding:6px'>${t.get('entry')}</td><td style='padding:6px'>{exit_str}</td><td style='padding:6px;color:{color}'>{pnl}</td><td style='padding:6px'>{status}</td></tr>"
+    return f"""
+    <html><head><title>Dashboard</title><meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <style>body{{background:#0a0e1a;color:#fff;font-family:Arial;padding:15px;margin:0}}
+    .card{{background:#1a2332;padding:12px;border-radius:12px;margin:8px 0;border-left:4px solid #ffcc00}}
+    h1{{color:#ffcc00;font-size:18px}}b{{color:#ffcc00}}
+    .stat{{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:8px 0}}
+    .stat div{{background:#0f172a;padding:10px;border-radius:8px;text-align:center}}
+    .stat b{{font-size:20px;display:block}}
+    table{{width:100%;font-size:11px;border-collapse:collapse}}
+    .btn{{background:#ffcc00;color:#000;border:0;padding:8px 12px;border-radius:6px;font-weight:bold;text-decoration:none;display:inline-block;margin:3px;font-size:11px}}
+    .btn2{{background:#1a2332;color:#ffcc00;border:1px solid #ffcc00}}</style></head><body>
+    <h1>📊 Dashboard - Auto {'🟢 ON' if auto['enabled'] else '🔴 OFF'}</h1>
+    <div class="stat">
+        <div><b style="color:{'#00ff88' if perf['total_pnl_usd']>=0 else '#ff4444'}">${perf['total_pnl_usd']:+.2f}</b>PnL</div>
+        <div><b>{perf['win_rate']}%</b>Win Rate</div>
+        <div><b>{perf['closed_trades']}</b>ปิด</div>
+        <div><b>{perf['win']}/{perf['loss']}</b>W/L</div>
+    </div>
+    <div class="card"><table><tr style="background:#0f172a"><th>ID</th><th>Signal</th><th>Entry</th><th>Exit</th><th>PnL</th><th>Status</th></tr>{trades_html}</table></div>
+    <a class="btn" href="/live">📡 สัญญาณ</a>
+    <a class="btn btn2" href="/">🏠 หน้าแรก</a>
+    </body></html>
+    """
 
 @app.get("/live")
-def live(symbol: str = Query("BTC/USDT"), send_tele: bool = Query(False)):
-    res=execute_auto(symbol)
-    return res
+def live_signal(send_tele: bool = Query(False)):
+    try:
+        result = get_mexc_futures_data()
+        if isinstance(result, tuple):
+            return {"error":"MEXC fetch fail","detail":result[1]}
+        df = result
+        df = strat.add_indicators(df)
+        curr = df.iloc[-1]
+        prev = df.iloc[-2]
+        rev = strat.check_reversal(prev, curr)
+        trend = strat.check_trend(curr)
+        mom = strat.check_momentum(curr)
+        price = float(curr['close'])
+        pos = calc_position_40()
+        auto = get_auto_state()
+        
+        # CDC info
+        cdc_up = bool(curr.get('cdc_up', False))
+        cdc_down = bool(curr.get('cdc_down', False))
+        cdc_stop = float(curr.get('cdc_stop', 0))
+        cdc_dist = float(curr.get('cdc_dist_pct', 0))
+        cdc_trend_str = "🟢 UPTREND" if cdc_up else "🔴 DOWNTREND"
+        
+        signal = "WAIT"
+        if rev['long'] and trend['long'] and mom['long'] and not trend['sideway']:
+            signal = "LONG"
+        elif rev['short'] and trend['short'] and mom['short'] and not trend['sideway']:
+            signal = "SHORT"
+        
+        last = get_last_signal()
+        should_send = (signal != last.get('signal') and signal != "WAIT" and auto['enabled'])
+        
+        tele_result = None
+        if should_send or send_tele:
+            cdc_info = f"CDC: {cdc_trend_str} Stop ${cdc_stop:,.0f}"
+            if signal == "LONG":
+                msg = f"🚀 LONG ${price:,.0f}\n{cdc_info}\nPosition ${pos['position_size']:.2f} Margin ${pos['margin_needed']:.2f}\nTP ${price*1.18:,.0f} SL ${price*0.966:,.0f}\n{datetime.now().strftime('%d/%m %H:%M')}"
+            elif signal == "SHORT":
+                msg = f"🔻 SHORT ${price:,.0f}\n{cdc_info}\nPosition ${pos['position_size']:.2f} Margin ${pos['margin_needed']:.2f}\nTP ${price*0.82:,.0f} SL ${price*1.034:,.0f}\n{datetime.now().strftime('%d/%m %H:%M')}"
+            else:
+                msg = f"⏳ WAIT ${price:,.0f}\n{cdc_info} ({cdc_dist:+.2f}%)\n{datetime.now().strftime('%d/%m %H:%M')}"
+            tele_result = send_telegram(msg)
+            if should_send:
+                save_last_signal(signal, price)
+        
+        return {"price":price,"signal":signal,"cdc_trend": cdc_trend_str, "cdc_stop": cdc_stop, "cdc_dist": cdc_dist, "auto":auto['enabled'],"telegram_sent": tele_result is not None}
+    except Exception as e:
+        return {"error": str(e)}
 
-@app.get("/auto/run")
-def autorun(symbol: str = Query("BTC/USDT")): return execute_auto(symbol)
+@app.get("/health")
+def health():
+    return {"status":"OK","capital":CAPITAL,"auto": get_auto_state()['enabled'], "telegram": bool(os.environ.get("BOT_TOKEN") or os.environ.get("TELEGRAM_BOT_TOKEN"))}
 
-async def auto_loop():
-    await asyncio.sleep(10)
-    print(f"[AUTO LOOP] Start 15m BKK {now_bkk()}")
-    while True:
-        try:
-            if get_auto_state().get('enabled'):
-                print(f"[LOOP] {bkk_str()} ON checking...")
-                execute_auto('BTC/USDT')
-            else: print(f"[LOOP] {bkk_str()} OFF skip")
-        except Exception as e:
-            print(f"[LOOP] err {e}")
-            traceback.print_exc()
-        await asyncio.sleep(900)
-
-@app.on_event("startup")
-async def startup(): asyncio.create_task(auto_loop())
-
-if __name__=="__main__":
-    import uvicorn; uvicorn.run(app,host="0.0.0.0",port=int(os.environ.get("PORT",10000)))
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
