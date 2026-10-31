@@ -258,22 +258,40 @@ async def telegram_webhook(request: Request):
         if not text: return {"ok":True}
         tl=text.lower()
         if tl.startswith('/check') or tl=='check':
-            perf=calc_performance(); pos=calc_position(); bal=get_balance(); auto=get_auto_state(); last=get_last_trade()
-            price=0; cdc_info=""
+            perf=calc_performance(); pos_calc=calc_position(); bal=get_balance(); auto=get_auto_state(); last=get_last_trade()
+            trades=load_trades()
+            open_trades=[t for t in trades if str(t.get('status','')).startswith('OPEN') or 'PAPER' in str(t.get('status',''))]
+            price=0; cdc_info=""; plus_di=minus_di=adx_val=0
             try:
                 df=get_mexc_data()
                 if not isinstance(df,tuple):
                     df=strat.add_indicators(df)
                     curr=df.iloc[-1]
                     price=float(curr['close'])
+                    plus_di=float(curr.get('plus_di',0)); minus_di=float(curr.get('minus_di',0)); adx_val=float(curr.get('adx',0))
                     cdc_info=f"\nCDC: {'🟢' if curr.get('cdc_up') else '🔴'} Stop ${float(curr.get('cdc_stop',0)):,.0f}"
             except: pass
-            msg=f"""📊 <b>G_POWER V2.9.8 CHECK</b>
+            # Build open position text
+            open_txt=""
+            if open_trades:
+                for ot in open_trades[-3:]: # show last 3
+                    entry=float(ot.get('entry',0)); sig=ot.get('signal','?'); ps=float(ot.get('position_size',pos_calc['position_size']))
+                    # unrealized
+                    if sig=='LONG': upnl=(price-entry)/entry*ps if entry and price else 0; upnl_pct=(price-entry)/entry*100 if entry else 0
+                    else: upnl=(entry-price)/entry*ps if entry and price else 0; upnl_pct=(entry-price)/entry*100 if entry else 0
+                    sl=entry*0.966 if sig=='LONG' else entry*1.034
+                    tp=entry*1.18 if sig=='LONG' else entry*0.82
+                    emoji="🟢" if upnl>=0 else "🔴"
+                    open_txt+=f"\n\n📌 <b>ถือ {sig} #{ot.get('id')} {emoji}</b>\nEntry ${entry:,.0f} → ตอนนี้ ${price:,.0f}\nUnPnL {emoji} ${upnl:+.2f} ({upnl_pct:+.2f}%)\nSL ${sl:,.0f} ({-3.4:.1f}%) | TP ${tp:,.0f} (+{(tp/entry-1)*100 if sig=='LONG' else (entry/tp-1)*100:+.0f}%)\nPos ${ps:.2f} {ot.get('order',{}).get('contracts','')}ct {'REAL' if ot.get('real') else 'PAPER'}"
+            else:
+                open_txt="\n\n📌 ไม่มีไม้ถืออยู่ - WAIT"
+            msg=f"""📊 <b>G_POWER {strat.name[:12]} CHECK</b>
 💰 ทุน ${CAPITAL} | ราคา ${price:,.0f}{cdc_info}
-PnL ${perf['total_pnl_usd']:+.2f} Win {perf['win_rate']}% ปิด {perf['closed_trades']}
-Risk ${pos['risk_usd']:.2f} Pos ${pos['position_size']:.2f} Margin ${pos['margin_needed']:.2f}
+📡 +DI {plus_di:.1f} -DI {minus_di:.1f} ADX {adx_val:.1f}
+PnL ปิด ${perf['total_pnl_usd']:+.2f} Win {perf['win_rate']}% ปิด {perf['closed_trades']}{open_txt}
+Risk ${pos_calc['risk_usd']:.2f} Pos ${pos_calc['position_size']:.2f} Margin ${pos_calc['margin_needed']:.2f}
 Balance: {bal.get('usdt_total',0)} ({bal.get('source','')})
-Auto: {'🟢 ON' if auto['enabled'] else '🔴 OFF'} | Last {last.get('signal','-')}
+Auto: {'🟢 ON' if auto['enabled'] else '🔴 OFF'} | Last {last.get('signal','-')} {last.get('entry','')}
 ⏰ {bkk_str()}"""
             send_telegram(msg,chat_id)
             return {"ok":True}
