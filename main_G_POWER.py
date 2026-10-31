@@ -38,11 +38,12 @@ LEVERAGE = 3
 
 SYMBOLS = {
     "btc": "BTC/USDT",
-    "gold": "XAU/USDT",
-    "silver": "XAG/USDT",
+    "gold": "PAXG/USDT:USDT",  # MEXC GOLD(PAXG)USDT - เริ่ม 5 Jan 2026 zero fee【4128527783398436350†L5-L7】
+    "silver": "SILVER/USDT:USDT",  # MEXC SILVERUSDT futures【4128527783398436350†L5-L7】
     "xau": "XAU/USDT",
     "xag": "XAG/USDT",
-    "paxg": "PAXG/USDT",
+    "paxg": "PAXG/USDT:USDT",
+    "xaut": "XAUT/USDT:USDT",  # GOLD(XAUT)USDT【4128527783398436350†L15-L17】
 }
 
 DATA_DIR = Path("/data") if Path("/data").exists() else Path("/tmp")
@@ -130,13 +131,29 @@ def calc_position(symbol_key="btc"):
     return {"risk":risk,"pos":pos,"margin":pos/LEVERAGE,"sl":sl*100,"tp":tp*100,"rr":round(tp/sl,1)}
 
 def get_data(symbol="BTC/USDT"):
-    try:
-        ex=ccxt.mexc({"options":{"defaultType":"swap"}})
-        ohlcv=ex.fetch_ohlcv(symbol,'15m',limit=250)
-        df=pd.DataFrame(ohlcv,columns=['timestamp','open','high','low','close','volume'])
-        df['datetime']=pd.to_datetime(df['timestamp'],unit='ms')
-        return df
-    except Exception as e: return (None,str(e))
+    # Fallback list สำหรับ GOLD/SILVER ที่ MEXC ชื่อไม่ตรง
+    candidates = [symbol]
+    if "PAXG" in symbol:
+        candidates += ["PAXG/USDT", "XAUT/USDT:USDT", "XAUT/USDT", "GOLD/USDT:USDT", "XAU/USDT:USDT"]
+    if "SILVER" in symbol:
+        candidates += ["XAG/USDT:USDT", "SILVER/USDT", "XAG/USDT", "SILVER(XAG)/USDT"]
+    if "XAU" in symbol:
+        candidates += ["PAXG/USDT:USDT", "PAXG/USDT", "XAUT/USDT:USDT"]
+    if "XAG" in symbol:
+        candidates += ["SILVER/USDT:USDT", "SILVER/USDT"]
+    for sym in candidates:
+        try:
+            ex=ccxt.mexc({"options":{"defaultType":"swap"}})
+            ohlcv=ex.fetch_ohlcv(sym,'15m',limit=250)
+            if ohlcv and len(ohlcv)>50:
+                df=pd.DataFrame(ohlcv,columns=['timestamp','open','high','low','close','volume'])
+                df['datetime']=pd.to_datetime(df['timestamp'],unit='ms')
+                if sym!=symbol:
+                    print(f"[FALLBACK] {symbol} -> {sym} OK")
+                return df
+        except Exception as e:
+            continue
+    return (None, f"mexc does not have market symbol {symbol} tried {candidates[:3]}")
 
 def get_mexc_balance():
     try:
