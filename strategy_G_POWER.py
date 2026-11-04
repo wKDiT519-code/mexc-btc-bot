@@ -15,40 +15,40 @@ class Strategy_G_Power:
         base = {
             "btc": {
                 "ema_fast": 12, "ema_slow": 26, "ema_trend": 50,
-                "rsi_fast": 12, "rsi_entry_long": (40, 65), "rsi_entry_short": (35, 60),
-                "adx_min": 14, "adx_sideway": 14, "adx_turbo": 32,
-                "di_min": 12, "di_turbo": 22,
+                "rsi_fast": 12, "rsi_entry_long": (35, 70), "rsi_entry_short": (25, 65),
+                "adx_min": 10, "adx_sideway": 10, "adx_turbo": 28,
+                "di_min": 10, "di_turbo": 20,
                 "sl_pct": 0.034, "tp_pct": 0.18,
                 "cdc_atr_fast": 5, "cdc_mult_fast": 0.5,
                 "cdc_atr_slow": 10, "cdc_mult_slow": 2.0,
-                "vol_filter": 0.65, "sideway_pct": 0.8,
-                "retest_pct": 0.006, # ต้องอยู่ใกล้ EMA12 ไม่เกิน 0.6%
-                "be_trigger": 0.01, # กำไร 1% -> BE
-                "lock_trigger": 0.02, # กำไร 2% -> Lock 0.5%
+                "vol_filter": 0.30, "sideway_pct": 1.2, # V5.2.1 ลด Vol 0.45->0.30 ตาม /check 04/11 19:00 Vol ❌
+                "retest_pct": 0.012,
+                "be_trigger": 0.01,
+                "lock_trigger": 0.02,
                 "lock_pct": 0.005,
             },
             "gold": {
                 "ema_fast": 21, "ema_slow": 55, "ema_trend": 100,
-                "rsi_fast": 14, "rsi_entry_long": (45, 65), "rsi_entry_short": (35, 60),
-                "adx_min": 16, "adx_sideway": 15, "adx_turbo": 30,
-                "di_min": 14, "di_turbo": 22,
+                "rsi_fast": 14, "rsi_entry_long": (40, 70), "rsi_entry_short": (25, 65),
+                "adx_min": 12, "adx_sideway": 12, "adx_turbo": 26,
+                "di_min": 10, "di_turbo": 20,
                 "sl_pct": 0.028, "tp_pct": 0.12,
                 "cdc_atr_fast": 10, "cdc_mult_fast": 1.0,
                 "cdc_atr_slow": 20, "cdc_mult_slow": 2.5,
-                "vol_filter": 0.6, "sideway_pct": 1.0,
-                "retest_pct": 0.008,
+                "vol_filter": 0.30, "sideway_pct": 1.2,
+                "retest_pct": 0.012,
                 "be_trigger": 0.008, "lock_trigger": 0.015, "lock_pct": 0.004,
             },
             "silver": {
                 "ema_fast": 9, "ema_slow": 21, "ema_trend": 34,
-                "rsi_fast": 9, "rsi_entry_long": (40, 70), "rsi_entry_short": (30, 60),
-                "adx_min": 18, "adx_sideway": 16, "adx_turbo": 32,
-                "di_min": 15, "di_turbo": 24,
+                "rsi_fast": 9, "rsi_entry_long": (35, 70), "rsi_entry_short": (25, 65),
+                "adx_min": 14, "adx_sideway": 12, "adx_turbo": 28,
+                "di_min": 10, "di_turbo": 20,
                 "sl_pct": 0.035, "tp_pct": 0.10,
                 "cdc_atr_fast": 5, "cdc_mult_fast": 0.8,
                 "cdc_atr_slow": 10, "cdc_mult_slow": 2.2,
-                "vol_filter": 0.7, "sideway_pct": 1.2,
-                "retest_pct": 0.01,
+                "vol_filter": 0.30, "sideway_pct": 1.5,
+                "retest_pct": 0.015,
                 "be_trigger": 0.012, "lock_trigger": 0.025, "lock_pct": 0.006,
             }
         }
