@@ -7,19 +7,53 @@ G_POWER V5.2.4 - PYRAMID 3x
 
 from fastapi import FastAPI, Query, Request
 from fastapi.responses import HTMLResponse
+import inspect
+
+# Robust import - ทนทานกับไฟล์เก่า V2.8 B ที่ไม่มี symbol_key
+StrategyMultiRaw = None
 try:
-    from strategy_G_POWER_V5_TREND import Strategy_G_Power as StrategyMulti
-    print("[V5.2.2] VOL 0.25 + PULLBACK + PAXG/SILVER")
+    from strategy_G_POWER_V5_TREND import Strategy_G_Power as StrategyMultiRaw
+    print("[V5.2.4] Using V5_TREND")
     USE_V5=True
 except:
-    from strategy_G_POWER import Strategy_G_Power as StrategyMulti
-    USE_V5=False
+    try:
+        from strategy_G_POWER import Strategy_G_Power as StrategyMultiRaw
+        print(f"[V5.2.4] Using strategy_G_POWER {StrategyMultiRaw}")
+        USE_V5=False
+    except Exception as e:
+        print(f"Import failed {e}")
+        StrategyMultiRaw = None
+
+# Patch __init__ ให้รับ symbol_key ได้แม้ไฟล์เก่าไม่มี
+if StrategyMultiRaw is None:
+    raise ImportError("No Strategy found")
+
+try:
+    # ลองเรียกแบบใหม่
+    test = StrategyMultiRaw("btc")
+    StrategyMulti = StrategyMultiRaw
+    print("[V5.2.4] Strategy supports symbol_key")
+except TypeError as te:
+    print(f"[V5.2.4] Old Strategy without symbol_key detected: {te}, patching...")
+    # สร้าง wrapper ที่เพิ่ม symbol_key ให้ไฟล์เก่า
+    class StrategyMulti(StrategyMultiRaw):
+        def __init__(self, symbol_key="btc"):
+            # เรียก __init__ เก่าแบบไม่มี arg
+            try:
+                super().__init__()
+            except:
+                super().__init__(symbol_key)
+            self.symbol_key = symbol_key
+            # ถ้า config ไม่มีแยกตามเหรียญ ให้ใช้ config เดิม
+            if not hasattr(self, 'config') or isinstance(self.config, dict) and 'btc' not in str(self.config):
+                # config เดิมเป็น dict ของเหรียญเดียว
+                pass
 
 from datetime import datetime, timedelta
 import os, ccxt, pandas as pd, json, requests
 from pathlib import Path
 
-app = FastAPI(title="G_POWER V5.2.4 PYRAMID 3x")
+app = FastAPI(title="G_POWER V5.2.4 PYRAMID 3x FIX V2.8")
 
 STRATS = {
     "btc": StrategyMulti("btc"),
