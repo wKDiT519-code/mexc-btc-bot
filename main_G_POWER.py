@@ -1,9 +1,8 @@
 """
-G_POWER V5.2.2 - FIX VOL + PULLBACK ENTRY
-- SYMBOLS FIX: PAXG/USDT:USDT SILVER/USDT:USDT (MEXC GOLD(PAXG)USDT SILVERUSDT zero fee 5 Jan 2026)
-- get_data fallback 5 ชื่อ
-- Vol 0.25 ต่ำสุด - 04/11 19:00 Vol ❌ 3 ตัว 06:37 GOLD Vol ❌
-- Entry แบบ Pullback: ไม่ต้องรอ EMA cross/CDC flip ทุกครั้ง ถ้า trend+momentum+retest พร้อมก็เข้าได้ (แก้ตั้งแต่ 29 ต.ค. พลาดเพราะรอ cross)
+G_POWER V5.2.4 - PYRAMID 3x
+- เข้าเพิ่มได้ถ้ามีจังหวะดี จาก MAX 1 -> 3 ไม้ต่อเหรียญ
+- COOLDOWN 1h -> 0.5h
+- Vol 0.25 + Turbo Bypass + Pullback
 """
 
 from fastapi import FastAPI, Query, Request
@@ -20,7 +19,7 @@ from datetime import datetime, timedelta
 import os, ccxt, pandas as pd, json, requests
 from pathlib import Path
 
-app = FastAPI(title="G_POWER V5.2.2 VOL+PULLBACK")
+app = FastAPI(title="G_POWER V5.2.4 PYRAMID 3x")
 
 STRATS = {
     "btc": StrategyMulti("btc"),
@@ -28,6 +27,10 @@ STRATS = {
     "silver": StrategyMulti("silver"),
 }
 strat = STRATS["btc"]
+
+# V5.2.4 เพิ่มไม้ได้ถ้ามีจังหวะดี - จาก 1 เป็น 3 ไม้ต่อเหรียญ
+MAX_POS_PER_SYMBOL = 3
+COOLDOWN_HOURS = 0.5  # ลดจาก 1 ชม. เหลือ 30 นาที เพื่อให้เข้าเพิ่มตอนย่อได้
 
 CAPITAL = 40
 RISK_PCT = 0.02
@@ -223,19 +226,26 @@ def execute_symbol(symbol, manage_open=True):
         trend=st.check_trend(curr)
         mom=st.check_momentum(curr)
         signal="WAIT"
-        can_open=len(open_trades)==0 and can_open_new(symbol_key, cooldown_hours=1)
+        # V5.2.4 PYRAMID: เข้าเพิ่มได้ถ้ามีจังหวะดี จาก 1 เป็น 3 ไม้
+        can_open=len(open_trades) < MAX_POS_PER_SYMBOL and can_open_new(symbol_key, cooldown_hours=COOLDOWN_HOURS)
+        # ถ้ามีไม้อยู่แล้ว ต้องเป็นทิศเดียวกันถึงจะเพิ่มได้
+        if len(open_trades)>0 and can_open:
+            existing_sig=open_trades[0]['signal']
+            # ตรวจสอบว่าทิศเดียวกันไหม
+            if (trend['long'] and existing_sig!='LONG') or (trend['short'] and existing_sig!='SHORT'):
+                can_open=False  # ไม่เพิ่มไม้สวนทาง
+
         if can_open and not trend['sideway']:
             # V5.2.2 PULLBACK ENTRY: ไม่ต้องรอ cross ทุกครั้ง
-            # แบบเดิมต้อง rev+trend+mom -> พลาดตั้งแต่ 29 ต.ค.
-            # แบบใหม่: trend+mom+retest = เข้าได้เลย, rev เป็นโบนัส
             if trend['long'] and mom['long']:
                 signal="LONG"
             elif trend['short'] and mom['short']:
                 signal="SHORT"
-            # ถ้ามี reversal จะให้คะแนนเพิ่ม แต่ไม่บังคับ
         elif not can_open:
-            if len(open_trades)>0:
-                signal=f"HOLD {open_trades[0]['signal']}"
+            if len(open_trades)>=MAX_POS_PER_SYMBOL:
+                signal=f"MAX {len(open_trades)}/{MAX_POS_PER_SYMBOL} HOLD {open_trades[0]['signal']}"
+            elif len(open_trades)>0:
+                signal=f"HOLD {open_trades[0]['signal']} {len(open_trades)}/{MAX_POS_PER_SYMBOL}"
             else:
                 signal="COOLDOWN"
 
