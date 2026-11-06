@@ -1,8 +1,11 @@
 
 """
-G_POWER V5.2.5 - ALL IN ONE - FIX 'rsi' + 'get_trailing_sl'
-Vol 0.20 + Turbo Bypass + PYRAMID 3x
+G_POWER V5.3 BLUE CIRCLE - เข้าจุด Flip CDC + DI Cross ไม่รอ Retest
+- 2 โหมด: BREAKOUT (Flip 1-2 แท่ง) + RETEST (เดิม) + TURBO
+- แก้เข้าแผ่ว: adx_slope > -1.5, ADX >22
+- VOL 0.20 + Turbo Bypass
 """
+
 from fastapi import FastAPI, Query, Request
 from fastapi.responses import HTMLResponse
 import pandas as pd
@@ -14,7 +17,7 @@ from pathlib import Path
 class Strategy_G_Power:
     def __init__(self, symbol_key="btc"):
         self.symbol_key = symbol_key
-        self.name = f"G_POWER V5.2.5 {symbol_key.upper()}"
+        self.name = f"G_POWER V5.3 BLUE {symbol_key.upper()}"
         base = {
             "btc": {"ema_fast":12,"ema_slow":26,"ema_trend":50,"rsi_fast":12,"rsi_entry_long":(35,70),"rsi_entry_short":(25,65),"adx_min":10,"adx_sideway":10,"adx_turbo":28,"di_min":10,"di_turbo":20,"sl_pct":0.034,"tp_pct":0.18,"cdc_atr_fast":5,"cdc_mult_fast":0.5,"cdc_atr_slow":10,"cdc_mult_slow":2.0,"vol_filter":0.20,"sideway_pct":1.2,"retest_pct":0.012,"be_trigger":0.01,"lock_trigger":0.02,"lock_pct":0.005},
             "gold": {"ema_fast":21,"ema_slow":55,"ema_trend":100,"rsi_fast":14,"rsi_entry_long":(40,70),"rsi_entry_short":(25,65),"adx_min":12,"adx_sideway":12,"adx_turbo":26,"di_min":10,"di_turbo":20,"sl_pct":0.028,"tp_pct":0.12,"cdc_atr_fast":10,"cdc_mult_fast":1.0,"cdc_atr_slow":20,"cdc_mult_slow":2.5,"vol_filter":0.20,"sideway_pct":1.2,"retest_pct":0.012,"be_trigger":0.008,"lock_trigger":0.015,"lock_pct":0.004},
@@ -62,16 +65,34 @@ class Strategy_G_Power:
         tr,st,up=self._cdc(df); df['cdc_trend']=tr; df['cdc_stop']=st; df['cdc_up']=up
         df['vol_avg']=df['volume'].rolling(20).mean(); df['dist_ema_fast']=(df['close']-df['ema_fast']).abs()/df['close']
         return df
-    def check_trend(self,curr):
+    def check_trend(self,curr,prev=None):
         c=self.config; ema_diff=abs(curr['ema_fast']-curr['ema_slow'])/curr['close']*100
         sideway=(curr['adx']<c["adx_sideway"]) or (ema_diff<c["sideway_pct"] and curr['adx']<c["adx_turbo"])
         retest=curr['dist_ema_fast']<=c["retest_pct"]; vol_ok=curr['volume']>curr['vol_avg']*c["vol_filter"] if curr.get('vol_avg') else True
         long_core=curr['cdc_up'] and curr['plus_di']>curr['minus_di'] and curr['plus_di']>c["di_min"] and curr['adx']>c["adx_min"] and curr['close']>curr['ema_trend']
         short_core=not curr['cdc_up'] and curr['minus_di']>curr['plus_di'] and curr['minus_di']>c["di_min"] and curr['adx']>c["adx_min"] and curr['close']<curr['ema_trend']
         turbo_long=curr['adx']>c["adx_turbo"] and curr['plus_di']>c["di_turbo"]; turbo_short=curr['adx']>c["adx_turbo"] and curr['minus_di']>c["di_turbo"]
-        vol_ok_effective=vol_ok or turbo_long or turbo_short
-        long=(long_core or turbo_long) and retest and vol_ok_effective; short=(short_core or turbo_short) and retest and vol_ok_effective
-        return {"long":long,"short":short,"sideway":sideway and not (turbo_long or turbo_short),"vol_ok":vol_ok,"retest":retest,"ema_diff":ema_diff,"long_core":long_core,"short_core":short_core}
+        adx_slope_ok = curr.get('adx_slope',0) > -1.5
+        strong_trend = curr['adx'] > 22 or turbo_long or turbo_short
+        # BLUE CIRCLE - BREAKOUT
+        cdc_flip_up=False; cdc_flip_down=False; di_cross_up=False; di_cross_down=False
+        if prev is not None:
+            cdc_flip_up = (not prev['cdc_up']) and curr['cdc_up']
+            cdc_flip_down = prev['cdc_up'] and (not curr['cdc_up'])
+            di_cross_up = (prev['plus_di'] <= prev['minus_di']) and (curr['plus_di'] > curr['minus_di'])
+            di_cross_down = (prev['minus_di'] <= prev['plus_di']) and (curr['minus_di'] > curr['plus_di'])
+        breakout_long = (cdc_flip_up or di_cross_up) and curr['plus_di']>curr['minus_di'] and curr['adx']>=c["adx_min"]*0.8 and curr.get('adx_slope',0) > -1.0
+        breakout_short = (cdc_flip_down or di_cross_down) and curr['minus_di']>curr['plus_di'] and curr['adx']>=c["adx_min"]*0.8 and curr.get('adx_slope',0) > -1.0
+        vol_ok_effective=vol_ok or turbo_long or turbo_short or breakout_long or breakout_short
+        retest_long = long_core and retest
+        retest_short = short_core and retest
+        long = (retest_long or breakout_long or turbo_long) and vol_ok_effective and adx_slope_ok and strong_trend
+        short = (retest_short or breakout_short or turbo_short) and vol_ok_effective and adx_slope_ok and strong_trend
+        entry_type="NONE"
+        if breakout_long or breakout_short: entry_type="BREAKOUT"
+        elif retest_long or retest_short: entry_type="RETEST"
+        elif turbo_long or turbo_short: entry_type="TURBO"
+        return {"long":long,"short":short,"sideway":sideway and not (turbo_long or turbo_short or breakout_long or breakout_short),"vol_ok":vol_ok,"retest":retest,"ema_diff":ema_diff,"long_core":long_core,"short_core":short_core,"adx_slope_ok":adx_slope_ok,"breakout_long":breakout_long,"breakout_short":breakout_short,"cdc_flip_up":cdc_flip_up,"cdc_flip_down":cdc_flip_down,"di_cross_up":di_cross_up,"di_cross_down":di_cross_down,"entry_type":entry_type}
     def check_reversal(self,prev,curr):
         long_cross=curr['ema_fast']>curr['ema_slow'] and prev['ema_fast']<=prev['ema_slow']; short_cross=curr['ema_fast']<curr['ema_slow'] and prev['ema_fast']>=prev['ema_slow']
         cdc_long=curr['cdc_up'] and not prev['cdc_up']; cdc_short=not curr['cdc_up'] and prev['cdc_up']
@@ -112,15 +133,15 @@ class Strategy_G_Power:
             return {"tp":should_tp,"reasons":reason}
         return {"tp":False,"reasons":[]}
 
-app = FastAPI(title="G_POWER V5.2.5 ALL IN ONE")
+app = FastAPI(title="G_POWER V5.3 BLUE CIRCLE")
 STRATS = {"btc": Strategy_G_Power("btc"),"gold": Strategy_G_Power("gold"),"silver": Strategy_G_Power("silver")}
-strat = STRATS["btc"]
 MAX_POS_PER_SYMBOL = 3
 COOLDOWN_HOURS = 0.5
 CAPITAL = 40
 RISK_PCT = 0.02
 LEVERAGE = 3
 SYMBOLS = {"btc":"BTC/USDT","gold":"PAXG/USDT:USDT","silver":"SILVER/USDT:USDT"}
+SYMBOL_KEYS = {"BTC/USDT":"btc","PAXG/USDT:USDT":"gold","SILVER/USDT:USDT":"silver"}
 DATA_DIR = Path("/data") if Path("/data").exists() else Path("/tmp")
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 TRADES_FILE = DATA_DIR / "g_power_trades.json"
@@ -143,9 +164,7 @@ def load_trades():
             with open(TRADES_FILE,'r') as f: d=json.load(f); return [t for t in d if not str(t.get('note','')).lower().startswith('sample')]
         except: return []
     return []
-
 def save_trades(t): atomic_save(TRADES_FILE, t)
-
 def get_auto_state():
     if AUTO_STATE_FILE.exists():
         try:
@@ -160,7 +179,6 @@ def get_auto_state():
             try: AUTO_STATE_FILE.unlink()
             except: pass
     return {"btc":False,"gold":False,"silver":False}
-
 def set_auto_state(k, en):
     s=get_auto_state()
     if k=='all':
@@ -168,17 +186,14 @@ def set_auto_state(k, en):
     else: s[k]=en
     atomic_save(AUTO_STATE_FILE, s)
     return s
-
 def get_last_trade_times():
     if LAST_TRADE_TIME_FILE.exists():
         try:
             with open(LAST_TRADE_TIME_FILE,'r') as f: return json.load(f)
         except: pass
     return {}
-
 def set_last_trade_time(symbol_key):
     times=get_last_trade_times(); times[symbol_key]=datetime.now().isoformat(); atomic_save(LAST_TRADE_TIME_FILE, times)
-
 def can_open_new(symbol_key, cooldown_hours=0.5):
     times=get_last_trade_times(); last_str=times.get(symbol_key)
     if not last_str: return True
@@ -187,11 +202,9 @@ def can_open_new(symbol_key, cooldown_hours=0.5):
         if datetime.now() - last < timedelta(hours=cooldown_hours): return False
         return True
     except: return True
-
 def calc_position(symbol_key="btc"):
     cfg=STRATS.get(symbol_key, STRATS['btc']).config; sl=cfg['sl_pct']; tp=cfg['tp_pct']; risk=CAPITAL*RISK_PCT; pos=risk/sl if sl else risk/0.034
     return {"risk":risk,"pos":pos,"margin":pos/LEVERAGE,"sl":sl*100,"tp":tp*100,"rr":round(tp/sl,1)}
-
 def get_data(symbol="BTC/USDT"):
     candidates=[symbol]
     if "PAXG" in symbol: candidates+=["PAXG/USDT","XAUT/USDT:USDT","XAUT/USDT","GOLD/USDT:USDT","XAU/USDT:USDT"]
@@ -206,7 +219,6 @@ def get_data(symbol="BTC/USDT"):
                 return df
         except: continue
     return (None, f"mexc no symbol {symbol}")
-
 def get_mexc_balance():
     try:
         key=os.environ.get("MEXC_API_KEY","").strip(); sec=os.environ.get("MEXC_API_SECRET","").strip()
@@ -219,7 +231,6 @@ def get_mexc_balance():
         except: pass
         return {"ok":True,"free":usdt.get('free',0),"total":usdt.get('total',0),"positions":poss}
     except Exception as e: return {"ok":False,"error":str(e)[:150]}
-
 def send_tele(msg, chat_id=None):
     token=os.environ.get("TELEGRAM_BOT_TOKEN","").strip() or os.environ.get("BOT_TOKEN","").strip()
     chat=chat_id or os.environ.get("TELEGRAM_CHAT_ID","").strip() or os.environ.get("CHAT_ID","").strip()
@@ -228,7 +239,6 @@ def send_tele(msg, chat_id=None):
         r=requests.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id":chat,"text":msg,"parse_mode":"HTML"}, timeout=10)
         return {"ok":r.status_code==200}
     except: return {"ok":False}
-
 def get_strat(symbol):
     s=symbol.upper()
     if 'BTC' in s: return STRATS['btc']
@@ -256,7 +266,7 @@ def execute_symbol(symbol, manage_open=True):
                 pnl=(price-entry)/entry*ot.get('position_size',0) if sig=='LONG' else (entry-price)/entry*ot.get('position_size',0)
                 ot['pnl_usd']=pnl; actions.append(f"TP TREND CHANGE {symbol} {sig} {','.join(exit_info['reasons'])} PnL ${pnl:+.2f}")
         if actions: save_trades(trades)
-        rev=st.check_reversal(prev,curr); trend=st.check_trend(curr); mom=st.check_momentum(curr)
+        rev=st.check_reversal(prev,curr); trend=st.check_trend(curr, prev); mom=st.check_momentum(curr)
         signal="WAIT"; can_open=len(open_trades) < MAX_POS_PER_SYMBOL and can_open_new(symbol_key, cooldown_hours=COOLDOWN_HOURS)
         if len(open_trades)>0 and can_open:
             existing_sig=open_trades[0]['signal']
@@ -270,9 +280,9 @@ def execute_symbol(symbol, manage_open=True):
             else: signal="COOLDOWN"
         if signal in ['LONG','SHORT'] and can_open:
             pos_info=calc_position(symbol_key)
-            new_trade={"id":len(trades)+1,"symbol":symbol,"symbol_key":symbol_key,"signal":signal,"entry":price,"entry_time":datetime.now().isoformat(),"position_size":pos_info['pos'],"sl":price*(1-st.config['sl_pct']) if signal=='LONG' else price*(1+st.config['sl_pct']),"tp":price*(1+st.config['tp_pct']) if signal=='LONG' else price*(1-st.config['tp_pct']),"status":"PAPER_OPEN","real":False,"note":f"V5.2.5 pyramid"}
-            trades.append(new_trade); save_trades(trades); set_last_trade_time(symbol_key); actions.append(f"OPEN {signal} {symbol} ${price:.2f} SL {new_trade['sl']:.2f}")
-        return {"ok":True,"symbol":symbol,"symbol_key":symbol_key,"signal":signal,"price":price,"plus_di":float(curr['plus_di']),"minus_di":float(curr['minus_di']),"adx":float(curr['adx']),"cdc_up":bool(curr['cdc_up']),"cdc_stop":float(curr['cdc_stop']),"rsi":float(curr['rsi']),"ema_fast":float(curr['ema_fast']),"ema_slow":float(curr['ema_slow']),"retest":bool(trend.get('retest')), "vol_ok":bool(trend.get('vol_ok')),"sl_pct":st.config['sl_pct']*100,"tp_pct":st.config['tp_pct']*100,"actions":actions, "can_open":can_open, "open_count":len(open_trades),"sideway":bool(trend.get('sideway')), "long":bool(trend.get('long')), "short":bool(trend.get('short')),"rev_long":bool(rev.get('long')), "rev_short":bool(rev.get('short')),"mom_long":bool(mom.get('long')), "mom_short":bool(mom.get('short'))}
+            new_trade={"id":len(trades)+1,"symbol":symbol,"symbol_key":symbol_key,"signal":signal,"entry":price,"entry_time":datetime.now().isoformat(),"position_size":pos_info['pos'],"sl":price*(1-st.config['sl_pct']) if signal=='LONG' else price*(1+st.config['sl_pct']),"tp":price*(1+st.config['tp_pct']) if signal=='LONG' else price*(1-st.config['tp_pct']),"status":"PAPER_OPEN","real":False,"note":f"V5.3 {trend.get('entry_type')}"}
+            trades.append(new_trade); save_trades(trades); set_last_trade_time(symbol_key); actions.append(f"OPEN {signal} {symbol} ${price:.2f} [{trend.get('entry_type')}] SL {new_trade['sl']:.2f}")
+        return {"ok":True,"symbol":symbol,"symbol_key":symbol_key,"signal":signal,"price":price,"plus_di":float(curr['plus_di']),"minus_di":float(curr['minus_di']),"adx":float(curr['adx']),"adx_slope":float(curr['adx_slope']),"cdc_up":bool(curr['cdc_up']),"cdc_stop":float(curr['cdc_stop']),"rsi":float(curr['rsi']),"ema_fast":float(curr['ema_fast']),"ema_slow":float(curr['ema_slow']),"retest":bool(trend.get('retest')), "vol_ok":bool(trend.get('vol_ok')),"sl_pct":st.config['sl_pct']*100,"tp_pct":st.config['tp_pct']*100,"actions":actions, "can_open":can_open, "open_count":len(open_trades),"sideway":bool(trend.get('sideway')), "long":bool(trend.get('long')), "short":bool(trend.get('short')),"rev_long":bool(rev.get('long')), "rev_short":bool(rev.get('short')),"mom_long":bool(mom.get('long')), "mom_short":bool(mom.get('short')),"entry_type":trend.get('entry_type'),"breakout_long":trend.get('breakout_long'),"breakout_short":trend.get('breakout_short'),"cdc_flip_up":trend.get('cdc_flip_up'),"cdc_flip_down":trend.get('cdc_flip_down'),"di_cross_up":trend.get('di_cross_up'),"di_cross_down":trend.get('di_cross_down')}
     except Exception as e:
         import traceback; traceback.print_exc()
         return {"ok":False,"symbol":symbol,"error":str(e)[:300]}
@@ -301,32 +311,75 @@ async def webhook(request: Request):
                 if key!='all' and k!=key: continue
                 results[k]=execute_symbol(SYMBOLS[k])
             trades=load_trades(); auto=get_auto_state(); bal=get_mexc_balance()
-            out=f"📊 <b>G_POWER V5.2.5 CHECK {key.upper()}</b> {datetime.now().strftime('%d/%m %H:%M')}\n"
+            out=f"📊 <b>G_POWER V5.3 BLUE CHECK {key.upper()}</b> {datetime.now().strftime('%d/%m %H:%M')}\n"
             for k,r in results.items():
                 if not r.get('ok'): out+=f"\n{k.upper()} ❌ {r.get('error')}\n"
                 else:
                     cfg=STRATS[k].config
-                    out+=f"\n<b>{k.upper()} {r['symbol']}</b> {'🟢 ON' if auto.get(k) else '🔴 OFF'} {r['signal']}\n${r['price']:,.2f} CDC {'🟢' if r['cdc_up'] else '🔴'} Stop ${r['cdc_stop']:,.2f}\nEMA{cfg['ema_fast']}/{cfg['ema_slow']} +DI {r['plus_di']:.1f} -DI {r['minus_di']:.1f} ADX {r['adx']:.1f} RSI {r['rsi']:.0f}\nRetest {'✅' if r['retest'] else '❌'} Vol {'✅' if r['vol_ok'] else '❌'} Sideway {'❌' if not r.get('sideway') else '✅'} Trend Long {r.get('long')} Mom {r.get('mom_long') or r.get('mom_short')} Rev {r.get('rev_long') or r.get('rev_short')} CanOpen {'✅' if r['can_open'] else '❌'} Open {r['open_count']}/{MAX_POS_PER_SYMBOL} SL {r['sl_pct']:.1f}% TP {r['tp_pct']:.0f}%\n"
+                    et=r.get('entry_type',''); flip=""; 
+                    if r.get('cdc_flip_up'): flip=" CDC FlipUp"
+                    if r.get('cdc_flip_down'): flip=" CDC FlipDown"
+                    if r.get('di_cross_up'): flip+=" DI CrossUp"
+                    if r.get('di_cross_down'): flip+=" DI CrossDown"
+                    out+=f"\n<b>{k.upper()} {r['symbol']}</b> {'🟢 ON' if auto.get(k) else '🔴 OFF'} {r['signal']} [{et}]{flip}\n${r['price']:,.2f} CDC {'🟢' if r['cdc_up'] else '🔴'} Stop ${r['cdc_stop']:,.2f}\nEMA{cfg['ema_fast']}/{cfg['ema_slow']} +DI {r['plus_di']:.1f} -DI {r['minus_di']:.1f} ADX {r['adx']:.1f} Slope {r.get('adx_slope',0):.2f} RSI {r['rsi']:.0f}\nRetest {'✅' if r['retest'] else '❌'} Vol {'✅' if r['vol_ok'] else '❌'} Sideway {'❌' if not r.get('sideway') else '✅'} CanOpen {'✅' if r['can_open'] else '❌'} Open {r['open_count']}/{MAX_POS_PER_SYMBOL} SL {r['sl_pct']:.1f}% TP {r['tp_pct']:.0f}%\n"
                     if r['actions']: out+=f"⚡ {'; '.join(r['actions'])}\n"
             opens=[t for t in trades if str(t.get('status')).upper() in ['OPEN','PAPER_OPEN','PAPER']]
             if opens:
                 out+=f"\n📌 ถือ {len(opens)} ไม้:\n"
-                for ot in opens[-3:]:
+                for ot in opens[-6:]:
                     entry=float(ot['entry']); curr_p=results.get(ot.get('symbol_key','btc'),{}).get('price',entry)
                     sig=ot['signal']; ps=ot.get('position_size',0)
                     if sig=='LONG': upnl=(curr_p-entry)/entry*ps if entry else 0; upp=(curr_p-entry)/entry*100 if entry else 0
                     else: upnl=(entry-curr_p)/entry*ps if entry else 0; upp=(entry-curr_p)/entry*100 if entry else 0
                     sl=ot.get('sl',0)
-                    out+=f"{sig} {ot['symbol']} Entry ${entry:,.2f} Now ${curr_p:,.2f} UnPnL ${upnl:+.2f} ({upp:+.1f}%) SL ${sl:,.2f} {ot.get('trailing','')}\n"
+                    out+=f"{sig} {ot['symbol']} [{ot.get('note','')}] Entry ${entry:,.2f} Now ${curr_p:,.2f} UnPnL ${upnl:+.2f} ({upp:+.1f}%) SL ${sl:,.2f}\n"
             else: out+=f"\n📌 ไม่มีไม้ถืออยู่ - WAIT\n"
             if bal.get('ok'): out+=f"\n🏦 MEXC {bal.get('total')} USDT | Pos {len(bal.get('positions',[]))}\n"
-            out+=f"\n✅ V5.2.5 ALL IN ONE VOL 0.20 PYRAMID {MAX_POS_PER_SYMBOL}x\n"
+            out+=f"\n✅ V5.3 BLUE CIRCLE BREAKOUT+RETEST+TURBO VOL0.20 PYRAMID {MAX_POS_PER_SYMBOL}x\n💡 เข้าจุดวงฟ้า: CDC Flip + DI Cross ไม่รอ Retest"
+            send_tele(out, chat_id)
+            return {"ok":True}
+        elif tl.startswith('/total') or tl.startswith('/portfolio') or tl.startswith('/port'):
+            trades=load_trades(); bal=get_mexc_balance()
+            results={}
+            for k in ['btc','gold','silver']:
+                try: results[k]=execute_symbol(SYMBOLS[k])
+                except: results[k]={"ok":False}
+            opens=[t for t in trades if str(t.get('status')).upper() in ['OPEN','PAPER_OPEN','PAPER']]
+            closeds=[t for t in trades if str(t.get('status')).upper()=='CLOSED']
+            total_closed_pnl = sum([float(t.get('pnl_usd',0)) for t in closeds])
+            out=f"💼 <b>G_POWER V5.3 PORTFOLIO</b> {datetime.now().strftime('%d/%m %H:%M')}\n"
+            out+=f"🏦 MEXC {bal.get('total',37.77) if bal.get('ok') else 37.77} USDT | Real Pos {len(bal.get('positions',[])) if bal.get('ok') else 0}\n\n"
+            if opens:
+                out+=f"📌 ถือ {len(opens)} ไม้:\n"
+                total_upnl=0; total_notional=0
+                for ot in opens[-6:]:
+                    sym=ot['symbol']; key=ot.get('symbol_key','btc')
+                    entry=float(ot['entry']); sl=float(ot.get('sl',0)); ps=float(ot.get('position_size',0))
+                    curr_p=results.get(key,{}).get('price',entry); sig=ot['signal']
+                    if sig=='LONG': upnl=(curr_p-entry)/entry*ps if entry else 0; upp=(curr_p-entry)/entry*100 if entry else 0
+                    else: upnl=(entry-curr_p)/entry*ps if entry else 0; upp=(entry-curr_p)/entry*100 if entry else 0
+                    total_upnl+=upnl; total_notional+=ps
+                    sign="+" if upnl>=0 else ""
+                    out+=f"{sig} {sym.replace('/USDT:USDT','').replace('/USDT','')} [{ot.get('note','')}]\n${entry:,.2f} → ${curr_p:,.2f} = {sign}${upnl:.2f} ({upp:+.2f}%) SL ${sl:,.2f}\n"
+                out+=f"\n📊 รวม UnPnL {total_upnl:+.2f}$ Notional ${total_notional:.2f}\n"
+                paper_equity = 40 + total_closed_pnl + total_upnl
+                out+=f"💰 Paper Equity $40 {total_closed_pnl:+.2f} {total_upnl:+.2f} = ${paper_equity:.2f}\n"
+                real_equity = (bal.get('total',37.77) if bal.get('ok') else 37.77) + total_upnl
+                out+=f"💵 Real+UnPnL ${real_equity:.2f}\n"
+            else:
+                out+=f"📌 ไม่มีไม้ถืออยู่ - WAIT\n"
+                out+=f"💰 Paper Equity $40 {total_closed_pnl:+.2f} = ${40+total_closed_pnl:.2f}\n"
+            if closeds:
+                out+=f"\n📕 ปิดแล้ว {len(closeds)} ไม้ PnL {total_closed_pnl:+.2f}$\n"
+                for ct in closeds[-3:]:
+                    out+=f"{ct.get('signal')} {ct.get('symbol','').replace('/USDT:USDT','')} PnL ${float(ct.get('pnl_usd',0)):+.2f} {ct.get('exit_reason','')[:30]}\n"
+            out+=f"\n✅ V5.3 BLUE CIRCLE"
             send_tele(out, chat_id)
             return {"ok":True}
         elif tl.startswith('/on'):
             parts=tl.split(); key='all' if len(parts)<2 else parse_sym(parts[1])[0]
             set_auto_state(key, True)
-            send_tele(f"🟢 Auto ON {key.upper()} V5.2.5", chat_id)
+            send_tele(f"🟢 Auto ON {key.upper()} V5.3 BLUE", chat_id)
             return {"ok":True}
         elif tl.startswith('/off'):
             parts=tl.split(); key='all' if len(parts)<2 else parse_sym(parts[1])[0]
@@ -336,26 +389,26 @@ async def webhook(request: Request):
         elif tl.startswith('/live'):
             parts=tl.split(); key='btc' if len(parts)<2 else parse_sym(parts[1])[0]
             sym=SYMBOLS.get(key, SYMBOLS['btc']); r=execute_symbol(sym)
-            send_tele(f"📡 {sym} {r.get('signal')} ${r.get('price',0):,.2f} +DI {r.get('plus_di',0):.1f} -DI {r.get('minus_di',0):.1f} ADX {r.get('adx',0):.1f} RSI {r.get('rsi',0):.0f}", chat_id)
+            send_tele(f"📡 {sym} {r.get('signal')} ${r.get('price',0):,.2f} [{r.get('entry_type')}] +DI {r.get('plus_di',0):.1f} -DI {r.get('minus_di',0):.1f} ADX {r.get('adx',0):.1f}", chat_id)
             return {"ok":True}
         else:
-            send_tele(f"❓ {text}\n/check [btc|gold|silver|all]\n/on [btc|gold|silver|all]", chat_id)
+            send_tele(f"❓ {text}\n/check [btc|gold|silver|all]\n/total - พอร์ต\n/on [btc|gold|silver|all]\n/off [btc|gold|silver|all]", chat_id)
             return {"ok":True}
     except Exception as e:
-        print(f"ERR {e}"); return {"ok":True}
+        print(f"ERR {e}"); import traceback; traceback.print_exc(); return {"ok":True}
 
 @app.api_route("/ping", methods=["GET","HEAD"])
 def ping():
-    return {"status":"ok V5.2.5 ALL IN ONE","auto":get_auto_state(),"dir":str(DATA_DIR),"trades":len(load_trades())}
+    return {"status":"ok V5.3 BLUE CIRCLE","auto":get_auto_state(),"dir":str(DATA_DIR),"trades":len(load_trades())}
 
 @app.api_route("/health", methods=["GET","HEAD"])
 def health():
-    return {"status":"OK V5.2.5","dir":str(DATA_DIR),"auto":get_auto_state().get('btc',False)}
+    return {"status":"OK V5.3","dir":str(DATA_DIR),"auto":get_auto_state().get('btc',False)}
 
 @app.get("/", response_class=HTMLResponse)
 def home():
     auto=get_auto_state()
-    return f"<html><body style='background:#0a0e1a;color:#fff;font-family:Arial;padding:20px'><h1>G_POWER V5.2.5 ALL IN ONE</h1><p>BTC {'🟢' if auto.get('btc') else '🔴'} GOLD {'🟢' if auto.get('gold') else '🔴'} SILVER {'🟢' if auto.get('silver') else '🔴'}</p><p>✅ VOL 0.20 | PYRAMID 3x | PAXG/SILVER FIX | NO DEPENDENCY</p><a href='/ping'>Ping</a></body></html>"
+    return f"<html><body style='background:#0a0e1a;color:#fff;font-family:Arial;padding:20px'><h1>G_POWER V5.3 BLUE CIRCLE</h1><p>BTC {'🟢' if auto.get('btc') else '🔴'} GOLD {'🟢' if auto.get('gold') else '🔴'} SILVER {'🟢' if auto.get('silver') else '🔴'}</p><p>✅ BREAKOUT CDC Flip + DI Cross + RETEST + TURBO | VOL 0.20 | PYRAMID 3x | NO FADE</p><a href='/ping'>Ping</a></body></html>"
 
 @app.get("/live")
 def live_api(symbol: str = Query("BTC/USDT")): return execute_symbol(symbol)
