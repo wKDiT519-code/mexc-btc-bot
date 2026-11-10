@@ -1,6 +1,6 @@
 
 """
-G_POWER V5.5 PRICE FIX - เข้าจุด Flip CDC + DI Cross ไม่รอ Retest
+G_POWER V5.6.1.1 NO HEDGE + CLOSE - เข้าจุด Flip CDC + DI Cross ไม่รอ Retest
 - 2 โหมด: BREAKOUT (Flip 1-2 แท่ง) + RETEST (เดิม) + TURBO
 - แก้เข้าแผ่ว: adx_slope > -1.5, ADX >22
 - VOL 0.20 + Turbo Bypass
@@ -17,7 +17,7 @@ from pathlib import Path
 class Strategy_G_Power:
     def __init__(self, symbol_key="btc"):
         self.symbol_key = symbol_key
-        self.name = f"G_POWER V5.5 PRICE FIX {symbol_key.upper()}"
+        self.name = f"G_POWER V5.6.1.1 NO HEDGE + CLOSE {symbol_key.upper()}"
         base = {
             "btc": {"ema_fast":12,"ema_slow":26,"ema_trend":50,"rsi_fast":12,"rsi_entry_long":(35,70),"rsi_entry_short":(25,65),"adx_min":10,"adx_sideway":10,"adx_turbo":28,"di_min":10,"di_turbo":20,"sl_pct":0.034,"tp_pct":0.18,"cdc_atr_fast":5,"cdc_mult_fast":0.5,"cdc_atr_slow":10,"cdc_mult_slow":2.0,"vol_filter":0.20,"sideway_pct":1.2,"retest_pct":0.012,"be_trigger":0.01,"lock_trigger":0.02,"lock_pct":0.005},
             "gold": {"ema_fast":21,"ema_slow":55,"ema_trend":100,"rsi_fast":14,"rsi_entry_long":(40,70),"rsi_entry_short":(25,65),"adx_min":12,"adx_sideway":12,"adx_turbo":26,"di_min":10,"di_turbo":20,"sl_pct":0.028,"tp_pct":0.12,"cdc_atr_fast":10,"cdc_mult_fast":1.0,"cdc_atr_slow":20,"cdc_mult_slow":2.5,"vol_filter":0.20,"sideway_pct":1.2,"retest_pct":0.012,"be_trigger":0.008,"lock_trigger":0.015,"lock_pct":0.004},
@@ -133,10 +133,11 @@ class Strategy_G_Power:
             return {"tp":should_tp,"reasons":reason}
         return {"tp":False,"reasons":[]}
 
-app = FastAPI(title="G_POWER V5.5 PRICE FIX")
+app = FastAPI(title="G_POWER V5.6.1.1 NO HEDGE + CLOSE")
 STRATS = {"btc": Strategy_G_Power("btc"),"gold": Strategy_G_Power("gold"),"silver": Strategy_G_Power("silver")}
-MAX_POS_PER_SYMBOL = 3
-COOLDOWN_HOURS = 0.5
+MAX_POS_PER_SYMBOL = 2
+MAX_TOTAL_NOTIONAL = 80  # V5.6.1: Notional รวมห้ามเกิน 2x ทุน $40 = $80 กันโดนลากพร้อมกัน
+COOLDOWN_HOURS = 1.0  # V5.6.1: เพิ่ม Cooldown 0.5 -> 1h กันเปิดถี่ตอนกลับตัว
 CAPITAL = 40
 RISK_PCT = 0.02
 LEVERAGE = 3
@@ -219,7 +220,7 @@ def get_live_price_fast(symbol, candidates=None):
     return 0, None
 
 def get_data(symbol="BTC/USDT:USDT"):
-    # FIX V5.5: ใช้สัญลักษณ์ Perpetual ตรงแอพ MEXC เท่านั้น
+    # FIX V5.6.1: ใช้สัญลักษณ์ Perpetual ตรงแอพ MEXC เท่านั้น
     if "BTC" in symbol: candidates=["BTC/USDT:USDT","BTC/USDT"]
     elif "GOLD" in symbol or "PAXG" in symbol or "XAU" in symbol: candidates=["GOLD/USDT:USDT","XAU/USDT:USDT"]
     elif "SILVER" in symbol or "XAG" in symbol: candidates=["SILVER/USDT:USDT","XAG/USDT:USDT"]
@@ -320,10 +321,27 @@ def execute_symbol(symbol, manage_open=True):
                 ot['pnl_usd']=pnl; actions.append(f"TP TREND CHANGE {symbol} {sig} {','.join(exit_info['reasons'])} PnL ${pnl:+.2f}")
         if actions: save_trades(trades)
         rev=st.check_reversal(prev,curr); trend=st.check_trend(curr, prev); mom=st.check_momentum(curr)
-        signal="WAIT"; can_open=len(open_trades) < MAX_POS_PER_SYMBOL and can_open_new(symbol_key, cooldown_hours=COOLDOWN_HOURS)
-        if len(open_trades)>0 and can_open:
-            existing_sig=open_trades[0]['signal']
-            if (trend['long'] and existing_sig!='LONG') or (trend['short'] and existing_sig!='SHORT'): can_open=False
+        # V5.6.1.1 NO HEDGE + CLOSE + MAX NOTIONAL FIX
+        # ถือ SHORT อยู่ ห้ามเปิด LONG - ให้ปิด SHORT ก่อน (ไม่ Hedge)
+        # ถือ LONG อยู่ ห้ามเปิด SHORT
+        signal="WAIT"
+        total_notional_now = sum([float(t.get('position_size',0)) for t in load_trades() if str(t.get('status')).upper() in ['OPEN','PAPER_OPEN','PAPER']])
+        can_open=len(open_trades) < MAX_POS_PER_SYMBOL and can_open_new(symbol_key, cooldown_hours=COOLDOWN_HOURS) and total_notional_now < MAX_TOTAL_NOTIONAL
+        opposite_action = None
+        if len(open_trades)>0:
+            existing_sigs = set([t['signal'] for t in open_trades])
+            if trend['long'] and 'SHORT' in existing_sigs:
+                # สัญญาณกลับตัว LONG ขณะถือ SHORT -> ปิด SHORT ก่อน (TP) ไม่เปิด LONG ซ้อน
+                opposite_action = "CLOSE_SHORT_FOR_LONG"
+                can_open = False
+                signal = "CLOSE_SHORT"
+            elif trend['short'] and 'LONG' in existing_sigs:
+                opposite_action = "CLOSE_LONG_FOR_SHORT"
+                can_open = False
+                signal = "CLOSE_LONG"
+            elif len(existing_sigs)==1:
+                # ถือทางเดียวอยู่ อนุญาตเปิดเพิ่มได้ถ้าเทรนเดียวกัน
+                pass
         if can_open and not trend['sideway']:
             if trend['long'] and mom['long']: signal="LONG"
             elif trend['short'] and mom['short']: signal="SHORT"
@@ -331,9 +349,21 @@ def execute_symbol(symbol, manage_open=True):
             if len(open_trades)>=MAX_POS_PER_SYMBOL: signal=f"MAX {len(open_trades)}/{MAX_POS_PER_SYMBOL} HOLD {open_trades[0]['signal']}"
             elif len(open_trades)>0: signal=f"HOLD {open_trades[0]['signal']} {len(open_trades)}/{MAX_POS_PER_SYMBOL}"
             else: signal="COOLDOWN"
+        # V5.6.1: ปิดไม้ตรงข้ามอัตโนมัติเมื่อเทรนกลับตัว - ไม่ถือ Hedge
+        if signal in ['CLOSE_SHORT','CLOSE_LONG']:
+            close_sig = 'SHORT' if signal=='CLOSE_SHORT' else 'LONG'
+            for ot in open_trades:
+                if ot['signal']==close_sig and str(ot.get('status')).upper() in ['OPEN','PAPER_OPEN','PAPER']:
+                    ot['status']='CLOSED'; ot['result']='WIN' if (price>float(ot['entry']) and close_sig=='LONG') or (price<float(ot['entry']) and close_sig=='SHORT') else 'LOSS'
+                    ot['exit']=price; ot['exit_time']=datetime.now().isoformat(); ot['exit_reason']='V5.6.1.1 NO HEDGE + CLOSE: Trend Flip -> Close Opposite'
+                    pnl=(price-float(ot['entry']))/float(ot['entry'])*float(ot.get('position_size',0)) if close_sig=='LONG' else (float(ot['entry'])-price)/float(ot['entry'])*float(ot.get('position_size',0))
+                    ot['pnl_usd']=pnl; actions.append(f"CLOSE {close_sig} {symbol} ${price:.2f} PnL ${pnl:+.2f} [NO HEDGE]")
+            if actions: save_trades(trades)
+            # หลังปิดแล้ว ไม่เปิดไม้ใหม่ทันที รอแท่งหน้า (Cooldown)
+            return {"ok":True,"symbol":symbol,"symbol_key":symbol_key,"signal":signal,"price":price,"plus_di":float(curr['plus_di']),"minus_di":float(curr['minus_di']),"adx":float(curr['adx']),"adx_slope":float(curr['adx_slope']),"cdc_up":bool(curr['cdc_up']),"cdc_stop":float(curr['cdc_stop']),"rsi":float(curr['rsi']),"ema_fast":float(curr['ema_fast']),"ema_slow":float(curr['ema_slow']),"retest":bool(trend.get('retest')),"vol_ok":bool(trend.get('vol_ok')),"sl_pct":st.config['sl_pct']*100,"tp_pct":st.config['tp_pct']*100,"actions":actions,"can_open":False,"open_count":len(open_trades),"sideway":bool(trend.get('sideway')),"long":bool(trend.get('long')),"short":bool(trend.get('short')),"rev_long":bool(rev.get('long')),"rev_short":bool(rev.get('short')),"mom_long":bool(mom.get('long')),"mom_short":bool(mom.get('short')),"entry_type":trend.get('entry_type'),"breakout_long":trend.get('breakout_long'),"breakout_short":trend.get('breakout_short'),"cdc_flip_up":trend.get('cdc_flip_up'),"cdc_flip_down":trend.get('cdc_flip_down'),"di_cross_up":trend.get('di_cross_up'),"di_cross_down":trend.get('di_cross_down'),"live_price":price,"candle_close":candle_close_val,"used_symbol":used_sym,"price_source":"MEXC Ticker Live"}
         if signal in ['LONG','SHORT'] and can_open:
             pos_info=calc_position(symbol_key)
-            new_trade={"id":len(trades)+1,"symbol":symbol,"symbol_key":symbol_key,"signal":signal,"entry":price,"entry_time":datetime.now().isoformat(),"position_size":pos_info['pos'],"sl":price*(1-st.config['sl_pct']) if signal=='LONG' else price*(1+st.config['sl_pct']),"tp":price*(1+st.config['tp_pct']) if signal=='LONG' else price*(1-st.config['tp_pct']),"status":"PAPER_OPEN","real":False,"note":f"V5.5 {trend.get('entry_type')}"}
+            new_trade={"id":len(trades)+1,"symbol":symbol,"symbol_key":symbol_key,"signal":signal,"entry":price,"entry_time":datetime.now().isoformat(),"position_size":pos_info['pos'],"sl":price*(1-st.config['sl_pct']) if signal=='LONG' else price*(1+st.config['sl_pct']),"tp":price*(1+st.config['tp_pct']) if signal=='LONG' else price*(1-st.config['tp_pct']),"status":"PAPER_OPEN","real":False,"note":f"V5.6.1 {trend.get('entry_type')}"}
             trades.append(new_trade); save_trades(trades); set_last_trade_time(symbol_key); actions.append(f"OPEN {signal} {symbol} ${price:.2f} [{trend.get('entry_type')}] SL {new_trade['sl']:.2f}")
         return {"ok":True,"symbol":symbol,"symbol_key":symbol_key,"signal":signal,"price":price,"live_price":price,"candle_close":candle_close_val,"used_symbol":used_sym,"price_source":"MEXC Ticker Live","plus_di":float(curr['plus_di']),"minus_di":float(curr['minus_di']),"adx":float(curr['adx']),"adx_slope":float(curr['adx_slope']),"cdc_up":bool(curr['cdc_up']),"cdc_stop":float(curr['cdc_stop']),"rsi":float(curr['rsi']),"ema_fast":float(curr['ema_fast']),"ema_slow":float(curr['ema_slow']),"retest":bool(trend.get('retest')), "vol_ok":bool(trend.get('vol_ok')),"sl_pct":st.config['sl_pct']*100,"tp_pct":st.config['tp_pct']*100,"actions":actions, "can_open":can_open, "open_count":len(open_trades),"sideway":bool(trend.get('sideway')), "long":bool(trend.get('long')), "short":bool(trend.get('short')),"rev_long":bool(rev.get('long')), "rev_short":bool(rev.get('short')),"mom_long":bool(mom.get('long')), "mom_short":bool(mom.get('short')),"entry_type":trend.get('entry_type'),"breakout_long":trend.get('breakout_long'),"breakout_short":trend.get('breakout_short'),"cdc_flip_up":trend.get('cdc_flip_up'),"cdc_flip_down":trend.get('cdc_flip_down'),"di_cross_up":trend.get('di_cross_up'),"di_cross_down":trend.get('di_cross_down')}
     except Exception as e:
@@ -364,7 +394,7 @@ async def webhook(request: Request):
                 if key!='all' and k!=key: continue
                 results[k]=execute_symbol(SYMBOLS[k])
             trades=load_trades(); auto=get_auto_state(); bal=get_mexc_balance()
-            out=f"📊 <b>G_POWER V5.5 PRICE FIX CHECK {key.upper()}</b> {datetime.now().strftime('%d/%m %H:%M')}\n"
+            out=f"📊 <b>G_POWER V5.6.1.1 NO HEDGE + CLOSE CHECK {key.upper()}</b> {datetime.now().strftime('%d/%m %H:%M')}\n"
             for k,r in results.items():
                 if not r.get('ok'): out+=f"\n{k.upper()} ❌ {r.get('error')}\n"
                 else:
@@ -388,7 +418,7 @@ async def webhook(request: Request):
                     out+=f"{sig} {ot['symbol']} [{ot.get('note','')}] Entry ${entry:,.2f} Now ${curr_p:,.2f} UnPnL ${upnl:+.2f} ({upp:+.1f}%) SL ${sl:,.2f}\n"
             else: out+=f"\n📌 ไม่มีไม้ถืออยู่ - WAIT\n"
             if bal.get('ok'): out+=f"\n🏦 MEXC {bal.get('total')} USDT | Pos {len(bal.get('positions',[]))}\n"
-            out+=f"\n✅ V5.5 PRICE FIX CIRCLE BREAKOUT+RETEST+TURBO VOL0.20 PYRAMID {MAX_POS_PER_SYMBOL}x\n💡 เข้าจุดวงฟ้า: CDC Flip + DI Cross ไม่รอ Retest"
+            out+=f"\n✅ V5.6.1.1 NO HEDGE + CLOSE CIRCLE BREAKOUT+RETEST+TURBO VOL0.20 PYRAMID {MAX_POS_PER_SYMBOL}x\n💡 เข้าจุดวงฟ้า: CDC Flip + DI Cross ไม่รอ Retest"
             send_tele(out, chat_id)
             return {"ok":True}
         elif tl.startswith('/total') or tl.startswith('/portfolio') or tl.startswith('/port'):
@@ -400,7 +430,7 @@ async def webhook(request: Request):
             opens=[t for t in trades if str(t.get('status')).upper() in ['OPEN','PAPER_OPEN','PAPER']]
             closeds=[t for t in trades if str(t.get('status')).upper()=='CLOSED']
             total_closed_pnl = sum([float(t.get('pnl_usd',0)) for t in closeds])
-            out=f"💼 <b>G_POWER V5.5 PORTFOLIO</b> {datetime.now().strftime('%d/%m %H:%M')}\n"
+            out=f"💼 <b>G_POWER V5.6.1 PORTFOLIO</b> {datetime.now().strftime('%d/%m %H:%M')}\n"
             out+=f"🏦 MEXC {bal.get('total',37.77) if bal.get('ok') else 37.77} USDT | Real Pos {len(bal.get('positions',[])) if bal.get('ok') else 0}\n\n"
             if opens:
                 out+=f"📌 ถือ {len(opens)} ไม้:\n"
@@ -426,13 +456,46 @@ async def webhook(request: Request):
                 out+=f"\n📕 ปิดแล้ว {len(closeds)} ไม้ PnL {total_closed_pnl:+.2f}$\n"
                 for ct in closeds[-3:]:
                     out+=f"{ct.get('signal')} {ct.get('symbol','').replace('/USDT:USDT','')} PnL ${float(ct.get('pnl_usd',0)):+.2f} {ct.get('exit_reason','')[:30]}\n"
-            out+=f"\n✅ V5.5 PRICE FIX CIRCLE"
+            out+=f"\n✅ V5.6.1.1 NO HEDGE + CLOSE CIRCLE"
+            send_tele(out, chat_id)
+            return {"ok":True}
+        elif tl.startswith('/close'):
+            # V5.6.1.1: ปิดทุกไม้ที่ถืออยู่ทันที - ปิดแอพไม่ปิดไม้ ต้องสั่งคำสั่งนี้
+            trades=load_trades()
+            opens=[t for t in trades if str(t.get('status')).upper() in ['OPEN','PAPER_OPEN','PAPER']]
+            if not opens:
+                send_tele("📌 ไม่มีไม้ถืออยู่ - ไม่มีอะไรให้ปิด", chat_id)
+                return {"ok":True}
+            # ดึงราคาสด
+            results={}
+            for k in ['btc','gold','silver']:
+                try: results[k]=execute_symbol(SYMBOLS[k])
+                except: results[k]={"ok":False}
+            # ปิดทุกไม้ด้วยราคาสด ไม่ต้องรอ TP/SL
+            total_pnl=0
+            out=f"🔴 <b>CLOSE ALL {len(opens)} ไม้</b> {__import__('datetime').datetime.now().strftime('%d/%m %H:%M')}\n"
+            for ot in opens:
+                key=ot.get('symbol_key','btc')
+                # ใช้ราคาสดจาก results ถ้าไม่มีใช้ entry
+                curr_p=results.get(key,{}).get('price', ot.get('entry'))
+                entry=float(ot['entry']); sig=ot['signal']; ps=float(ot.get('position_size',0))
+                if sig=='LONG': pnl=(curr_p-entry)/entry*ps if entry else 0
+                else: pnl=(entry-curr_p)/entry*ps if entry else 0
+                total_pnl+=pnl
+                ot['status']='CLOSED'; ot['result']='WIN' if pnl>0 else 'LOSS'
+                ot['exit']=curr_p; ot['exit_time']=__import__('datetime').datetime.now().isoformat(); ot['exit_reason']='MANUAL CLOSE /close all'
+                ot['pnl_usd']=pnl
+                out+=f"{sig} {ot['symbol']} ${entry:,.2f} → ${curr_p:,.2f} PnL ${pnl:+.2f}\n"
+            save_trades(trades)
+            # ปิด Auto ด้วย กันเปิดซ้ำทันที
+            set_auto_state('all', False)
+            out+=f"\n📊 รวม PnL ${total_pnl:+.2f}\n🔴 Auto OFF all แล้ว - จะไม่เปิดไม้ใหม่จนกว่าจะ /on all"
             send_tele(out, chat_id)
             return {"ok":True}
         elif tl.startswith('/on'):
             parts=tl.split(); key='all' if len(parts)<2 else parse_sym(parts[1])[0]
             set_auto_state(key, True)
-            send_tele(f"🟢 Auto ON {key.upper()} V5.5 PRICE FIX", chat_id)
+            send_tele(f"🟢 Auto ON {key.upper()} V5.6.1.1 NO HEDGE + CLOSE", chat_id)
             return {"ok":True}
         elif tl.startswith('/off'):
             parts=tl.split(); key='all' if len(parts)<2 else parse_sym(parts[1])[0]
@@ -445,7 +508,7 @@ async def webhook(request: Request):
             send_tele(f"📡 {sym} {r.get('signal')} ${r.get('price',0):,.2f} [{r.get('entry_type')}] +DI {r.get('plus_di',0):.1f} -DI {r.get('minus_di',0):.1f} ADX {r.get('adx',0):.1f}", chat_id)
             return {"ok":True}
         else:
-            send_tele(f"❓ {text}\n/check [btc|gold|silver|all]\n/total - พอร์ต\n/on [btc|gold|silver|all]\n/off [btc|gold|silver|all]", chat_id)
+            send_tele(f"❓ {text}\n/check [btc|gold|silver|all]\n/total - พอร์ต\n/on [btc|gold|silver|all]\n/off [btc|gold|silver|all]\n/close all - ปิดทุกไม้ทันที", chat_id)
             return {"ok":True}
     except Exception as e:
         print(f"ERR {e}"); import traceback; traceback.print_exc(); return {"ok":True}
@@ -467,16 +530,16 @@ def debug_price():
 
 @app.api_route("/ping", methods=["GET","HEAD"])
 def ping():
-    return {"status":"ok V5.5 PRICE FIX CIRCLE","auto":get_auto_state(),"dir":str(DATA_DIR),"trades":len(load_trades())}
+    return {"status":"ok V5.6.1.1 NO HEDGE + CLOSE CIRCLE","auto":get_auto_state(),"dir":str(DATA_DIR),"trades":len(load_trades())}
 
 @app.api_route("/health", methods=["GET","HEAD"])
 def health():
-    return {"status":"OK V5.5","dir":str(DATA_DIR),"auto":get_auto_state().get('btc',False)}
+    return {"status":"OK V5.6.1","dir":str(DATA_DIR),"auto":get_auto_state().get('btc',False)}
 
 @app.get("/", response_class=HTMLResponse)
 def home():
     auto=get_auto_state()
-    return f"<html><body style='background:#0a0e1a;color:#fff;font-family:Arial;padding:20px'><h1>G_POWER V5.5 PRICE FIX</h1><p>BTC {'🟢' if auto.get('btc') else '🔴'} GOLD {'🟢' if auto.get('gold') else '🔴'} SILVER {'🟢' if auto.get('silver') else '🔴'}</p><p>✅ BREAKOUT CDC Flip + DI Cross + RETEST + TURBO | VOL 0.20 | PYRAMID 3x | NO FADE</p><a href='/ping'>Ping</a></body></html>"
+    return f"<html><body style='background:#0a0e1a;color:#fff;font-family:Arial;padding:20px'><h1>G_POWER V5.6.1.1 NO HEDGE + CLOSE</h1><p>BTC {'🟢' if auto.get('btc') else '🔴'} GOLD {'🟢' if auto.get('gold') else '🔴'} SILVER {'🟢' if auto.get('silver') else '🔴'}</p><p>✅ BREAKOUT CDC Flip + DI Cross + RETEST + TURBO | VOL 0.20 | PYRAMID 3x | NO FADE</p><a href='/ping'>Ping</a></body></html>"
 
 @app.get("/live")
 def live_api(symbol: str = Query("BTC/USDT")): return execute_symbol(symbol)
