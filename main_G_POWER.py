@@ -459,6 +459,27 @@ async def webhook(request: Request):
             out+=f"\n✅ V5.6.1.1 NO HEDGE + CLOSE CIRCLE"
             send_tele(out, chat_id)
             return {"ok":True}
+        elif tl.startswith('/reset'):
+            # V5.7.1 RESET - ล้างไพ่เริ่มใหม่: ปิดหมด + ล้างประวัติ + เริ่มทุน $40 ใหม่
+            # ต้อง /close all ก่อน ถ้ายังมีไม้ถืออยู่จะไม่ล้างให้ กันล้างพลาด
+            trades=load_trades()
+            opens=[t for t in trades if str(t.get('status')).upper() in ['OPEN','PAPER_OPEN','PAPER']]
+            if opens:
+                send_tele(f"⚠️ ยังถือ {len(opens)} ไม้อยู่! พิมพ์ /close all ก่อน แล้วค่อย /reset", chat_id)
+                return {"ok":True}
+            # ล้างไฟล์
+            try:
+                import os
+                for f in ["/data/g_power_trades.json","/data/auto_state.json","/data/last_signal.json"]:
+                    if os.path.exists(f): os.remove(f)
+                # เขียนไฟล์เปล่า
+                save_trades([])
+                set_auto_state('all', False)
+            except Exception as e:
+                send_tele(f"RESET Error: {e}", chat_id)
+                return {"ok":False}
+            send_tele("🧹 <b>ล้างไพ่เรียบร้อย</b>\n\n✅ ปิดทุกไม้แล้ว\n✅ ล้างประวัติเทรดเก่าทั้งหมด\n💰 Paper Equity รีเซ็ตเป็น $40.00\n🔴 Auto OFF - พร้อมเริ่มใหม่\n\nพิมพ์ /on all เพื่อเริ่ม Paper ใหม่นับ 1", chat_id)
+            return {"ok":True}
         elif tl.startswith('/close'):
             # V5.6.1.1: ปิดทุกไม้ที่ถืออยู่ทันที - ปิดแอพไม่ปิดไม้ ต้องสั่งคำสั่งนี้
             trades=load_trades()
@@ -508,7 +529,7 @@ async def webhook(request: Request):
             send_tele(f"📡 {sym} {r.get('signal')} ${r.get('price',0):,.2f} [{r.get('entry_type')}] +DI {r.get('plus_di',0):.1f} -DI {r.get('minus_di',0):.1f} ADX {r.get('adx',0):.1f}", chat_id)
             return {"ok":True}
         else:
-            send_tele(f"❓ {text}\n/check [btc|gold|silver|all]\n/total - พอร์ต\n/on [btc|gold|silver|all]\n/off [btc|gold|silver|all]\n/close all - ปิดทุกไม้ทันที", chat_id)
+            send_tele(f"❓ {text}\n/check [btc|gold|silver|all]\n/total - พอร์ต\n/on [btc|gold|silver|all]\n/off [btc|gold|silver|all]\n/close all - ปิดทุกไม้ทันที\n/reset - ล้างไพ่เริ่มใหม่ (ต้อง /close all ก่อน)", chat_id)
             return {"ok":True}
     except Exception as e:
         print(f"ERR {e}"); import traceback; traceback.print_exc(); return {"ok":True}
@@ -527,6 +548,107 @@ def debug_price():
             used = df.attrs.get('used_symbol',sym) if hasattr(df,'attrs') else sym
             out[k]={"used_symbol":used,"live_ticker":live,"candle_close_15m":candle,"diff_pct":round((live-candle)/candle*100,3) if candle else 0,"last_candle_time":str(df.iloc[-1]['datetime']),"note":"live ต้องตรงกับแอพ MEXC Last Price ถ้า diff >0.5% แสดงว่าแท่งเก่า"}
     return out
+
+
+@app.get("/bt")
+def backtest_endpoint(days: int = 30, symbol_key: str = "all"):
+    """
+    BT กราฟราคาจริงจาก MEXC - รันบน Render ที่มีเน็ต
+    เปิด: https://mexc-btc-bot-1.onrender.com/bt?days=30
+    """
+    import pandas as pd
+    results = {}
+    targets = []
+    if symbol_key=="all":
+        targets=[("btc","BTC/USDT:USDT"),("gold","XAU/USDT:USDT"),("silver","SILVER/USDT:USDT")]
+    elif symbol_key=="btc":
+        targets=[("btc","BTC/USDT:USDT")]
+    elif symbol_key=="gold":
+        targets=[("gold","XAU/USDT:USDT")]
+    elif symbol_key=="silver":
+        targets=[("silver","SILVER/USDT:USDT")]
+    else:
+        targets=[("btc","BTC/USDT:USDT")]
+    for key, sym in targets:
+        try:
+            st = STRATS[key]
+            df = get_data(sym)
+            if isinstance(df, tuple):
+                results[key]={"error":df[1]}
+                continue
+            # get_data ดึงแค่ 250 แท่ง = ~2.6 วัน ถ้าอยากได้ 30 วันต้องดึงเพิ่ม
+            # ใช้ df ที่มีอยู่ก่อน - ถ้าไม่พอจะบอก
+            df = st.add_indicators(df)
+            trades=[]
+            equity=40.0
+            open_trade=None
+            for i in range(2, len(df)):
+                curr=df.iloc[i]; prev=df.iloc[i-1]; price=float(curr['close'])
+                if open_trade:
+                    entry=open_trade['entry']; sig=open_trade['signal']
+                    new_sl = st.get_trailing_sl(entry, price, float(curr['cdc_stop']), sig)
+                    if sig=='LONG' and new_sl>open_trade['sl']: open_trade['sl']=new_sl
+                    if sig=='SHORT' and new_sl<open_trade['sl']: open_trade['sl']=new_sl
+                    sl_hit=False; exit_p=price; reason="TREND"
+                    if sig=='LONG' and float(curr['low']) <= open_trade['sl']: sl_hit=True; exit_p=open_trade['sl']; reason="SL"
+                    if sig=='SHORT' and float(curr['high']) >= open_trade['sl']: sl_hit=True; exit_p=open_trade['sl']; reason="SL"
+                    exit_info = st.check_exit_trend_change(curr, prev, sig)
+                    # V5.7: TP ต้องยืนยัน 2 ตัว - แก้ TP ไวเกิน (DI Flip เดี่ยวไม่ปิด)
+                    # นับสัญญาณที่เกิดพร้อมกัน
+                    confirm_count = 0
+                    if exit_info['reasons']:
+                        # CDC Flip นับ 2, EMA+DI อย่างละ 1
+                        for r in exit_info['reasons']:
+                            if 'CDC' in r: confirm_count+=2
+                            else: confirm_count+=1
+                    tp_hit = confirm_count>=2  # ต้อง >=2 ถึงปิด
+                    if sl_hit or tp_hit:
+                        if not sl_hit: exit_p=price; reason=",".join(exit_info['reasons'])
+                        pnl=(exit_p-entry)/entry*open_trade['pos'] if sig=='LONG' else (entry-exit_p)/entry*open_trade['pos']
+                        equity+=pnl
+                        trades.append({"signal":sig,"entry":entry,"exit":exit_p,"pnl":round(pnl,2),"reason":reason,"type":open_trade.get('entry_type'),"equity":round(equity,2)})
+                        open_trade=None
+                        continue
+                if not open_trade:
+                    trend=st.check_trend(curr, prev); mom=st.check_momentum(curr)
+                    # V5.6 NO HEDGE: ใน BT ถือได้ทีละ 1 ไม้
+                    if trend['long'] and mom['long']:
+                        pos=40*0.02/st.config['sl_pct']
+                        open_trade={'signal':'LONG','entry':price,'pos':pos,'sl':price*(1-st.config['sl_pct']),'entry_type':trend.get('entry_type')}
+                    elif trend['short'] and mom['short']:
+                        pos=40*0.02/st.config['sl_pct']
+                        open_trade={'signal':'SHORT','entry':price,'pos':pos,'sl':price*(1+st.config['sl_pct']),'entry_type':trend.get('entry_type')}
+            wins=[t for t in trades if t['pnl']>0]
+            total_pnl=sum([t['pnl'] for t in trades])
+            results[key]={
+                "symbol":sym,
+                "candles":len(df),
+                "period":f"{df.iloc[0]['datetime']} -> {df.iloc[-1]['datetime']}",
+                "trades":len(trades),
+                "win":len(wins),
+                "winrate":round(len(wins)/max(len(trades),1)*100,1),
+                "total_pnl":round(total_pnl,2),
+                "equity":round(equity,2),
+                "equity_pct":round((equity-40)/40*100,2),
+                "last_trades":trades[-10:],
+                "note":"BT บน 15m 250 แท่ง (~2.6 วัน) + TP ต้องยืนยัน 2 ตัว (แก้ TP ไว) - ถ้าจะ BT 30 วันให้เพิ่ม limit ใน get_data"
+            }
+        except Exception as e:
+            import traceback; traceback.print_exc()
+            results[key]={"error":str(e)[:300]}
+    # ส่งเป็น HTML อ่านง่าย
+    from fastapi.responses import HTMLResponse
+    html="<html><body style='background:#0a0e1a;color:#fff;font-family:Arial;padding:20px'><h1>G_POWER BT กราฟราคาจริง MEXC</h1>"
+    for k,v in results.items():
+        if "error" in v:
+            html+=f"<h2>{k} ❌ {v['error']}</h2>"
+        else:
+            html+=f"<h2>{k.upper()} {v['symbol']} | {v['candles']} แท่ง {v['period']}</h2><p>Trades {v['trades']} Win {v['win']} WinRate {v['winrate']}% PnL ${v['total_pnl']:+.2f} Equity ${v['equity']} ({v['equity_pct']:+.2f}%)</p><table border=1 cellpadding=5><tr><th>Signal</th><th>Type</th><th>Entry</th><th>Exit</th><th>PnL</th><th>Reason</th></tr>"
+            for t in v['last_trades']:
+                html+=f"<tr><td>{t['signal']}</td><td>{t['type']}</td><td>{t['entry']:.2f}</td><td>{t['exit']:.2f}</td><td>{t['pnl']:+.2f}</td><td>{t['reason']}</td></tr>"
+            html+="</table>"
+    html+="<p>เปิด /bt?days=30&symbol_key=btc ดูทีละตัวได้</p></body></html>"
+    return HTMLResponse(html)
 
 @app.api_route("/ping", methods=["GET","HEAD"])
 def ping():
