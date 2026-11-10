@@ -650,6 +650,34 @@ def backtest_endpoint(days: int = 30, symbol_key: str = "all"):
     html+="<p>เปิด /bt?days=30&symbol_key=btc ดูทีละตัวได้</p></body></html>"
     return HTMLResponse(html)
 
+
+@app.get("/set_webhook")
+def set_webhook():
+    """แก้ Webhook หลุดโดยไม่ต้องแตะ Token - เปิดลิงก์นี้ใน Browser ได้เลย ไม่ต้องใส่ Token เอง"""
+    import requests, os
+    token = os.environ.get("TELEGRAM_BOT_TOKEN","").strip() or os.environ.get("BOT_TOKEN","").strip()
+    if not token:
+        return {"ok":False,"error":"No TELEGRAM_BOT_TOKEN in Render Environment - ใส่ Token ใน Render > Environment ก่อน"}
+    url = "https://mexc-btc-bot-1.onrender.com/telegram/webhook"
+    try:
+        r = requests.get(f"https://api.telegram.org/bot{token}/setWebhook?url={url}", timeout=10)
+        return {"ok":r.status_code==200,"telegram":r.json(),"set_to":url}
+    except Exception as e:
+        return {"ok":False,"error":str(e)[:200]}
+
+@app.get("/webhook_info")
+def webhook_info():
+    """เช็ค Webhook ว่าชี้ไปไหน - เปิดใน Browser ได้เลย ไม่ต้องใส่ Token"""
+    import requests, os
+    token = os.environ.get("TELEGRAM_BOT_TOKEN","").strip() or os.environ.get("BOT_TOKEN","").strip()
+    if not token:
+        return {"ok":False,"error":"No TELEGRAM_BOT_TOKEN in Render Environment"}
+    try:
+        r = requests.get(f"https://api.telegram.org/bot{token}/getWebhookInfo", timeout=10)
+        return r.json()
+    except Exception as e:
+        return {"ok":False,"error":str(e)[:200]}
+
 @app.api_route("/ping", methods=["GET","HEAD"])
 def ping():
     return {"status":"ok V5.6.1.1 NO HEDGE + CLOSE CIRCLE","auto":get_auto_state(),"dir":str(DATA_DIR),"trades":len(load_trades())}
