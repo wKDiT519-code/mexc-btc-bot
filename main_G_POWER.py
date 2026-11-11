@@ -21,10 +21,21 @@ from pathlib import Path
 
 app = FastAPI(title="G_POWER V5.6.1.1 NO HEDGE + CLOSE")
 
+def _make_strat(key):
+    try:
+        return StrategyMulti(key)
+    except TypeError:
+        s = StrategyMulti()
+        s.symbol_key = key
+        try:
+            s.name = f"G_POWER {key.upper()}"
+        except: pass
+        return s
+
 STRATS = {
-    "btc": StrategyMulti("btc"),
-    "gold": StrategyMulti("gold"),
-    "silver": StrategyMulti("silver"),
+    "btc": _make_strat("btc"),
+    "gold": _make_strat("gold"),
+    "silver": _make_strat("silver"),
 }
 strat = STRATS["btc"]
 
