@@ -376,7 +376,6 @@ async def webhook(request: Request):
             trades=load_trades(); opens=[t for t in trades if str(t.get('status')).upper() in ['OPEN','PAPER_OPEN','PAPER']]
             if opens: send_tele(f"ยังถือ {len(opens)} ไม้อยู่! พิมพ์ /close all ก่อน", chat_id); return {'ok':True}
             try:
-                # ห้าม import os ตรงนี้ - มันจะทำให้ os กลายเป็นตัวแปรในฟังก์ชัน webhook ทั้งหมด แล้วบรรทัด allowed=os.environ... ข้างบนจะพัง UnboundLocalError ใช้ os ตัวบนสุดที่ import ไว้แล้ว
                 for f in ['/data/g_power_trades.json','/data/auto_state.json']:
                     try:
                         if os.path.exists(f): os.remove(f)
