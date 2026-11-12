@@ -1,4 +1,5 @@
 """G_POWER V5.6.1.1 - 379 lines fixed"""
+# 379 lines fixed - _m sets default config if old strategy has no ema_fast
 from fastapi import FastAPI, Query, Request
 from fastapi.responses import HTMLResponse
 try:
@@ -12,15 +13,14 @@ import os, ccxt, pandas as pd, json, requests
 from pathlib import Path
 app = FastAPI(title="G_POWER V5.6.1.1 NO HEDGE + CLOSE")
 def _m(k):
-    try: return StrategyMulti(k)
-    except: s=StrategyMulti(); s.symbol_key=k; return s
+    try: s=StrategyMulti(k)
+    except: s=StrategyMulti(); s.symbol_key=k
+    if not getattr(s,'config',{}).get('ema_fast'): s.config={'ema_fast':12 if k=='btc' else 21 if k=='gold' else 9,'ema_slow':26 if k=='btc' else 55 if k=='gold' else 21,'ema_trend':50 if k=='btc' else 100 if k=='gold' else 34,'rsi_fast':12 if k=='btc' else 14 if k=='gold' else 9,'rsi_entry_long':(35,70),'rsi_entry_short':(25,65),'adx_min':10,'adx_sideway':10,'adx_turbo':28,'di_min':10,'di_turbo':20,'sl_pct':0.034 if k=='btc' else 0.028 if k=='gold' else 0.035,'tp_pct':0.18 if k=='btc' else 0.12 if k=='gold' else 0.10,'cdc_atr_fast':5,'cdc_mult_fast':0.5,'cdc_atr_slow':10,'cdc_mult_slow':2.0,'vol_filter':0.20,'sideway_pct':1.2,'retest_pct':0.012,'be_trigger':0.01,'lock_trigger':0.02,'lock_pct':0.005}
+    return s
 STRATS = {"btc": _m("btc"), "gold": _m("gold"), "silver": _m("silver")}
 strat = STRATS["btc"]
-MAX_POS_PER_SYMBOL = 3
-COOLDOWN_HOURS = 0.5  # ลดจาก 1 ชม. เหลือ 30 นาที เพื่อให้เข้าเพิ่มตอนย่อได้
-CAPITAL = 40
-RISK_PCT = 0.02
-LEVERAGE = 3
+MAX_POS_PER_SYMBOL=3; COOLDOWN_HOURS=0.5
+CAPITAL=40; RISK_PCT=0.02; LEVERAGE=3
 SYMBOLS = {"btc": "BTC/USDT", "gold": "PAXG/USDT:USDT", "silver": "SILVER/USDT:USDT"}
 DATA_DIR = Path("/data") if Path("/data").exists() else Path("/tmp")
 DATA_DIR.mkdir(parents=True, exist_ok=True)
