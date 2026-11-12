@@ -150,7 +150,7 @@ def execute_symbol(symbol, manage_open=True):
         df=get_data(symbol)
         if isinstance(df,tuple): return {"ok":False,"symbol":symbol,"error":df[1]}
         df=st.add_indicators(df)
-        for _c,_d in [('rsi',50.0)]: df[_c]=_d if _c not in df.columns else df[_c]
+        for _c,_d in [('rsi',50.0),('ema_fast',df['ema12'] if 'ema12' in df.columns else df['close']),('ema_slow',df['ema26'] if 'ema26' in df.columns else df['close']),('plus_di',0.0),('minus_di',0.0),('adx',15.0),('cdc_up',True),('cdc_stop',df['close'])]: df[_c]=_d if _c not in df.columns else df[_c]
         curr=df.iloc[-1]; prev=df.iloc[-2]
         price=float(curr['close'])
         trades=load_trades()
