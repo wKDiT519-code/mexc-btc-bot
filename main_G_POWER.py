@@ -209,6 +209,10 @@ def execute_symbol(symbol, manage_open=True):
         df=get_data(symbol)
         if isinstance(df,tuple): return {"ok":False,"symbol":symbol,"error":df[1]}
         df=st.add_indicators(df)
+        for _col, _def in [('rsi',50.0),('ema_fast',0.0),('ema_slow',0.0),('ema_trend',0.0),('plus_di',0.0),('minus_di',0.0),('adx',15.0),('cdc_up',True),('cdc_stop',0.0),('vol_avg',0.0),('dist_ema_fast',0.0),('atr',0.0)]:
+            if _col not in df.columns:
+                df[_col]=_def
+        df=df.fillna({'rsi':50.0,'plus_di':0.0,'minus_di':0.0,'adx':15.0,'ema_fast':df['close'] if 'close' in df.columns else 0,'ema_slow':df['close'] if 'close' in df.columns else 0,'ema_trend':df['close'] if 'close' in df.columns else 0})
         curr=df.iloc[-1]; prev=df.iloc[-2]
         price=float(curr['close'])
         trades=load_trades()
