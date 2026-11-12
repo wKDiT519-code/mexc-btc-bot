@@ -1,4 +1,4 @@
-"""G_POWER V5.6.1.1 - 379 lines fixed"""
+"""G_POWER V5.6.1.2 - 379 lines fixed"""
 # 379 lines fixed - _m sets default config if old strategy has no ema_fast
 from fastapi import FastAPI, Query, Request
 from fastapi.responses import HTMLResponse
@@ -11,7 +11,7 @@ except:
 from datetime import datetime, timedelta
 import os, ccxt, pandas as pd, json, requests
 from pathlib import Path
-app = FastAPI(title="G_POWER V5.6.1.1 NO HEDGE + CLOSE")
+app = FastAPI(title="G_POWER V5.6.1.2 NO HEDGE + CLOSE")
 def _m(k):
     try: s=StrategyMulti(k)
     except: s=StrategyMulti(); s.symbol_key=k
@@ -150,7 +150,7 @@ def execute_symbol(symbol, manage_open=True):
         df=get_data(symbol)
         if isinstance(df,tuple): return {"ok":False,"symbol":symbol,"error":df[1]}
         df=st.add_indicators(df)
-        for _c,_d in [('rsi',50.0),('ema_fast',df['ema12'] if 'ema12' in df.columns else df['close']),('ema_slow',df['ema26'] if 'ema26' in df.columns else df['close']),('plus_di',0.0),('minus_di',0.0),('adx',15.0),('cdc_up',True),('cdc_stop',df['close'])]: df[_c]=_d if _c not in df.columns else df[_c]
+        for _c,_d in [('ema_fast',df['ema12'] if 'ema12' in df.columns else df['close']),('ema_slow',df['ema26'] if 'ema26' in df.columns else df['close']),('plus_di',0.0),('minus_di',0.0),('adx',15.0),('cdc_up',True),('cdc_stop',df['close'])]: df[_c]=_d if _c not in df.columns else df[_c]
         curr=df.iloc[-1]; prev=df.iloc[-2]
         price=float(curr['close'])
         trades=load_trades()
@@ -252,12 +252,12 @@ async def webhook(request: Request):
                 if key!='all' and k!=key: continue
                 results[k]=execute_symbol(SYMBOLS[k])
             trades=load_trades(); auto=get_auto_state(); bal=get_mexc_balance()
-            out=f"📊 <b>G_POWER V5.2.2 CHECK {key.upper()}</b> {datetime.now().strftime('%d/%m %H:%M')}\n"
+            out=f"📊 <b>G_POWER V5.2.3 CHECK {key.upper()}</b> {datetime.now().strftime('%d/%m %H:%M')}\n"
             for k,r in results.items():
                 if not r.get('ok'): out+=f"\n{k.upper()} ❌ {r.get('error')}\n"
                 else:
                     cfg=STRATS[k].config
-                    out+=f"\n<b>{k.upper()} {r['symbol']}</b> {'🟢 ON' if auto.get(k) else '🔴 OFF'} {r['signal']}\n${r['price']:,.2f} CDC {'🟢' if r['cdc_up'] else '🔴'} Stop ${r['cdc_stop']:,.2f}\nEMA{cfg['ema_fast']}/{cfg['ema_slow']} +DI {r['plus_di']:.1f} -DI {r['minus_di']:.1f} ADX {r['adx']:.1f} RSI {r['rsi']:.0f}\nRetest {'✅' if r['retest'] else '❌'} Vol {'✅' if r['vol_ok'] else '❌'} Sideway {'❌' if not r.get('sideway') else '✅'} Trend Long {r.get('long')} Mom {r.get('mom_long') or r.get('mom_short')} Rev {r.get('rev_long') or r.get('rev_short')} CanOpen {'✅' if r['can_open'] else '❌'} Open {r['open_count']} SL {r['sl_pct']:.1f}% TP {r['tp_pct']:.0f}%\n"
+                    out+=f"\n<b>{k.upper()} {r['symbol']}</b> {'🟢 ON' if auto.get(k) else '🔴 OFF'} {r['signal']}\n${r['price']:,.2f} CDC {'🟢' if r['cdc_up'] else '🔴'} Stop ${r['cdc_stop']:,.2f}\nEMA{cfg['ema_fast']}/{cfg['ema_slow']} +DI {r['plus_di']:.1f} -DI {r['minus_di']:.1f} ADX {r['adx']:.1f}\nRetest {'✅' if r['retest'] else '❌'} Sideway {'❌' if not r.get('sideway') else '✅'} Trend Long {r.get('long')} Rev {r.get('rev_long') or r.get('rev_short')} CanOpen {'✅' if r['can_open'] else '❌'} Open {r['open_count']} SL {r['sl_pct']:.1f}% TP {r['tp_pct']:.0f}%\n"
                     if r['actions']: out+=f"⚡ {'; '.join(r['actions'])}\n"
             opens=[t for t in trades if str(t.get('status')).upper() in ['OPEN','PAPER_OPEN','PAPER']]
             if opens:
@@ -271,7 +271,7 @@ async def webhook(request: Request):
                     out+=f"{sig} {ot['symbol']} Entry ${entry:,.2f} Now ${curr_p:,.2f} UnPnL ${upnl:+.2f} ({upp:+.1f}%) SL ${sl:,.2f} {ot.get('trailing','')}\n"
             else: out+=f"\n📌 ไม่มีไม้ถืออยู่ - WAIT\n"
             if bal.get('ok'): out+=f"\n🏦 MEXC {bal.get('total')} USDT | Pos {len(bal.get('positions',[]))}\n"
-            out+=f"\n✅ V5.2.2 VOL 0.25 + PULLBACK + PAXG/SILVER FIX\n💡 1.Retest 2.Trailing 3.TP Trend"
+            out+=f"\n✅ V5.2.3 NO RSI/VOL + PULLBACK + PAXG/SILVER FIX\n💡 1.Retest 2.Trailing 3.TP Trend"
             send_tele(out, chat_id)
             return {"ok":True}
         elif tl.startswith('/total') or tl.startswith('/portfolio') or tl.startswith('/port'):
