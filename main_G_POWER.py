@@ -149,46 +149,47 @@ def make_portfolio_image(paper, unpnl, closed_pnl, win_rate, win_n, total_n, btc
     try:
         from PIL import Image, ImageDraw, ImageFont
         import io
-        W,H=1080,1920
+        W,H=1080,1350
         img=Image.new("RGB",(W,H),"#0A0E1A"); d=ImageDraw.Draw(img)
         try:
             f_big=ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",56)
             f_mid=ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",36)
             f_small=ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",28)
-        except: f_big=ImageFont.load_default(); f_mid=f_big; f_small=f_big
-        d.rounded_rectangle([30,30,W-30,200],radius=28,fill="#1E2A4A")
-        d.text((60,60),"G_POWER  PORTFOLIO",font=f_big,fill="white")
-        d.text((60,140),f"{datetime.now().strftime('%d/%m %H:%M')}  -  BTC + GOLD  -  PAPER",font=f_small,fill="#8FA3C8")
+        except:
+            try: f_big=ImageFont.truetype("DejaVuSans-Bold.ttf",56); f_mid=ImageFont.truetype("DejaVuSans-Bold.ttf",36); f_small=ImageFont.truetype("DejaVuSans.ttf",28)
+            except: f_big=ImageFont.load_default(); f_mid=f_big; f_small=f_big
+        d.rectangle([30,30,W-30,170],fill="#1E2A4A")
+        d.text((60,55),"G_POWER  PORTFOLIO",font=f_big,fill="white")
+        d.text((60,120),f"{datetime.now().strftime('%d/%m %H:%M')}  -  BTC + GOLD  -  PAPER",font=f_small,fill="#8FA3C8")
         def card(x,y,w,h,label,value,color):
-            d.rounded_rectangle([x,y,x+w,y+h],radius=20,fill="#141D33")
+            d.rectangle([x,y,x+w,y+h],fill="#141D33")
             d.text((x+30,y+20),label,font=f_small,fill="#8FA3C8")
             d.text((x+30,y+60),value,font=f_mid,fill=color)
-        card(30,230,500,200,"PAPER BALANCE",f"${paper:.2f}","white")
-        card(550,230,500,200,"UNREALIZED PnL",f"{unpnl:+.2f}","#2ED573" if unpnl>=0 else "#FF4757")
-        card(30,460,500,200,"TOTAL CLOSED",f"{closed_pnl:+.2f}","#2ED573" if closed_pnl>=0 else "#FF4757")
-        card(550,460,500,200,"WIN RATE",f"{win_rate:.0f}%  ({win_n}/{total_n})","white")
-        d.rounded_rectangle([30,690,W-30,1030],radius=22,fill="#141D33")
-        d.text((60,720),"PnL BY COIN",font=f_mid,fill="white")
+        card(30,200,500,170,"PAPER BALANCE",f"${paper:.2f}","white")
+        card(550,200,500,170,"UNREALIZED PnL",f"{unpnl:+.2f}","#2ED573" if unpnl>=0 else "#FF4757")
+        card(30,390,500,170,"TOTAL CLOSED",f"{closed_pnl:+.2f}","#2ED573" if closed_pnl>=0 else "#FF4757")
+        card(550,390,500,170,"WIN RATE",f"{win_rate:.0f}%  ({win_n}/{total_n})","white")
+        d.rectangle([30,580,W-30,880],fill="#141D33")
+        d.text((60,600),"PnL BY COIN",font=f_mid,fill="white")
         # BTC bar
-        d.text((60,790),"BTC",font=f_mid,fill="white")
+        d.text((60,660),"BTC",font=f_mid,fill="white")
         bw=int(min(abs(btc_pnl)/max(1,abs(btc_pnl)+abs(gold_pnl))*650,650)) if (btc_pnl!=0 or gold_pnl!=0) else 0
-        d.rounded_rectangle([200,790,200+max(bw,650),840],radius=10,fill="#2ED573" if btc_pnl>=0 else "#FF4757")
-        d.text((870,790),f"{btc_pnl:+.2f}",font=f_mid,fill="#2ED573" if btc_pnl>=0 else "#FF4757")
-        d.text((60,880),"GOLD",font=f_mid,fill="white")
+        d.rectangle([200,660,200+max(bw,20),700],fill="#2ED573" if btc_pnl>=0 else "#FF4757")
+        d.text((870,660),f"{btc_pnl:+.2f}",font=f_mid,fill="#2ED573" if btc_pnl>=0 else "#FF4757")
+        d.text((60,730),"GOLD",font=f_mid,fill="white")
         gw=int(min(abs(gold_pnl)/max(1,abs(btc_pnl)+abs(gold_pnl))*650,650)) if (btc_pnl!=0 or gold_pnl!=0) else 0
-        d.rounded_rectangle([200,880,200+max(gw,20),930],radius=10,fill="#2ED573" if gold_pnl>=0 else "#FF4757")
-        d.text((300,880),f"{gold_pnl:+.2f}",font=f_mid,fill="#2ED573" if gold_pnl>=0 else "#FF4757")
-        d.rounded_rectangle([30,1060,W-30,1680],radius=22,fill="#141D33")
-        d.text((60,1090),f"OPEN  {len(opens)} TRADES",font=f_mid,fill="white")
-        y=1180
+        d.rectangle([200,730,200+max(gw,20),770],fill="#2ED573" if gold_pnl>=0 else "#FF4757")
+        d.text((300 if gold_pnl>=0 else 300,730),f"{gold_pnl:+.2f}",font=f_mid,fill="#2ED573" if gold_pnl>=0 else "#FF4757")
+        d.rectangle([30,900,W-30,1250],fill="#141D33")
+        d.text((60,920),f"OPEN  {len(opens)} TRADES",font=f_mid,fill="white")
+        y=980
         for o in opens[:5]:
             col="#2ED573" if o['pnl']>=0 else "#FF4757"
             d.text((60,y),f"{o['key']} {o['sig']}",font=f_small,fill="white")
             d.text((360,y),o['txt'],font=f_small,fill="#8FA3C8")
             d.text((820,y),f"{o['pnl']:+.2f}",font=f_small,fill=col)
-            y+=62
-        d.rounded_rectangle([30,1710,W-30,1890],radius=22,fill="#1E2A4A")
-        d.text((60,1740),"MEXC Paper Only - Not Real Trade",font=f_small,fill="#8FA3C8")
+            y+=50
+        d.text((60,1210),"MEXC Paper Only - Not Real Trade",font=f_small,fill="#8FA3C8")
         buf=io.BytesIO(); img.save(buf,format="PNG"); buf.seek(0); return buf.getvalue()
     except Exception as e:
         print(f"make_image err {e}"); return None
@@ -349,7 +350,6 @@ async def webhook(request: Request):
                 out+=f"UnPnL {total_upnl:+.2f} Paper ${40+total_closed+total_upnl:.2f}\n"
             else: out+=f"ไม่มีไม้ถืออยู่ Paper ${40+total_closed:.2f}\n"
             # ส่งรูปอินโฟกราฟฟิกด้วย
-            total_upnl_safe = total_upnl if opens else 0
             try:
                 btc_p=sum([float(t.get('pnl_usd',0)) if t.get('symbol_key')=='btc' else 0 for t in closeds])
                 gold_p=sum([float(t.get('pnl_usd',0)) if t.get('symbol_key')=='gold' else 0 for t in closeds])
@@ -361,14 +361,14 @@ async def webhook(request: Request):
                     else: gold_p+=up2
                 wins=len([t for t in closeds if float(t.get('pnl_usd',0))>0])
                 tot_c=len(closeds) if closeds else len(opens)
-                wr=(wins/len(closeds)*100) if closeds else (100 if total_upnl_safe>0 else 0)
+                wr=(wins/len(closeds)*100) if closeds else (100 if total_upnl>0 else 0)
                 opens_info=[]
                 for ot in opens:
                     entry=float(ot['entry']); ps=float(ot.get('position_size',0)); key2=ot.get('symbol_key','btc'); curr_p=results.get(key2,{}).get('price',entry); sig2=ot['signal']
                     up2=(curr_p-entry)/entry*ps if sig2=='LONG' else (entry-curr_p)/entry*ps
                     opens_info.append({"key":key2.upper(),"sig":sig2,"txt":f"${entry:,.0f} -> ${curr_p:,.0f}","pnl":up2})
-                paper_val=40+total_closed+total_upnl_safe
-                img_bytes=make_portfolio_image(paper_val, total_upnl_safe, total_closed, wr, wins, len(closeds) if closeds else len(opens), btc_p, gold_p, opens_info)
+                paper_val=40+total_closed+(total_upnl if opens else 0)
+                img_bytes=make_portfolio_image(paper_val, total_upnl if opens else 0, total_closed, wr, wins, len(closeds) if closeds else len(opens), btc_p, gold_p, opens_info)
                 if img_bytes: send_tele_photo(img_bytes, out, chat_id)
                 else: send_tele(out, chat_id)
             except Exception as e: print(f"portfolio img err {e}"); send_tele(out, chat_id)
@@ -389,7 +389,9 @@ async def webhook(request: Request):
                 btc_p+=up2 if key2=='btc' else 0; gold_p+=up2 if key2=='gold' else 0
             wins=len([t for t in closeds if float(t.get('pnl_usd',0))>0]); wr=(wins/len(closeds)*100) if closeds else (100 if total_upnl>0 else 0)
             paper_val=40+total_closed+total_upnl
-            img_bytes=make_portfolio_image(paper_val,total_upnl,total_closed,wr,wins,len(closeds) if closeds else len(opens),btc_p,gold_p,opens_info)
+            img_bytes=None
+            try: img_bytes=make_portfolio_image(paper_val,total_upnl,total_closed,wr,wins,len(closeds) if closeds else len(opens),btc_p,gold_p,opens_info)
+            except Exception as e: send_tele(f'IMG ERR: {e}',chat_id); return {'ok':True}
             cap=f"G_POWER PORTFOLIO {datetime.now().strftime('%d/%m %H:%M')} Paper ${paper_val:.2f} UnPnL {total_upnl:+.2f}"
             
             send_tele_photo(img_bytes,cap,chat_id) if img_bytes else send_tele('สร้างรูปไม่ได้',chat_id)
