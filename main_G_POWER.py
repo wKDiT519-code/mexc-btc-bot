@@ -136,6 +136,62 @@ def send_tele(msg, chat_id=None):
         r=requests.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id":chat,"text":msg,"parse_mode":"HTML"}, timeout=10)
         return {"ok":r.status_code==200}
     except: return {"ok":False}
+def send_tele_photo(img_bytes, caption, chat_id=None):
+    token=os.environ.get("TELEGRAM_BOT_TOKEN","").strip() or os.environ.get("BOT_TOKEN","").strip()
+    chat=chat_id or os.environ.get("TELEGRAM_CHAT_ID","").strip() or os.environ.get("CHAT_ID","").strip()
+    if not token or not chat: return {"ok":False}
+    try:
+        r=requests.post(f"https://api.telegram.org/bot{token}/sendPhoto", data={"chat_id":chat,"caption":caption,"parse_mode":"HTML"}, files={"photo":("portfolio.png", img_bytes, "image/png")}, timeout=20)
+        return {"ok":r.status_code==200}
+    except Exception as e: print(f"send_photo err {e}"); return {"ok":False}
+def make_portfolio_image(paper, unpnl, closed_pnl, win_rate, win_n, total_n, btc_pnl, gold_pnl, opens):
+    # PIL infographic - English only (Thai font not on Render)
+    try:
+        from PIL import Image, ImageDraw, ImageFont
+        import io
+        W,H=1080,1920
+        img=Image.new("RGB",(W,H),"#0A0E1A"); d=ImageDraw.Draw(img)
+        try:
+            f_big=ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",56)
+            f_mid=ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",36)
+            f_small=ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",28)
+        except: f_big=ImageFont.load_default(); f_mid=f_big; f_small=f_big
+        d.rounded_rectangle([30,30,W-30,200],radius=28,fill="#1E2A4A")
+        d.text((60,60),"G_POWER  PORTFOLIO",font=f_big,fill="white")
+        d.text((60,140),f"{datetime.now().strftime('%d/%m %H:%M')}  -  BTC + GOLD  -  PAPER",font=f_small,fill="#8FA3C8")
+        def card(x,y,w,h,label,value,color):
+            d.rounded_rectangle([x,y,x+w,y+h],radius=20,fill="#141D33")
+            d.text((x+30,y+20),label,font=f_small,fill="#8FA3C8")
+            d.text((x+30,y+60),value,font=f_mid,fill=color)
+        card(30,230,500,200,"PAPER BALANCE",f"${paper:.2f}","white")
+        card(550,230,500,200,"UNREALIZED PnL",f"{unpnl:+.2f}","#2ED573" if unpnl>=0 else "#FF4757")
+        card(30,460,500,200,"TOTAL CLOSED",f"{closed_pnl:+.2f}","#2ED573" if closed_pnl>=0 else "#FF4757")
+        card(550,460,500,200,"WIN RATE",f"{win_rate:.0f}%  ({win_n}/{total_n})","white")
+        d.rounded_rectangle([30,690,W-30,1030],radius=22,fill="#141D33")
+        d.text((60,720),"PnL BY COIN",font=f_mid,fill="white")
+        # BTC bar
+        d.text((60,790),"BTC",font=f_mid,fill="white")
+        bw=int(min(abs(btc_pnl)/max(1,abs(btc_pnl)+abs(gold_pnl))*650,650)) if (btc_pnl!=0 or gold_pnl!=0) else 0
+        d.rounded_rectangle([200,790,200+max(bw,650),840],radius=10,fill="#2ED573" if btc_pnl>=0 else "#FF4757")
+        d.text((870,790),f"{btc_pnl:+.2f}",font=f_mid,fill="#2ED573" if btc_pnl>=0 else "#FF4757")
+        d.text((60,880),"GOLD",font=f_mid,fill="white")
+        gw=int(min(abs(gold_pnl)/max(1,abs(btc_pnl)+abs(gold_pnl))*650,650)) if (btc_pnl!=0 or gold_pnl!=0) else 0
+        d.rounded_rectangle([200,880,200+max(gw,20),930],radius=10,fill="#2ED573" if gold_pnl>=0 else "#FF4757")
+        d.text((300,880),f"{gold_pnl:+.2f}",font=f_mid,fill="#2ED573" if gold_pnl>=0 else "#FF4757")
+        d.rounded_rectangle([30,1060,W-30,1680],radius=22,fill="#141D33")
+        d.text((60,1090),f"OPEN  {len(opens)} TRADES",font=f_mid,fill="white")
+        y=1180
+        for o in opens[:5]:
+            col="#2ED573" if o['pnl']>=0 else "#FF4757"
+            d.text((60,y),f"{o['key']} {o['sig']}",font=f_small,fill="white")
+            d.text((360,y),o['txt'],font=f_small,fill="#8FA3C8")
+            d.text((820,y),f"{o['pnl']:+.2f}",font=f_small,fill=col)
+            y+=62
+        d.rounded_rectangle([30,1710,W-30,1890],radius=22,fill="#1E2A4A")
+        d.text((60,1740),"MEXC Paper Only - Not Real Trade",font=f_small,fill="#8FA3C8")
+        buf=io.BytesIO(); img.save(buf,format="PNG"); buf.seek(0); return buf.getvalue()
+    except Exception as e:
+        print(f"make_image err {e}"); return None
 def get_strat(symbol):
     s=symbol.upper()
     if 'BTC' in s: return STRATS['btc']
@@ -292,23 +348,67 @@ async def webhook(request: Request):
                     out+=f"{sig} {ot['symbol']} ${entry:,.2f} -> ${curr_p:,.2f} PnL ${upnl:+.2f}\n"
                 out+=f"UnPnL {total_upnl:+.2f} Paper ${40+total_closed+total_upnl:.2f}\n"
             else: out+=f"ไม่มีไม้ถืออยู่ Paper ${40+total_closed:.2f}\n"
-            send_tele(out, chat_id); return {'ok':True}
+            # ส่งรูปอินโฟกราฟฟิกด้วย
+            total_upnl_safe = total_upnl if opens else 0
+            try:
+                btc_p=sum([float(t.get('pnl_usd',0)) if t.get('symbol_key')=='btc' else 0 for t in closeds])
+                gold_p=sum([float(t.get('pnl_usd',0)) if t.get('symbol_key')=='gold' else 0 for t in closeds])
+                # รวม UnPnL เข้าไปด้วย
+                for ot in opens:
+                    entry=float(ot['entry']); ps=float(ot.get('position_size',0)); key2=ot.get('symbol_key','btc'); curr_p=results.get(key2,{}).get('price',entry); sig2=ot['signal']
+                    up2=(curr_p-entry)/entry*ps if sig2=='LONG' else (entry-curr_p)/entry*ps
+                    if key2=='btc': btc_p+=up2
+                    else: gold_p+=up2
+                wins=len([t for t in closeds if float(t.get('pnl_usd',0))>0])
+                tot_c=len(closeds) if closeds else len(opens)
+                wr=(wins/len(closeds)*100) if closeds else (100 if total_upnl_safe>0 else 0)
+                opens_info=[]
+                for ot in opens:
+                    entry=float(ot['entry']); ps=float(ot.get('position_size',0)); key2=ot.get('symbol_key','btc'); curr_p=results.get(key2,{}).get('price',entry); sig2=ot['signal']
+                    up2=(curr_p-entry)/entry*ps if sig2=='LONG' else (entry-curr_p)/entry*ps
+                    opens_info.append({"key":key2.upper(),"sig":sig2,"txt":f"${entry:,.0f} -> ${curr_p:,.0f}","pnl":up2})
+                paper_val=40+total_closed+total_upnl_safe
+                img_bytes=make_portfolio_image(paper_val, total_upnl_safe, total_closed, wr, wins, len(closeds) if closeds else len(opens), btc_p, gold_p, opens_info)
+                if img_bytes: send_tele_photo(img_bytes, out, chat_id)
+                else: send_tele(out, chat_id)
+            except Exception as e: print(f"portfolio img err {e}"); send_tele(out, chat_id)
+            return {'ok':True}
+        elif tl.startswith('/info') or tl.startswith('/infographic'):
+            trades=load_trades(); bal=get_mexc_balance(); results={}
+            for k in ['btc','gold']:
+                try: results[k]=execute_symbol(SYMBOLS[k])
+                except: results[k]={'ok':False}
+            opens=[t for t in trades if str(t.get('status')).upper() in ['OPEN','PAPER_OPEN','PAPER']]
+            closeds=[t for t in trades if str(t.get('status')).upper()=='CLOSED']
+            total_closed=sum([float(t.get('pnl_usd',0)) for t in closeds])
+            total_upnl=0; opens_info=[]
+            btc_p=sum([float(t.get('pnl_usd',0)) if t.get('symbol_key')=='btc' else 0 for t in closeds]); gold_p=sum([float(t.get('pnl_usd',0)) if t.get('symbol_key')=='gold' else 0 for t in closeds])
+            for ot in opens:
+                entry=float(ot['entry']); ps=float(ot.get('position_size',0)); key2=ot.get('symbol_key','btc'); curr_p=results.get(key2,{}).get('price',entry); sig2=ot['signal']; up2=(curr_p-entry)/entry*ps if sig2=='LONG' else (entry-curr_p)/entry*ps; total_upnl+=up2
+                opens_info.append({'key':key2.upper(),'sig':sig2,'txt':f"${entry:,.0f} -> ${curr_p:,.0f}",'pnl':up2})
+                btc_p+=up2 if key2=='btc' else 0; gold_p+=up2 if key2=='gold' else 0
+            wins=len([t for t in closeds if float(t.get('pnl_usd',0))>0]); wr=(wins/len(closeds)*100) if closeds else (100 if total_upnl>0 else 0)
+            paper_val=40+total_closed+total_upnl
+            img_bytes=make_portfolio_image(paper_val,total_upnl,total_closed,wr,wins,len(closeds) if closeds else len(opens),btc_p,gold_p,opens_info)
+            cap=f"G_POWER PORTFOLIO {datetime.now().strftime('%d/%m %H:%M')} Paper ${paper_val:.2f} UnPnL {total_upnl:+.2f}"
+            
+            send_tele_photo(img_bytes,cap,chat_id) if img_bytes else send_tele('สร้างรูปไม่ได้',chat_id)
+            return {'ok':True}
         elif tl.startswith('/close'):
-            parts=tl.split(); ckey='all' if len(parts)<2 else parse_sym(parts[1])[0]; trades=load_trades(); opens=[t for t in trades if str(t.get('status')).upper() in ['OPEN','PAPER_OPEN','PAPER'] and (ckey=='all' or t.get('symbol_key')==ckey)]
-            if ckey=="unknown": send_tele(f"❓ ไม่มีเหรียญ {parts[1]} แล้ว มีแค่ BTC / GOLD", chat_id); return {"ok":True}
+            trades=load_trades(); opens=[t for t in trades if str(t.get('status')).upper() in ['OPEN','PAPER_OPEN','PAPER']]
             if not opens: send_tele('ไม่มีไม้ถืออยู่', chat_id); return {'ok':True}
             results={}
             for k in ['btc','gold']:
                 try: results[k]=execute_symbol(SYMBOLS[k])
                 except: results[k]={'ok':False}
-            total=0; out=f"CLOSE {ckey.upper()} {len(opens)} ไม้\n"
+            total=0; out=f"CLOSE ALL {len(opens)} ไม้\n"
             for ot in opens:
                 key=ot.get('symbol_key','btc'); curr_p=results.get(key,{}).get('price', ot.get('entry')); entry=float(ot['entry']); sig=ot['signal']; ps=float(ot.get('position_size',0))
                 pnl=(curr_p-entry)/entry*ps if sig=='LONG' else (entry-curr_p)/entry*ps
                 total+=pnl; ot['status']='CLOSED'; ot['result']='WIN' if pnl>0 else 'LOSS'; ot['exit']=curr_p; ot['exit_time']=datetime.now().isoformat(); ot['exit_reason']='MANUAL CLOSE'; ot['pnl_usd']=pnl
                 out+=f"{sig} {ot['symbol']} PnL ${pnl:+.2f}\n"
-            save_trades(trades); set_auto_state(ckey, False)
-            out+=f"รวม PnL ${total:+.2f} Auto OFF {ckey.upper()} แล้ว"
+            save_trades(trades); set_auto_state('all', False)
+            out+=f"รวม PnL ${total:+.2f} Auto OFF แล้ว"
             send_tele(out, chat_id); return {'ok':True}
         elif tl.startswith('/reset'):
             trades=load_trades(); opens=[t for t in trades if str(t.get('status')).upper() in ['OPEN','PAPER_OPEN','PAPER']]
@@ -334,7 +434,7 @@ async def webhook(request: Request):
             send_tele(f"🔴 Auto OFF {key.upper()}", chat_id)
             return {"ok":True}
         else:
-            send_tele(f"❓ {text}\n/check [btc|gold|all]\n/on [btc|gold|all]\n/off [btc|gold|all]\n/live [btc|gold]", chat_id)
+            send_tele(f"❓ {text}\n/check [btc|gold|all]\n/on [btc|gold|all]\n/off [btc|gold|all]\n/portfolio = รูปสรุปพอร์ต\n/info = รูปอย่างเดียว\n/live [btc|gold]", chat_id)
             return {"ok":True}
     except Exception as e:
         print(f"ERR {e}"); return {"ok":True}
