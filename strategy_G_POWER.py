@@ -39,18 +39,6 @@ class Strategy_G_Power:
                 "retest_pct": 0.012,
                 "be_trigger": 0.008, "lock_trigger": 0.015, "lock_pct": 0.004,
             },
-            "silver": {
-                "ema_fast": 9, "ema_slow": 21, "ema_trend": 34,
-                "rsi_fast": 9, "rsi_entry_long": (35, 70), "rsi_entry_short": (25, 65),
-                "adx_min": 14, "adx_sideway": 12, "adx_turbo": 28,
-                "di_min": 10, "di_turbo": 20,
-                "sl_pct": 0.035, "tp_pct": 0.10,
-                "cdc_atr_fast": 5, "cdc_mult_fast": 0.8,
-                "cdc_atr_slow": 10, "cdc_mult_slow": 2.2,
-                "vol_filter": 0.20, "sideway_pct": 1.5,
-                "retest_pct": 0.015,
-                "be_trigger": 0.012, "lock_trigger": 0.025, "lock_pct": 0.006,
-            }
         }
         self.config = base.get(symbol_key, base["btc"])
 
@@ -103,7 +91,7 @@ class Strategy_G_Power:
         df['ema_fast']=self._ema(df['close'],c["ema_fast"])
         df['ema_slow']=self._ema(df['close'],c["ema_slow"])
         df['ema_trend']=self._ema(df['close'],c["ema_trend"])
-        df['rsi']=50.0  # ตัด RSI ออก - ใส่ 50 กันพัง ไม่คำนวณจริงแล้ว
+        df['rsi']=50.0  # ตัด RSI ออก
         df['atr']=self._atr(df['high'],df['low'],df['close'],14)
         pdi,mdi,adx,adx_s=self._adx_di(df['high'],df['low'],df['close'],14)
         df['plus_di']=pdi; df['minus_di']=mdi; df['adx']=adx; df['adx_slope']=adx_s
@@ -121,7 +109,7 @@ class Strategy_G_Power:
         sideway=(curr['adx']<c["adx_sideway"]) or (ema_diff<c["sideway_pct"] and curr['adx']<c["adx_turbo"])
         # Retest - ราคาต้องใกล้ EMA fast
         retest=curr['dist_ema_fast'] <= c["retest_pct"]
-        vol_ok=True  # ตัด Vol ออก - ไม่กรอง Volume แล้ว
+        vol_ok=True  # ตัด Vol ออก
         # CDC + DI
         long_core=curr['cdc_up'] and curr['plus_di']>curr['minus_di'] and curr['plus_di']>c["di_min"] and curr['adx']>c["adx_min"] and curr['close']>curr['ema_trend']
         short_core=not curr['cdc_up'] and curr['minus_di']>curr['plus_di'] and curr['minus_di']>c["di_min"] and curr['adx']>c["adx_min"] and curr['close']<curr['ema_trend']
@@ -145,7 +133,7 @@ class Strategy_G_Power:
         return {"long":long, "short":short, "long_cross":long_cross, "short_cross":short_cross}
 
     def check_momentum(self, curr):
-        # ตัด RSI ออก - ไม่กรอง RSI แล้ว Momentum = True เสมอ ให้ Trend เป็นตัวตัดสิน
+        # ตัด RSI ออก - Momentum = True เสมอ ให้ Trend ตัดสิน
         return {"long":True, "short":True, "rsi":50.0, "rsi_ok_long":True, "rsi_ok_short":True}
 
     # 2. Trailing SL กันทุน/กำไร
