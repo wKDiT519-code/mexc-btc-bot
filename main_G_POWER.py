@@ -242,7 +242,7 @@ async def webhook(request: Request):
         if not text: return {"ok":True}
         def parse_sym(a):
             a=a.lower()
-            return {'btc':('btc',SYMBOLS['btc']),'gold':('gold',SYMBOLS['gold']),'all':('all',None)}.get(a,('btc',SYMBOLS['btc']))
+            return {'btc':('btc',SYMBOLS['btc']),'gold':('gold',SYMBOLS['gold']),'silver':('silver',None),'all':('all',None)}.get(a,('btc',SYMBOLS['btc']))
         if tl.startswith('/check'):
             parts=tl.split(); key='all' if len(parts)<2 else parse_sym(parts[1])[0]
             results={}
@@ -293,20 +293,20 @@ async def webhook(request: Request):
             else: out+=f"ไม่มีไม้ถืออยู่ Paper ${40+total_closed:.2f}\n"
             send_tele(out, chat_id); return {'ok':True}
         elif tl.startswith('/close'):
-            trades=load_trades(); opens=[t for t in trades if str(t.get('status')).upper() in ['OPEN','PAPER_OPEN','PAPER']]
+            parts=tl.split(); ckey='all' if len(parts)<2 else parse_sym(parts[1])[0]; trades=load_trades(); opens=[t for t in trades if str(t.get('status')).upper() in ['OPEN','PAPER_OPEN','PAPER'] and (ckey=='all' or t.get('symbol_key')==ckey)]
             if not opens: send_tele('ไม่มีไม้ถืออยู่', chat_id); return {'ok':True}
             results={}
             for k in ['btc','gold']:
                 try: results[k]=execute_symbol(SYMBOLS[k])
                 except: results[k]={'ok':False}
-            total=0; out=f"CLOSE ALL {len(opens)} ไม้\n"
+            total=0; out=f"CLOSE {ckey.upper()} {len(opens)} ไม้\n"
             for ot in opens:
                 key=ot.get('symbol_key','btc'); curr_p=results.get(key,{}).get('price', ot.get('entry')); entry=float(ot['entry']); sig=ot['signal']; ps=float(ot.get('position_size',0))
                 pnl=(curr_p-entry)/entry*ps if sig=='LONG' else (entry-curr_p)/entry*ps
                 total+=pnl; ot['status']='CLOSED'; ot['result']='WIN' if pnl>0 else 'LOSS'; ot['exit']=curr_p; ot['exit_time']=datetime.now().isoformat(); ot['exit_reason']='MANUAL CLOSE'; ot['pnl_usd']=pnl
                 out+=f"{sig} {ot['symbol']} PnL ${pnl:+.2f}\n"
-            save_trades(trades); set_auto_state('all', False)
-            out+=f"รวม PnL ${total:+.2f} Auto OFF แล้ว"
+            save_trades(trades); set_auto_state(ckey, False)
+            out+=f"รวม PnL ${total:+.2f} Auto OFF {ckey.upper()} แล้ว"
             send_tele(out, chat_id); return {'ok':True}
         elif tl.startswith('/reset'):
             trades=load_trades(); opens=[t for t in trades if str(t.get('status')).upper() in ['OPEN','PAPER_OPEN','PAPER']]
