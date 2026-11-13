@@ -147,7 +147,11 @@ def send_tele_photo(img_bytes, caption, chat_id=None):
 def make_portfolio_image(paper, unpnl, closed_pnl, win_rate, win_n, total_n, btc_pnl, gold_pnl, opens):
     # PIL infographic - English only (Thai font not on Render)
     try:
-        from PIL import Image, ImageDraw, ImageFont
+        try:
+            from PIL import Image, ImageDraw, ImageFont
+        except ImportError as e:
+            print(f"PIL NOT INSTALLED: {e} - add Pillow to requirements.txt")
+            return None
         import io
         W,H=1080,1350
         img=Image.new("RGB",(W,H),"#0A0E1A"); d=ImageDraw.Draw(img)
@@ -394,7 +398,8 @@ async def webhook(request: Request):
             except Exception as e: send_tele(f'IMG ERR: {e}',chat_id); return {'ok':True}
             cap=f"G_POWER PORTFOLIO {datetime.now().strftime('%d/%m %H:%M')} Paper ${paper_val:.2f} UnPnL {total_upnl:+.2f}"
             
-            send_tele_photo(img_bytes,cap,chat_id) if img_bytes else send_tele('สร้างรูปไม่ได้',chat_id)
+            
+            send_tele_photo(img_bytes,cap,chat_id) if img_bytes else send_tele('สร้างรูปไม่ได้ - เช็ค Render Logs: ถ้าขึ้น PIL NOT INSTALLED = ต้องเพิ่ม Pillow ใน requirements.txt แล้ว Clear build cache & Deploy',chat_id)
             return {'ok':True}
         elif tl.startswith('/close'):
             trades=load_trades(); opens=[t for t in trades if str(t.get('status')).upper() in ['OPEN','PAPER_OPEN','PAPER']]
