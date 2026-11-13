@@ -242,9 +242,10 @@ async def webhook(request: Request):
         if not text: return {"ok":True}
         def parse_sym(a):
             a=a.lower()
-            return {'btc':('btc',SYMBOLS['btc']),'gold':('gold',SYMBOLS['gold']),'silver':('silver',None),'all':('all',None)}.get(a,('btc',SYMBOLS['btc']))
+            return {'btc':('btc',SYMBOLS['btc']),'gold':('gold',SYMBOLS['gold']),'all':('all',None)}.get(a,('unknown',None))
         if tl.startswith('/check'):
             parts=tl.split(); key='all' if len(parts)<2 else parse_sym(parts[1])[0]
+            if key=="unknown": send_tele(f"❓ ไม่มีเหรียญ {parts[1]} แล้ว มีแค่ BTC / GOLD", chat_id); return {"ok":True}
             results={}
             for k in ['btc','gold']:
                 if key!='all' and k!=key: continue
@@ -294,6 +295,7 @@ async def webhook(request: Request):
             send_tele(out, chat_id); return {'ok':True}
         elif tl.startswith('/close'):
             parts=tl.split(); ckey='all' if len(parts)<2 else parse_sym(parts[1])[0]; trades=load_trades(); opens=[t for t in trades if str(t.get('status')).upper() in ['OPEN','PAPER_OPEN','PAPER'] and (ckey=='all' or t.get('symbol_key')==ckey)]
+            if ckey=="unknown": send_tele(f"❓ ไม่มีเหรียญ {parts[1]} แล้ว มีแค่ BTC / GOLD", chat_id); return {"ok":True}
             if not opens: send_tele('ไม่มีไม้ถืออยู่', chat_id); return {'ok':True}
             results={}
             for k in ['btc','gold']:
@@ -321,11 +323,13 @@ async def webhook(request: Request):
             send_tele('ล้างไพ่เรียบร้อย Paper $40.00 Auto OFF - พิมพ์ /on all เพื่อเริ่มใหม่', chat_id); return {'ok':True}
         elif tl.startswith('/on'):
             parts=tl.split(); key='all' if len(parts)<2 else parse_sym(parts[1])[0]
+            if key=="unknown": send_tele(f"❓ ไม่มีเหรียญ {parts[1]} แล้ว มีแค่ BTC / GOLD", chat_id); return {"ok":True}
             set_auto_state(key, True)
             send_tele(f"🟢 Auto ON {key.upper()} {datetime.now().strftime('%d/%m %H:%M')} V5.2.2 PULLBACK", chat_id)
             return {"ok":True}
         elif tl.startswith('/off'):
             parts=tl.split(); key='all' if len(parts)<2 else parse_sym(parts[1])[0]
+            if key=="unknown": send_tele(f"❓ ไม่มีเหรียญ {parts[1]} แล้ว มีแค่ BTC / GOLD", chat_id); return {"ok":True}
             set_auto_state(key, False)
             send_tele(f"🔴 Auto OFF {key.upper()}", chat_id)
             return {"ok":True}
