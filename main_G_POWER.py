@@ -1,4 +1,4 @@
-"""G_POWER V5.6.1.2 - 379 lines fixed"""
+"""G_POWER V5.6.1.1 - 379 lines fixed"""
 # 379 lines fixed - _m sets default config if old strategy has no ema_fast
 from fastapi import FastAPI, Query, Request
 from fastapi.responses import HTMLResponse
@@ -11,17 +11,17 @@ except:
 from datetime import datetime, timedelta
 import os, ccxt, pandas as pd, json, requests
 from pathlib import Path
-app = FastAPI(title="G_POWER V5.6.1.2 NO HEDGE + CLOSE")
+app = FastAPI(title="G_POWER V5.6.1.1 NO HEDGE + CLOSE")
 def _m(k):
     try: s=StrategyMulti(k)
     except: s=StrategyMulti(); s.symbol_key=k
     if not getattr(s,'config',{}).get('ema_fast'): s.config={'ema_fast':12 if k=='btc' else 21 if k=='gold' else 9,'ema_slow':26 if k=='btc' else 55 if k=='gold' else 21,'ema_trend':50 if k=='btc' else 100 if k=='gold' else 34,'rsi_fast':12 if k=='btc' else 14 if k=='gold' else 9,'rsi_entry_long':(35,70),'rsi_entry_short':(25,65),'adx_min':10,'adx_sideway':10,'adx_turbo':28,'di_min':10,'di_turbo':20,'sl_pct':0.034 if k=='btc' else 0.028 if k=='gold' else 0.035,'tp_pct':0.18 if k=='btc' else 0.12 if k=='gold' else 0.10,'cdc_atr_fast':5,'cdc_mult_fast':0.5,'cdc_atr_slow':10,'cdc_mult_slow':2.0,'vol_filter':0.20,'sideway_pct':1.2,'retest_pct':0.012,'be_trigger':0.01,'lock_trigger':0.02,'lock_pct':0.005}
     return s
-STRATS = {"btc": _m("btc"), "gold": _m("gold"), "silver": _m("silver")}
+STRATS = {"btc": _m("btc"), "gold": _m("gold")}
 strat = STRATS["btc"]
 MAX_POS_PER_SYMBOL=3; COOLDOWN_HOURS=0.5
 CAPITAL=40; RISK_PCT=0.02; LEVERAGE=3
-SYMBOLS = {"btc": "BTC/USDT", "gold": "PAXG/USDT:USDT", "silver": "SILVER/USDT:USDT"}
+SYMBOLS = {"btc": "BTC/USDT", "gold": "PAXG/USDT:USDT"}
 DATA_DIR = Path("/data") if Path("/data").exists() else Path("/tmp")
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 TRADES_FILE = DATA_DIR / "g_power_trades.json"
@@ -52,21 +52,21 @@ def get_auto_state():
         try:
             with open(AUTO_STATE_FILE,'r') as f:
                 d=json.load(f)
-                if isinstance(d,bool): return {"btc":d,"gold":d,"silver":d}
-                if not isinstance(d, dict): return {"btc":True,"gold":True,"silver":True}
+                if isinstance(d,bool): return {"btc":d,"gold":d}
+                if not isinstance(d, dict): return {"btc":True,"gold":True}
                 if "enabled" in d:
                     val=bool(d.get("enabled",False))
-                    return {"btc":val,"gold":val,"silver":val}
-                if "btc" in d or "gold" in d or "silver" in d:
-                    return {"btc": bool(d.get("btc",False)), "gold": bool(d.get("gold",False)), "silver": bool(d.get("silver",False))}
-                return {"btc":True,"gold":True,"silver":True}
+                    return {"btc":val,"gold":val}
+                if "btc" in d or "gold" in d:
+                    return {"btc": bool(d.get("btc",False)), "gold": bool(d.get("gold",False))}
+                return {"btc":True,"gold":True}
         except Exception as e:
             print(f"get_auto_state error {e}, reset to ON")
             try:
                 AUTO_STATE_FILE.unlink(missing_ok=True)
             except: pass
-            return {"btc":True,"gold":True,"silver":True}
-    return {"btc":True,"gold":True,"silver":True}
+            return {"btc":True,"gold":True}
+    return {"btc":True,"gold":True}
 def set_auto_state(k, en):
     s=get_auto_state()
     if k=='all':
@@ -103,7 +103,6 @@ def calc_position(symbol_key="btc"):
 def get_data(symbol="BTC/USDT"):
     candidates=[symbol]
     if "PAXG" in symbol: candidates+= ["PAXG/USDT","XAUT/USDT:USDT"]
-    if "SILVER" in symbol: candidates+= ["XAG/USDT:USDT","SILVER/USDT"]
     for sym in candidates:
         try:
             ex=ccxt.mexc({"options":{"defaultType":"swap"}})
@@ -141,7 +140,6 @@ def get_strat(symbol):
     s=symbol.upper()
     if 'BTC' in s: return STRATS['btc']
     if 'XAU' in s or 'PAXG' in s or 'GOLD' in s or 'XAUT' in s: return STRATS['gold']
-    if 'XAG' in s or 'SILVER' in s: return STRATS['silver']
     return STRATS['btc']
 def execute_symbol(symbol, manage_open=True):
     try:
@@ -150,7 +148,7 @@ def execute_symbol(symbol, manage_open=True):
         df=get_data(symbol)
         if isinstance(df,tuple): return {"ok":False,"symbol":symbol,"error":df[1]}
         df=st.add_indicators(df)
-        for _c,_d in [('ema_fast',df['ema12'] if 'ema12' in df.columns else df['close']),('ema_slow',df['ema26'] if 'ema26' in df.columns else df['close']),('plus_di',0.0),('minus_di',0.0),('adx',15.0),('cdc_up',True),('cdc_stop',df['close'])]: df[_c]=_d if _c not in df.columns else df[_c]
+        for _c,_d in [('rsi',50.0),('ema_fast',df['ema12'] if 'ema12' in df.columns else df['close']),('ema_slow',df['ema26'] if 'ema26' in df.columns else df['close']),('plus_di',0.0),('minus_di',0.0),('adx',15.0),('cdc_up',True),('cdc_stop',df['close'])]: df[_c]=_d if _c not in df.columns else df[_c]
         curr=df.iloc[-1]; prev=df.iloc[-2]
         price=float(curr['close'])
         trades=load_trades()
@@ -244,20 +242,20 @@ async def webhook(request: Request):
         if not text: return {"ok":True}
         def parse_sym(a):
             a=a.lower()
-            return {'btc':('btc',SYMBOLS['btc']),'gold':('gold',SYMBOLS['gold']),'silver':('silver',SYMBOLS['silver']),'all':('all',None)}.get(a,('btc',SYMBOLS['btc']))
+            return {'btc':('btc',SYMBOLS['btc']),'gold':('gold',SYMBOLS['gold']),'all':('all',None)}.get(a,('btc',SYMBOLS['btc']))
         if tl.startswith('/check'):
             parts=tl.split(); key='all' if len(parts)<2 else parse_sym(parts[1])[0]
             results={}
-            for k in ['btc','gold','silver']:
+            for k in ['btc','gold']:
                 if key!='all' and k!=key: continue
                 results[k]=execute_symbol(SYMBOLS[k])
             trades=load_trades(); auto=get_auto_state(); bal=get_mexc_balance()
-            out=f"📊 <b>G_POWER V5.2.3 CHECK {key.upper()}</b> {datetime.now().strftime('%d/%m %H:%M')}\n"
+            out=f"📊 <b>G_POWER V5.2.2 CHECK {key.upper()}</b> {datetime.now().strftime('%d/%m %H:%M')}\n"
             for k,r in results.items():
                 if not r.get('ok'): out+=f"\n{k.upper()} ❌ {r.get('error')}\n"
                 else:
                     cfg=STRATS[k].config
-                    out+=f"\n<b>{k.upper()} {r['symbol']}</b> {'🟢 ON' if auto.get(k) else '🔴 OFF'} {r['signal']}\n${r['price']:,.2f} CDC {'🟢' if r['cdc_up'] else '🔴'} Stop ${r['cdc_stop']:,.2f}\nEMA{cfg['ema_fast']}/{cfg['ema_slow']} +DI {r['plus_di']:.1f} -DI {r['minus_di']:.1f} ADX {r['adx']:.1f}\nRetest {'✅' if r['retest'] else '❌'} Sideway {'❌' if not r.get('sideway') else '✅'} Trend Long {r.get('long')} Rev {r.get('rev_long') or r.get('rev_short')} CanOpen {'✅' if r['can_open'] else '❌'} Open {r['open_count']} SL {r['sl_pct']:.1f}% TP {r['tp_pct']:.0f}%\n"
+                    out+=f"\n<b>{k.upper()} {r['symbol']}</b> {'🟢 ON' if auto.get(k) else '🔴 OFF'} {r['signal']}\n${r['price']:,.2f} CDC {'🟢' if r['cdc_up'] else '🔴'} Stop ${r['cdc_stop']:,.2f}\nEMA{cfg['ema_fast']}/{cfg['ema_slow']} +DI {r['plus_di']:.1f} -DI {r['minus_di']:.1f} ADX {r['adx']:.1f} RSI {r['rsi']:.0f}\nRetest {'✅' if r['retest'] else '❌'} Vol {'✅' if r['vol_ok'] else '❌'} Sideway {'❌' if not r.get('sideway') else '✅'} Trend Long {r.get('long')} Mom {r.get('mom_long') or r.get('mom_short')} Rev {r.get('rev_long') or r.get('rev_short')} CanOpen {'✅' if r['can_open'] else '❌'} Open {r['open_count']} SL {r['sl_pct']:.1f}% TP {r['tp_pct']:.0f}%\n"
                     if r['actions']: out+=f"⚡ {'; '.join(r['actions'])}\n"
             opens=[t for t in trades if str(t.get('status')).upper() in ['OPEN','PAPER_OPEN','PAPER']]
             if opens:
@@ -271,13 +269,13 @@ async def webhook(request: Request):
                     out+=f"{sig} {ot['symbol']} Entry ${entry:,.2f} Now ${curr_p:,.2f} UnPnL ${upnl:+.2f} ({upp:+.1f}%) SL ${sl:,.2f} {ot.get('trailing','')}\n"
             else: out+=f"\n📌 ไม่มีไม้ถืออยู่ - WAIT\n"
             if bal.get('ok'): out+=f"\n🏦 MEXC {bal.get('total')} USDT | Pos {len(bal.get('positions',[]))}\n"
-            out+=f"\n✅ V5.2.3 NO RSI/VOL + PULLBACK + PAXG/SILVER FIX\n💡 1.Retest 2.Trailing 3.TP Trend"
+            out+=f"\n✅ V5.2.2 VOL 0.25 + PULLBACK + BTC+GOLD FIX\n💡 1.Retest 2.Trailing 3.TP Trend"
             send_tele(out, chat_id)
             return {"ok":True}
         elif tl.startswith('/total') or tl.startswith('/portfolio') or tl.startswith('/port'):
             trades=load_trades(); bal=get_mexc_balance()
             results={}
-            for k in ['btc','gold','silver']:
+            for k in ['btc','gold']:
                 try: results[k]=execute_symbol(SYMBOLS[k])
                 except: results[k]={'ok':False}
             opens=[t for t in trades if str(t.get('status')).upper() in ['OPEN','PAPER_OPEN','PAPER']]
@@ -298,7 +296,7 @@ async def webhook(request: Request):
             trades=load_trades(); opens=[t for t in trades if str(t.get('status')).upper() in ['OPEN','PAPER_OPEN','PAPER']]
             if not opens: send_tele('ไม่มีไม้ถืออยู่', chat_id); return {'ok':True}
             results={}
-            for k in ['btc','gold','silver']:
+            for k in ['btc','gold']:
                 try: results[k]=execute_symbol(SYMBOLS[k])
                 except: results[k]={'ok':False}
             total=0; out=f"CLOSE ALL {len(opens)} ไม้\n"
@@ -332,7 +330,7 @@ async def webhook(request: Request):
             send_tele(f"🔴 Auto OFF {key.upper()}", chat_id)
             return {"ok":True}
         else:
-            send_tele(f"❓ {text}\n/check [btc|gold|silver|all]\n/on [btc|gold|silver|all]\n/off [btc|gold|silver|all]\n/live [btc|gold|silver]", chat_id)
+            send_tele(f"❓ {text}\n/check [btc|gold|all]\n/on [btc|gold|all]\n/off [btc|gold|all]\n/live [btc|gold]", chat_id)
             return {"ok":True}
     except Exception as e:
         print(f"ERR {e}"); return {"ok":True}
@@ -376,4 +374,4 @@ def ping():
 @app.get("/", response_class=HTMLResponse)
 def home():
     auto=get_auto_state()
-    return f"<html><body style='background:#0a0e1a;color:#fff;font-family:Arial;padding:20px'><h1>G_POWER V5.2.2 VOL+PULLBACK</h1><p>BTC {'🟢' if auto.get('btc') else '🔴'} GOLD {'🟢' if auto.get('gold') else '🔴'} SILVER {'🟢' if auto.get('silver') else '🔴'}</p><p>✅ VOL 0.25 | PULLBACK ENTRY | PAXG/SILVER FIX</p><a href='/ping'>Ping</a></body></html>"
+    return f"<html><body style='background:#0a0e1a;color:#fff;font-family:Arial;padding:20px'><h1>G_POWER V5.2.3 BTC+GOLD 2COINS</h1><p>BTC {'🟢' if auto.get('btc') else '🔴'} GOLD {'🟢' if auto.get('gold') else '🔴'}</p><p>✅ VOL 0.25 | PULLBACK ENTRY | BTC+GOLD FIX</p><a href='/ping'>Ping</a></body></html>"
