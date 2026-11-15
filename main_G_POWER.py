@@ -567,9 +567,10 @@ async def webhook(request: Request):
             return {'ok':True}
         elif tl.startswith('/chart'):
             parts=tl.split(); key='btc' if len(parts)<2 else parse_sym(parts[1])[0]
-            tf='15m'
-            if len(parts)>=3 and parts[2].lower() in ['15m','1h','4h','1d','1w']: tf=parts[2].lower()
-            elif len(parts)>=3 and parts[2].lower() in ['15','60','240']: tf={'15':'15m','60':'1h','240':'4h'}[parts[2].lower()]
+            # แสดงภาพอย่างเดียว 30m (80 แท่ง = 40 ชม. กว้างกว่า 15m 2 เท่า) - กลยุทธ์เทรดยัง 15m เหมือนเดิม
+            tf='30m'
+            if len(parts)>=3 and parts[2].lower() in ['15m','30m','1h','4h','1d','1w']: tf=parts[2].lower()
+            elif len(parts)>=3 and parts[2].lower() in ['15','30','60','240']: tf={'15':'15m','30':'30m','60':'1h','240':'4h'}[parts[2].lower()]
             if key=="unknown": send_tele(f"❓ ไม่มีเหรียญ {parts[1]} แล้ว มีแค่ BTC / GOLD", chat_id); return {"ok":True}
             keys=['btc','gold'] if key=='all' else [key]
             for kk in keys:
@@ -631,7 +632,7 @@ async def webhook(request: Request):
             send_tele(f"🔴 Auto OFF {key.upper()}", chat_id)
             return {"ok":True}
         else:
-            send_tele(f"❓ {text}\n/check [btc|gold|all]\n/chart [btc|gold|all] [15m|1h|4h|1d] = กราฟ TradingView + EMA200 + ADX/DI\n/on [btc|gold|all]\n/off [btc|gold|all]\n/portfolio = รูปสรุปพอร์ต\n/info = รูปอย่างเดียว\n/live [btc|gold]", chat_id)
+            send_tele(f"❓ {text}\n/check [btc|gold|all]\n/chart [btc|gold|all] [30m|15m|1h|4h|1d] = กราฟ TradingView + EMA200 + ADX/DI\n/on [btc|gold|all]\n/off [btc|gold|all]\n/portfolio = รูปสรุปพอร์ต\n/info = รูปอย่างเดียว\n/live [btc|gold]", chat_id)
             return {"ok":True}
     except Exception as e:
         print(f"ERR {e}"); return {"ok":True}
