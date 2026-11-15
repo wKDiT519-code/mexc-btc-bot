@@ -149,52 +149,200 @@ def make_portfolio_image(paper, unpnl, closed_pnl, win_rate, win_n, total_n, btc
     try:
         from PIL import Image, ImageDraw, ImageFont
         import io
-        W,H=1080,1920
+        W,H=1080,1450
         img=Image.new("RGB",(W,H),"#0A0E1A"); d=ImageDraw.Draw(img)
         try:
             f_big=ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",56)
             f_mid=ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",36)
             f_small=ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",28)
         except: f_big=ImageFont.load_default(); f_mid=f_big; f_small=f_big
-        d.rectangle([30,30,W-30,200],fill="#1E2A4A")
-        d.text((60,60),"G_POWER  PORTFOLIO",font=f_big,fill="white")
-        d.text((60,140),f"{datetime.now().strftime('%d/%m %H:%M')}  -  BTC + GOLD  -  PAPER",font=f_small,fill="#8FA3C8")
+        d.rounded_rectangle([30,30,W-30,170],radius=24,fill="#1E2A4A")
+        d.text((60,55),"G_POWER  PORTFOLIO",font=f_big,fill="white")
+        d.text((60,120),f"{datetime.now().strftime('%d/%m %H:%M')}  -  BTC + GOLD  -  PAPER",font=f_small,fill="#8FA3C8")
         def card(x,y,w,h,label,value,color):
-            d.rectangle([x,y,x+w,y+h],fill="#141D33")
+            d.rounded_rectangle([x,y,x+w,y+h],radius=20,fill="#141D33")
             d.text((x+30,y+20),label,font=f_small,fill="#8FA3C8")
             d.text((x+30,y+60),value,font=f_mid,fill=color)
-        card(30,230,500,200,"PAPER BALANCE",f"${paper:.2f}","white")
-        card(550,230,500,200,"UNREALIZED PnL",f"{unpnl:+.2f}","#2ED573" if unpnl>=0 else "#FF4757")
-        card(30,460,500,200,"TOTAL CLOSED",f"{closed_pnl:+.2f}","#2ED573" if closed_pnl>=0 else "#FF4757")
-        card(550,460,500,200,"WIN RATE",f"{win_rate:.0f}%  ({win_n}/{total_n})","white")
-        d.rectangle([30,690,W-30,1030],fill="#141D33")
-        d.text((60,720),"PnL BY COIN",font=f_mid,fill="white")
+        card(30,200,500,170,"PAPER BALANCE",f"${paper:.2f}","white")
+        card(550,200,500,170,"UNREALIZED PnL",f"{unpnl:+.2f}","#2ED573" if unpnl>=0 else "#FF4757")
+        card(30,390,500,170,"TOTAL CLOSED",f"{closed_pnl:+.2f}","#2ED573" if closed_pnl>=0 else "#FF4757")
+        card(550,390,500,170,"WIN RATE",f"{win_rate:.0f}%  ({win_n}/{total_n})","white")
+        d.rounded_rectangle([30,580,W-30,880],radius=20,fill="#141D33")
+        d.text((60,600),"PnL BY COIN",font=f_mid,fill="white")
         # BTC bar
-        d.text((60,790),"BTC",font=f_mid,fill="white")
+        d.text((60,660),"BTC",font=f_mid,fill="white")
         bw=int(min(abs(btc_pnl)/max(1,abs(btc_pnl)+abs(gold_pnl))*650,650)) if (btc_pnl!=0 or gold_pnl!=0) else 0
-        d.rectangle([200,790,200+max(bw,650),840],fill="#2ED573" if btc_pnl>=0 else "#FF4757")
-        d.text((870,790),f"{btc_pnl:+.2f}",font=f_mid,fill="#2ED573" if btc_pnl>=0 else "#FF4757")
-        d.text((60,880),"GOLD",font=f_mid,fill="white")
+        d.rounded_rectangle([200,660,200+max(bw,20),700],radius=10,fill="#2ED573" if btc_pnl>=0 else "#FF4757")
+        d.text((870,660),f"{btc_pnl:+.2f}",font=f_mid,fill="#2ED573" if btc_pnl>=0 else "#FF4757")
+        d.text((60,730),"GOLD",font=f_mid,fill="white")
         gw=int(min(abs(gold_pnl)/max(1,abs(btc_pnl)+abs(gold_pnl))*650,650)) if (btc_pnl!=0 or gold_pnl!=0) else 0
-        d.rectangle([200,880,200+max(gw,20),930],fill="#2ED573" if gold_pnl>=0 else "#FF4757")
-        d.text((300,880),f"{gold_pnl:+.2f}",font=f_mid,fill="#2ED573" if gold_pnl>=0 else "#FF4757")
-        d.rectangle([30,1060,W-30,1680],fill="#141D33")
-        d.text((60,1090),f"OPEN  {len(opens)} TRADES",font=f_mid,fill="white")
-        if len(opens)==0:
-            d.text((60,1250),"No open trades",font=f_mid,fill="#8FA3C8")
-            d.text((60,1310),"Waiting for signal...",font=f_small,fill="#8FA3C8")
-        y=1180
+        d.rounded_rectangle([200,730,200+max(gw,20),770],radius=10,fill="#2ED573" if gold_pnl>=0 else "#FF4757")
+        d.text((300 if gold_pnl>=0 else 300,730),f"{gold_pnl:+.2f}",font=f_mid,fill="#2ED573" if gold_pnl>=0 else "#FF4757")
+        d.rounded_rectangle([30,900,W-30,1250],radius=20,fill="#141D33")
+        d.text((60,920),f"OPEN  {len(opens)} TRADES",font=f_mid,fill="white")
+        y=980
         for o in opens[:5]:
             col="#2ED573" if o['pnl']>=0 else "#FF4757"
             d.text((60,y),f"{o['key']} {o['sig']}",font=f_small,fill="white")
             d.text((360,y),o['txt'],font=f_small,fill="#8FA3C8")
             d.text((820,y),f"{o['pnl']:+.2f}",font=f_small,fill=col)
-            y+=62
-        d.rectangle([30,1710,W-30,1890],fill="#1E2A4A")
-        d.text((60,1740),"MEXC Paper Only - Not Real Trade",font=f_small,fill="#8FA3C8")
+            y+=50
+        d.text((60,1210),"MEXC Paper Only - Not Real Trade",font=f_small,fill="#8FA3C8")
         buf=io.BytesIO(); img.save(buf,format="PNG"); buf.seek(0); return buf.getvalue()
     except Exception as e:
         print(f"make_image err {e}"); return None
+
+def make_chart_image(df, st, symbol_label, price, signal, cond, open_trades):
+    # PIL chart - ไม่ใช้ matplotlib จะได้ไม่ต้องเพิ่ม lib บน Render
+    try:
+        from PIL import Image, ImageDraw, ImageFont
+        import io
+        W,H=1080,1450
+        img=Image.new("RGB",(W,H),"#0A0E1A"); d=ImageDraw.Draw(img)
+        try:
+            f_big=ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",44)
+            f_mid=ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",30)
+            f_small=ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",24)
+            f_tiny=ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",20)
+        except: f_big=ImageFont.load_default(); f_mid=f_big; f_small=f_big; f_tiny=f_big
+        cfg=st.config
+        # Header
+        sig_color="#2ED573" if signal=="LONG" else "#FF4757" if signal=="SHORT" else "#8FA3C8"
+        d.rounded_rectangle([30,30,W-30,150],radius=20,fill="#1E2A4A")
+        d.text((60,50),f"{symbol_label}  15m  G_POWER",font=f_big,fill="white")
+        d.text((60,105),f"${price:,.2f}  -  {signal}  -  {datetime.now().strftime('%d/%m %H:%M')}",font=f_small,fill=sig_color)
+        # Legend
+        d.text((60,170),"EMA Fast",font=f_tiny,fill="#2ED573")
+        d.text((220,170),f"EMA Slow",font=f_tiny,fill="#FFD700")
+        d.text((380,170),"EMA Trend",font=f_tiny,fill="#54A0FF")
+        d.text((560,170),"CDC Stop",font=f_tiny,fill="#C56CF0")
+        d.text((720,170),"▲ Buy  ▼ Short",font=f_tiny,fill="white")
+        # Chart area
+        cx0,cy0,cx1,cy1=30,210,W-30,850
+        d.rounded_rectangle([cx0,cy0,cx1,cy1],radius=16,fill="#141D33")
+        data=df.tail(80).reset_index(drop=True)
+        if len(data)<5: return None
+        lo=float(data[['low','ema_trend','cdc_stop']].min().min())
+        hi=float(data[['high','ema_trend','cdc_stop']].max().max())
+        # เผื่อเส้นtradesที่ถือ
+        for ot in open_trades:
+            try:
+                lo=min(lo,float(ot.get('entry',lo)),float(ot.get('sl',lo)))
+                hi=max(hi,float(ot.get('entry',hi)),float(ot.get('sl',hi)))
+            except: pass
+        pad=(hi-lo)*0.08 or 1
+        lo-=pad; hi+=pad
+        def py(p): return cy1 - (p-lo)/(hi-lo)*(cy1-cy0-40) - 10
+        def px(i): return cx0+30 + i*(cx1-cx0-60)/max(1,len(data)-1)
+        # Grid + ราคา
+        for k in range(4):
+            yv=cy0+20+k*(cy1-cy0-40)//3
+            pv=hi-(hi-lo)*(yv-cy0)/(cy1-cy0)
+            d.line([(cx0+10,yv),(cx1-10,yv)],fill="#1E2A4A",width=1)
+            d.text((cx1-140,yv-10),f"{pv:,.0f}",font=f_tiny,fill="#8FA3C8")
+        # Candles
+        cw=(cx1-cx0-60)/max(1,len(data))*0.6
+        for i,row in data.iterrows():
+            x=px(i)
+            o,h,l,c=float(row['open']),float(row['high']),float(row['low']),float(row['close'])
+            col="#2ED573" if c>=o else "#FF4757"
+            d.line([(x,py(h)),(x,py(l))],fill=col,width=2)
+            top,bot=min(py(o),py(c)),max(py(o),py(c))
+            if abs(top-bot)<2: bot=top+2
+            d.rectangle([x-cw/2,top,x+cw/2,bot],fill=col)
+        # EMA lines
+        def draw_line(col_name,color,width=3):
+            pts=[]
+            for i,row in data.iterrows():
+                try: pts.append((px(i),py(float(row[col_name]))))
+                except: pass
+            if len(pts)>1: d.line(pts,fill=color,width=width)
+        draw_line('ema_fast',"#2ED573",3)
+        draw_line('ema_slow',"#FFD700",3)
+        draw_line('ema_trend',"#54A0FF",2)
+        # CDC stop dotted
+        for i,row in data.iterrows():
+            try:
+                x=px(i); y=py(float(row['cdc_stop']))
+                d.ellipse([x-2,y-2,x+2,y+2],fill="#C56CF0")
+            except: pass
+        # Buy / Short markers - เฉพาะจุดที่สัญญาณเปลี่ยน
+        prev_sig=None
+        for i,row in data.iterrows():
+            try:
+                t=st.check_trend(row); m=st.check_momentum(row)
+                cur=None
+                if t['long'] and m['long']: cur="LONG"
+                elif t['short'] and m['short']: cur="SHORT"
+                if cur and cur!=prev_sig:
+                    x=px(i)
+                    if cur=="LONG":
+                        y=py(float(row['low']))+22
+                        d.polygon([(x,y),(x-10,y+16),(x+10,y+16)],fill="#2ED573")
+                        d.text((x-16,y+20),"BUY",font=f_tiny,fill="#2ED573")
+                    else:
+                        y=py(float(row['high']))-22
+                        d.polygon([(x,y),(x-10,y-16),(x+10,y-16)],fill="#FF4757")
+                        d.text((x-22,y-36),"SHORT",font=f_tiny,fill="#FF4757")
+                if cur: prev_sig=cur
+            except: pass
+        # เส้นtradesที่ถือ: Entry ขาว / SL แดง
+        for ot in open_trades:
+            try:
+                e=float(ot['entry']); s=float(ot.get('sl',e))
+                ye=py(e); ys=py(s)
+                # dashed
+                for x in range(cx0+10,cx1-10,18): d.line([(x,ye),(x+9,ye)],fill="white",width=2)
+                for x in range(cx0+10,cx1-10,18): d.line([(x,ys),(x+9,ys)],fill="#FF4757",width=2)
+                d.text((cx0+14,ye-22),f"ENTRY {ot.get('signal','')} ${e:,.0f}",font=f_tiny,fill="white")
+                d.text((cx0+14,ys+4),f"SL ${s:,.0f}",font=f_tiny,fill="#FF4757")
+            except: pass
+        # Condition panel
+        d.rounded_rectangle([30,870,W-30,1350],radius=20,fill="#141D33")
+        d.text((60,890),"CONDITIONS  -  ALL MUST PASS TO ENTER",font=f_mid,fill="white")
+        # cond dict จาก execute_symbol
+        rows=[
+            (f"CDC {'UP' if cond.get('cdc_up') else 'DOWN'}  Stop ${cond.get('cdc_stop',0):,.0f}", True),
+            (f"EMA{cfg['ema_fast']}/{cfg['ema_slow']}/{cfg['ema_trend']}  Close {' > ' if price>cond.get('ema_trend',price) else ' < '} Trend", True),
+            (f"RSI {cond.get('rsi',0):.0f}  (Long {cfg['rsi_entry_long'][0]}-{cfg['rsi_entry_long'][1]} / Short {cfg['rsi_entry_short'][0]}-{cfg['rsi_entry_short'][1]})", bool(cond.get('mom_long') or cond.get('mom_short') or cond.get('rsi',50) in range(25,71))),
+            (f"+DI {cond.get('plus_di',0):.1f}  -DI {cond.get('minus_di',0):.1f}  ADX {cond.get('adx',0):.1f} (min {cfg['adx_min']})", cond.get('adx',0)>=cfg['adx_min']),
+            (f"Retest {'YES' if cond.get('retest') else 'NO'}  -  Price near EMA Fast", bool(cond.get('retest'))),
+            (f"Vol {'OK' if cond.get('vol_ok') else 'LOW'}  -  Volume OK", bool(cond.get('vol_ok'))),
+            (f"Sideway {'YES - WAIT' if cond.get('sideway') else 'NO - TREND CLEAR'}", not cond.get('sideway')),
+            (f"Trend Long {cond.get('long')}  Short {cond.get('short')}  CanOpen {'YES' if cond.get('can_open') else 'NO'}  Open {cond.get('open_count',0)} trades", bool(cond.get('can_open'))),
+        ]
+        y=940
+        for txt,ok in rows:
+            d.text((60,y),("OK " if ok else "X  ")+txt,font=f_small,fill="#2ED573" if ok else "#FF4757" if "Retest" in txt or "Vol" in txt or "CanOpen" in txt else "white")
+            y+=42
+        d.text((60,1370),"MEXC Paper Only - Not Real Trade  |  /chart btc  /chart gold  /chart all",font=f_tiny,fill="#8FA3C8")
+        buf=io.BytesIO(); img.save(buf,format="PNG"); buf.seek(0); return buf.getvalue()
+    except Exception as e:
+        print(f"make_chart err {e}")
+        import traceback; traceback.print_exc()
+        return None
+
+
+
+def send_chart_on_open(symbol, r, df=None):
+    # ส่งกราฟทันทีเมื่อเปิดไม้ใหม่ - เรียกจาก /check /port /info /auto/run
+    try:
+        st=get_strat(symbol)
+        if df is None:
+            df=get_data(symbol)
+            if isinstance(df,tuple): return
+            df=st.add_indicators(df)
+        trades=load_trades()
+        kk=st.symbol_key
+        opens=[x for x in trades if x.get("symbol_key")==kk and str(x.get("status")).upper() in ["OPEN","PAPER_OPEN","PAPER"]]
+        o_list=[{"signal":o.get("signal",""),"entry":float(o.get("entry",0)),"sl":float(o.get("sl",o.get("entry",0)))} for o in opens]
+        img=make_chart_image(df, st, symbol, float(r.get("price", df.iloc[-1]["close"])), r.get("signal","WAIT"), r, o_list)
+        sig=r.get("signal","")
+        cap=f"🚀 OPEN {sig} {symbol} ${r.get('price',0):,.2f} SL ${r.get('price',0)*(1-st.config['sl_pct']) if sig=='LONG' else r.get('price',0)*(1+st.config['sl_pct']):,.2f} RSI {r.get('rsi',0):.0f} ADX {r.get('adx',0):.1f} Retest {'✅' if r.get('retest') else '❌'} Vol {'✅' if r.get('vol_ok') else '❌'}"
+        if img: send_tele_photo(img, cap, None)
+        else: send_tele(cap, None)
+    except Exception as e: print(f"send_chart_on_open err {e}")
+
 def get_strat(symbol):
     s=symbol.upper()
     if 'BTC' in s: return STRATS['btc']
@@ -234,14 +382,14 @@ def execute_symbol(symbol, manage_open=True):
         trend=st.check_trend(curr)
         mom=st.check_momentum(curr)
         signal="WAIT"
-        # V5.2.4 PYRAMID: เข้าเพิ่มได้ถ้ามีจังหวะดี จาก 1 เป็น 3 ไม้
+        # V5.2.4 PYRAMID: เข้าเพิ่มได้ถ้ามีจังหวะดี จาก 1 เป็น 3 trades
         can_open=len(open_trades) < MAX_POS_PER_SYMBOL and can_open_new(symbol_key, cooldown_hours=COOLDOWN_HOURS)
         if len(open_trades)>0 and can_open:
             existing_sig=open_trades[0]['signal']
             if (trend['long'] and existing_sig!='LONG') or (trend['short'] and existing_sig!='SHORT'):
-                can_open=False  # ไม่เพิ่มไม้สวนทาง
+                can_open=False  # ไม่เพิ่มtradesสวนทาง
         if can_open and not trend['sideway']:
-            # V5.2.2 PULLBACK ENTRY: ไม่ต้องรอ cross ทุกครั้ง
+            # V5.2.2 PULLBACK ENTRY: ไม่ต้องWAIT cross ทุกครั้ง
             if trend['long'] and mom['long']:
                 signal="LONG"
             elif trend['short'] and mom['short']:
@@ -273,7 +421,8 @@ def execute_symbol(symbol, manage_open=True):
             save_trades(trades)
             set_last_trade_time(symbol_key)
             actions.append(f"OPEN {signal} {symbol} ${price:.2f} SL {new_trade['sl']:.2f}")
-        return {"ok":True,"symbol":symbol,"symbol_key":symbol_key,"signal":signal,"price":price,
+        _is_new = any(a.startswith("OPEN ") for a in actions)
+        return {"ok":True,"symbol":symbol,"symbol_key":symbol_key,"signal":signal,"price":price,"new_trade":_is_new,
                 "plus_di":float(curr['plus_di']),"minus_di":float(curr['minus_di']),"adx":float(curr['adx']),
                 "cdc_up":bool(curr['cdc_up']),"cdc_stop":float(curr['cdc_stop']),
                 "rsi":float(curr['rsi']),"ema_fast":float(curr['ema_fast']),"ema_slow":float(curr['ema_slow']),
@@ -319,7 +468,7 @@ async def webhook(request: Request):
                     if r['actions']: out+=f"⚡ {'; '.join(r['actions'])}\n"
             opens=[t for t in trades if str(t.get('status')).upper() in ['OPEN','PAPER_OPEN','PAPER']]
             if opens:
-                out+=f"\n📌 ถือ {len(opens)} ไม้:\n"
+                out+=f"\n📌 ถือ {len(opens)} trades:\n"
                 for ot in opens[-3:]:
                     entry=float(ot['entry']); curr_p=results.get(ot.get('symbol_key','btc'),{}).get('price',entry)
                     sig=ot['signal']; ps=ot.get('position_size',0)
@@ -327,10 +476,13 @@ async def webhook(request: Request):
                     else: upnl=(entry-curr_p)/entry*ps if entry else 0; upp=(entry-curr_p)/entry*100 if entry else 0
                     sl=ot.get('sl',0)
                     out+=f"{sig} {ot['symbol']} Entry ${entry:,.2f} Now ${curr_p:,.2f} UnPnL ${upnl:+.2f} ({upp:+.1f}%) SL ${sl:,.2f} {ot.get('trailing','')}\n"
-            else: out+=f"\n📌 ไม่มีไม้ถืออยู่ - WAIT\n"
+            else: out+=f"\n📌 ไม่มีtradesถืออยู่ - WAIT\n"
             if bal.get('ok'): out+=f"\n🏦 MEXC {bal.get('total')} USDT | Pos {len(bal.get('positions',[]))}\n"
             out+=f"\n✅ V5.2.2 VOL 0.25 + PULLBACK + BTC+GOLD FIX\n💡 1.Retest 2.Trailing 3.TP Trend"
             send_tele(out, chat_id)
+            # AUTO: เปิดไม้ใหม่ -> ส่งกราฟทันที
+            for _k,_r in results.items():
+                if _r.get('new_trade'): send_chart_on_open(_r.get('symbol'), _r)
             return {"ok":True}
         elif tl.startswith('/total') or tl.startswith('/portfolio') or tl.startswith('/port'):
             trades=load_trades(); bal=get_mexc_balance()
@@ -350,7 +502,7 @@ async def webhook(request: Request):
                     total_upnl+=upnl
                     out+=f"{sig} {ot['symbol']} ${entry:,.2f} -> ${curr_p:,.2f} PnL ${upnl:+.2f}\n"
                 out+=f"UnPnL {total_upnl:+.2f} Paper ${40+total_closed+total_upnl:.2f}\n"
-            else: out+=f"ไม่มีไม้ถืออยู่ Paper ${40+total_closed:.2f}\n"
+            else: out+=f"ไม่มีtradesถืออยู่ Paper ${40+total_closed:.2f}\n"
             # ส่งรูปอินโฟกราฟฟิกด้วย
             total_upnl_safe = total_upnl if opens else 0
             try:
@@ -374,6 +526,8 @@ async def webhook(request: Request):
                 img_bytes=make_portfolio_image(paper_val, total_upnl_safe, total_closed, wr, wins, len(closeds) if closeds else len(opens), btc_p, gold_p, opens_info)
                 if img_bytes: send_tele_photo(img_bytes, out, chat_id)
                 else: send_tele(out, chat_id)
+                for _k,_r in results.items():
+                    if isinstance(_r, dict) and _r.get('new_trade'): send_chart_on_open(_r.get('symbol'), _r)
             except Exception as e: print(f"portfolio img err {e}"); send_tele(out, chat_id)
             return {'ok':True}
         elif tl.startswith('/info') or tl.startswith('/infographic'):
@@ -396,15 +550,40 @@ async def webhook(request: Request):
             cap=f"G_POWER PORTFOLIO {datetime.now().strftime('%d/%m %H:%M')} Paper ${paper_val:.2f} UnPnL {total_upnl:+.2f}"
             
             send_tele_photo(img_bytes,cap,chat_id) if img_bytes else send_tele('สร้างรูปไม่ได้',chat_id)
+            for _k,_r in results.items():
+                if isinstance(_r, dict) and _r.get('new_trade'): send_chart_on_open(_r.get('symbol'), _r)
             return {'ok':True}
+        elif tl.startswith('/chart'):
+            parts=tl.split(); key='btc' if len(parts)<2 else parse_sym(parts[1])[0]
+            if key=="unknown": send_tele(f"❓ ไม่มีเหรียญ {parts[1]} แล้ว มีแค่ BTC / GOLD", chat_id); return {"ok":True}
+            keys=['btc','gold'] if key=='all' else [key]
+            for kk in keys:
+                try:
+                    sym=SYMBOLS[kk]; st=STRATS[kk]
+                    df=get_data(sym)
+                    if isinstance(df,tuple): send_tele(f"{kk.upper()} ❌ {df[1]}", chat_id); continue
+                    df2=st.add_indicators(df)
+                    r=execute_symbol(sym)
+                    trades=load_trades()
+                    opens=[t for t in trades if t.get('symbol_key')==kk and str(t.get('status')).upper() in ['OPEN','PAPER_OPEN','PAPER']]
+                    # ดึง open trades ให้เป็น entry/sl สำหรับวาดเส้น
+                    o_list=[]
+                    for ot in opens:
+                        o_list.append({'signal':ot.get('signal',''),'entry':float(ot.get('entry',0)),'sl':float(ot.get('sl',ot.get('entry',0)))})
+                    img_bytes=make_chart_image(df2, st, sym, float(r.get('price', df2.iloc[-1]['close'])), r.get('signal','WAIT'), r, o_list)
+                    cap=f"📈 {sym} ${r.get('price',0):,.2f} {r.get('signal','WAIT')} RSI {r.get('rsi',0):.0f} ADX {r.get('adx',0):.1f} +DI {r.get('plus_di',0):.1f} -DI {r.get('minus_di',0):.1f} CDC {'UP' if r.get('cdc_up') else 'DOWN'} Retest {'✅' if r.get('retest') else '❌'} Vol {'✅' if r.get('vol_ok') else '❌'} Open {r.get('open_count',0)}"
+                    if img_bytes: send_tele_photo(img_bytes, cap, chat_id)
+                    else: send_tele(cap+"\n(สร้างรูปกราฟไม่ได้)", chat_id)
+                except Exception as e: send_tele(f"{kk.upper()} CHART Error: {e}", chat_id)
+            return {"ok":True}
         elif tl.startswith('/close'):
             trades=load_trades(); opens=[t for t in trades if str(t.get('status')).upper() in ['OPEN','PAPER_OPEN','PAPER']]
-            if not opens: send_tele('ไม่มีไม้ถืออยู่', chat_id); return {'ok':True}
+            if not opens: send_tele('ไม่มีtradesถืออยู่', chat_id); return {'ok':True}
             results={}
             for k in ['btc','gold']:
                 try: results[k]=execute_symbol(SYMBOLS[k])
                 except: results[k]={'ok':False}
-            total=0; out=f"CLOSE ALL {len(opens)} ไม้\n"
+            total=0; out=f"CLOSE ALL {len(opens)} trades\n"
             for ot in opens:
                 key=ot.get('symbol_key','btc'); curr_p=results.get(key,{}).get('price', ot.get('entry')); entry=float(ot['entry']); sig=ot['signal']; ps=float(ot.get('position_size',0))
                 pnl=(curr_p-entry)/entry*ps if sig=='LONG' else (entry-curr_p)/entry*ps
@@ -415,7 +594,7 @@ async def webhook(request: Request):
             send_tele(out, chat_id); return {'ok':True}
         elif tl.startswith('/reset'):
             trades=load_trades(); opens=[t for t in trades if str(t.get('status')).upper() in ['OPEN','PAPER_OPEN','PAPER']]
-            if opens: send_tele(f"ยังถือ {len(opens)} ไม้อยู่! พิมพ์ /close all ก่อน", chat_id); return {'ok':True}
+            if opens: send_tele(f"ยังถือ {len(opens)} tradesอยู่! พิมพ์ /close all ก่อน", chat_id); return {'ok':True}
             try:
                 for f in ['/data/g_power_trades.json','/data/auto_state.json']:
                     try:
@@ -437,7 +616,7 @@ async def webhook(request: Request):
             send_tele(f"🔴 Auto OFF {key.upper()}", chat_id)
             return {"ok":True}
         else:
-            send_tele(f"❓ {text}\n/check [btc|gold|all]\n/on [btc|gold|all]\n/off [btc|gold|all]\n/portfolio = รูปสรุปพอร์ต\n/info = รูปอย่างเดียว\n/live [btc|gold]", chat_id)
+            send_tele(f"❓ {text}\n/check [btc|gold|all]\n/chart [btc|gold|all] = กราฟ+EMA+Buy/Short\n/on [btc|gold|all]\n/off [btc|gold|all]\n/portfolio = รูปสรุปพอร์ต\n/info = รูปอย่างเดียว\n/live [btc|gold]", chat_id)
             return {"ok":True}
     except Exception as e:
         print(f"ERR {e}"); return {"ok":True}
