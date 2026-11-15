@@ -320,13 +320,13 @@ def make_chart_image(df, st, symbol_label, price, signal, cond, open_trades, tim
                     d.ellipse([_x-16,_y-16,_x+16,_y+16],fill="#2ED573",outline="white",width=2)
                     d.text((_x-6,_y-10),"B",font=f_tiny,fill="white")
                     # Entry ข้างวงกลม S/B ที่ราคา Entry เป๊ะๆ - ถ้า S อยู่ขอบขวาให้ข้อความไปซ้าย จะได้ไม่ทับป้ายราคาขวา
-                    _ex=_x-190 if _x > cx1-260 else _x+24
+                    _ex=_x-190 if _x > cx1-350 else _x+24
                     d.text((_ex,_y-12+_n_same*24),f"Entry {_e_price:,.0f}",font=f_small,fill="white")
                 else:
                     d.ellipse([_x-16,_y-16,_x+16,_y+16],fill="#FF4757",outline="white",width=2)
                     d.text((_x-6,_y-10),"S",font=f_tiny,fill="white")
                     # Entry ข้างวงกลม S/B ที่ราคา Entry เป๊ะๆ - ถ้า S อยู่ขอบขวาให้ข้อความไปซ้าย จะได้ไม่ทับป้ายราคาขวา
-                    _ex=_x-190 if _x > cx1-260 else _x+24
+                    _ex=_x-190 if _x > cx1-350 else _x+24
                     d.text((_ex,_y-12+_n_same*24),f"Entry {_e_price:,.0f}",font=f_small,fill="white")
         except Exception as _e: print(f"real B/S err {_e}")
         # เส้นtradesที่ถือ: Entry ขาว / SL แดง - ข้อความ ENTRY อยู่คู่กับวงกลม B/S (ตำแหน่งเปิดไม้จริง)
