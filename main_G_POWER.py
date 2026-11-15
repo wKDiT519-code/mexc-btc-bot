@@ -21,7 +21,7 @@ STRATS = {"btc": _m("btc"), "gold": _m("gold")}
 strat = STRATS["btc"]
 MAX_POS_PER_SYMBOL=3; COOLDOWN_HOURS=0.5
 CAPITAL=40; RISK_PCT=0.02; LEVERAGE=3
-SYMBOLS = {"btc": "BTC/USDT", "gold": "PAXG/USDT:USDT"}
+SYMBOLS = {"btc": "BTC/USDT:USDT", "gold": "PAXG/USDT:USDT"}  # FIX: ทั้ง 2 ตัวต้องเป็น Perpetual :USDT เหมือนที่เทรดจริง แท่งถึงจะตรงราคาเทรด
 DATA_DIR = Path("/data") if Path("/data").exists() else Path("/tmp")
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 TRADES_FILE = DATA_DIR / "g_power_trades.json"
@@ -100,9 +100,10 @@ def calc_position(symbol_key="btc"):
     risk=CAPITAL*RISK_PCT
     pos=risk/sl if sl else risk/0.034
     return {"risk":risk,"pos":pos,"margin":pos/LEVERAGE,"sl":sl*100,"tp":tp*100,"rr":round(tp/sl,1)}
-def get_data(symbol="BTC/USDT", timeframe="15m"):
+def get_data(symbol="BTC/USDT:USDT", timeframe="15m"):
+    # FIX แท่งราคาผิด: ห้าม fallback ไปเหรียญอื่น (XAUT) หรือ Spot - ต้องเป็น Perpetual ของเหรียญนั้นเท่านั้น
+    # ถ้า PAXG Perp ดึงไม่ได้ ให้ error ดีกว่าวาดแท่ง XAUT ผิดๆ
     candidates=[symbol]
-    if "PAXG" in symbol: candidates+= ["PAXG/USDT","XAUT/USDT:USDT"]
     for sym in candidates:
         try:
             ex=ccxt.mexc({"options":{"defaultType":"swap"}})
@@ -110,8 +111,6 @@ def get_data(symbol="BTC/USDT", timeframe="15m"):
             if ohlcv and len(ohlcv)>50:
                 df=pd.DataFrame(ohlcv,columns=['timestamp','open','high','low','close','volume'])
                 df['datetime']=pd.to_datetime(df['timestamp'],unit='ms')
-                if sym!=symbol:
-                    print(f"[FALLBACK] {symbol}->{sym}")
                 return df
         except: continue
     return (None, f"mexc no symbol {symbol}")
@@ -193,311 +192,168 @@ def make_portfolio_image(paper, unpnl, closed_pnl, win_rate, win_n, total_n, btc
         print(f"make_image err {e}"); return None
 
 def make_chart_image(df, st, symbol_label, price, signal, cond, open_trades, timeframe="15m"):
-    # PIL chart - ไม่ใช้ matplotlib จะได้ไม่ต้องเพิ่ม lib บน Render
+    # แบบเดียวกับรูป 15/11 03:01 ที่ดูเข้าใจแล้ว - เปลี่ยนแค่ S ให้ตรงแท่ง + ตรงราคาจริง
     try:
         from PIL import Image, ImageDraw, ImageFont
         import io
         W,H=1080,1450
         img=Image.new("RGB",(W,H),"#0A0E1A"); d=ImageDraw.Draw(img)
         try:
-            f_big=ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",44)
+            f_big=ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",38)
             f_mid=ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",30)
             f_small=ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",24)
             f_tiny=ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",20)
         except: f_big=ImageFont.load_default(); f_mid=f_big; f_small=f_big; f_tiny=f_big
-        cfg=st.config
-        # Header
         sig_color="#2ED573" if signal=="LONG" else "#FF4757" if signal=="SHORT" else "#8FA3C8"
         d.rounded_rectangle([30,30,W-30,150],radius=20,fill="#1E2A4A")
-        d.text((60,50),f"{symbol_label}  {timeframe}  G_POWER",font=f_big,fill="white")
+        d.text((60,50),f"{symbol_label}  {timeframe}  G_POWER V5.6.2",font=f_big,fill="white")
         d.text((60,105),f"${price:,.2f}  -  {signal}  -  {datetime.now().strftime('%d/%m %H:%M')}",font=f_small,fill=sig_color)
-        # Legend
         d.text((60,170),"EMA Fast",font=f_tiny,fill="#2ED573")
-        d.text((220,170),f"EMA Slow",font=f_tiny,fill="#FFD700")
+        d.text((220,170),"EMA Slow",font=f_tiny,fill="#FFD700")
         d.text((380,170),"EMA Trend",font=f_tiny,fill="#54A0FF")
         d.text((560,170),"CDC Stop",font=f_tiny,fill="#C56CF0")
         d.text((720,170),"EMA200",font=f_tiny,fill="#9B59B6")
         d.text((850,170),"B Buy  S Short",font=f_tiny,fill="white")
-        # Chart area
         cx0,cy0,cx1,cy1=30,210,W-30,750
         d.rounded_rectangle([cx0,cy0,cx1,cy1],radius=16,fill="#141D33")
-        # EMA200 สำหรับสไตล์ TradingView ในรูป (BTC 1D ใช้ 200)
         if 'ema200' not in df.columns:
             try: df['ema200']=df['close'].ewm(span=200, adjust=False).mean()
             except: df['ema200']=df['close']
         data=df.tail(80).reset_index(drop=True)
         if len(data)<5: return None
-        # FIX: ไม่เอา cdc_stop มาคิดสเกล เพราะ CDC Stop เป็น Trailing ที่ค้างที่ High เก่า ($71k) จะบีบกราฟให้เล็ก
-        lo=float(data[['low','ema_trend']].min().min())
-        hi=float(data[['high','ema_trend']].max().max())
-        # เผื่อเส้นtradesที่ถือ
+        # ใช้ได้จริง: สเกล Y จากแท่งเทียน + EMA เท่านั้น ไม่เอา SL มาดึงสเกล (SL อยู่ไกล ทำให้แท่งจิ๋ว)
+        _cols=[c for c in ['low','ema_fast','ema_slow','ema_trend','ema200'] if c in data.columns]
+        lo=float(data[_cols].min().min()); hi=float(data[['high']+ [c for c in ['ema_fast','ema_slow','ema_trend','ema200'] if c in data.columns]].max().max())
         for ot in open_trades:
             try:
-                lo=min(lo,float(ot.get('entry',lo)),float(ot.get('sl',lo)))
-                hi=max(hi,float(ot.get('entry',hi)),float(ot.get('sl',hi)))
+                _e=float(ot.get('entry',lo))
+                # เอาแค่ Entry (อยู่ในแท่งอยู่แล้ว) ไม่เอา SL - SL ดูที่แผงล่าง
+                lo=min(lo,_e); hi=max(hi,_e)
             except: pass
-        pad=(hi-lo)*0.08 or 1
-        lo-=pad; hi+=pad
-        def py(p): return cy1 - (p-lo)/(hi-lo)*(cy1-cy0-40) - 10
-        def px(i): return cx0+30 + i*(cx1-cx0-60)/max(1,len(data)-1)
-        # Grid + ราคา
+        pad=(hi-lo)*0.08 or 1; lo-=pad; hi+=pad
+        def py(v): return cy1 - (v-lo)/(hi-lo)*(cy1-cy0-40) - 10
+        # กันโซนตัวเลขขวา 150px ไว้: แท่งราคา/EMA/S จบที่ cx1-170 จะได้ไม่ทับตัวเลขราคา
+        _chart_right=cx1-170
+        def px(i): return cx0+30 + i*(_chart_right-cx0-60)/max(1,len(data)-1)
         for k in range(4):
             yv=cy0+20+k*(cy1-cy0-40)//3
             pv=hi-(hi-lo)*(yv-cy0)/(cy1-cy0)
-            d.line([(cx0+10,yv),(cx1-10,yv)],fill="#1E2A4A",width=1)
-            d.text((cx1-140,yv-10),f"{pv:,.0f}",font=f_tiny,fill="#8FA3C8")
-        # Candles
-        cw=(cx1-cx0-60)/max(1,len(data))*0.6
+            d.line([(cx0+10,yv),(_chart_right,yv)],fill="#1E2A4A",width=1)
+            d.text((cx1-150,yv-10),f"{pv:,.0f}",font=f_tiny,fill="#8FA3C8")
+        cw=(_chart_right-cx0-60)/max(1,len(data))*0.6
         for i,row in data.iterrows():
-            x=px(i)
-            o,h,l,c=float(row['open']),float(row['high']),float(row['low']),float(row['close'])
+            x=px(i); o,h,l,c=float(row['open']),float(row['high']),float(row['low']),float(row['close'])
             col="#2ED573" if c>=o else "#FF4757"
             d.line([(x,py(h)),(x,py(l))],fill=col,width=2)
             top,bot=min(py(o),py(c)),max(py(o),py(c))
             if abs(top-bot)<2: bot=top+2
             d.rectangle([x-cw/2,top,x+cw/2,bot],fill=col)
-        # EMA lines
         def draw_line(col_name,color,width=3):
             pts=[]
             for i,row in data.iterrows():
                 try: pts.append((px(i),py(float(row[col_name]))))
                 except: pass
             if len(pts)>1: d.line(pts,fill=color,width=width)
-        draw_line('ema_fast',"#2ED573",3)
-        draw_line('ema_slow',"#FFD700",3)
-        draw_line('ema_trend',"#54A0FF",2)
-        draw_line('ema200',"#9B59B6",2)
-        # CDC stop dotted
+        draw_line('ema_fast',"#2ED573",3); draw_line('ema_slow',"#FFD700",3); draw_line('ema_trend',"#54A0FF",2); draw_line('ema200',"#9B59B6",2)
+        # --- ราคาแท่งสุดท้าย: เส้นประ + ป้ายราคาขวาตรงราคาแท่งสุดท้ายเป๊ะ ---
+        try:
+            _last_close=float(data.iloc[-1]['close']); _last_open=float(data.iloc[-1]['open'])
+            _y_last=py(_last_close)
+            _last_col="#2ED573" if _last_close>=_last_open else "#FF4757"
+            for _x0 in range(cx0+10, _chart_right, 16): d.line([(_x0,_y_last),(_x0+8,_y_last)],fill=_last_col,width=1)
+            _lab_last=f"${_last_close:,.2f}"
+            _tw=int(d.textlength(_lab_last,font=f_tiny))+16
+            # ป้ายราคาของแท่งสุดท้ายอยู่ในโซนตัวเลขขวา (cx1-160..cx1) ไม่ทับแท่ง
+            d.rounded_rectangle([cx1-160,_y_last-13,cx1-10,_y_last+13],radius=6,fill=_last_col)
+            d.text((cx1-152,_y_last-10),_lab_last,font=f_tiny,fill="white")
+            _x_last=px(len(data)-1)
+            d.ellipse([_x_last-5,_y_last-5,_x_last+5,_y_last+5],fill=_last_col,outline="white",width=1)
+        except Exception as e: print(f"last price label err {e}")
         for i,row in data.iterrows():
             try:
                 _cs=float(row['cdc_stop'])
                 if lo <= _cs <= hi:
-                    x=px(i); y=py(_cs)
-                    d.ellipse([x-2,y-2,x+2,y+2],fill="#C56CF0")
+                    x=px(i); y=py(_cs); d.ellipse([x-2,y-2,x+2,y+2],fill="#C56CF0")
             except: pass
-        # B/S เฉพาะจุดที่เปิดไม้จริงเท่านั้น (ข้อมูลจริงจาก entry_time / entry)
-        # ไม่วาด B/S จากสัญญาณพลิกอีกแล้ว - ที่เห็น S/B มั่วๆ ในรูปเก่ามาจากตรงนี้
+        # --- หาแท่ง Entry จริงของแต่ละไม้: X=แท่งที่เวลาเปิดไม้ + Entry อยู่ใน High-Low ของแท่งนั้น, Y=py(Entry) ---
+        trade_idx=[]
         try:
             from datetime import datetime as _dt
             for _ot in open_trades:
-                _sig=_ot.get('signal','')
-                if _sig not in ('LONG','SHORT'): continue
-                _et=str(_ot.get('entry_time','') or '')
-                _idx=None
-                # หาแท่งที่ตรงกับเวลาเปิดไม้จริงที่สุด (ใน data 80 แท่งที่วาด)
+                _et=str(_ot.get('entry_time','') or ''); _idx=None
                 if _et and 'datetime' in data.columns:
                     try:
                         _t=_dt.fromisoformat(_et.replace('Z',''))
-                        _diffs=[abs((_d-_t).total_seconds()) if hasattr(_d,'to_pydatetime') else 1e18 for _d in data['datetime']]
-                        # datetime ใน data อาจเป็น pandas Timestamp
                         _diffs=[]
                         for _d in data['datetime']:
                             try: _diffs.append(abs((_d.to_pydatetime()-_t).total_seconds()))
                             except: _diffs.append(abs((pd.to_datetime(_d).to_pydatetime()-_t).total_seconds()))
-                        _idx=int(min(range(len(_diffs)), key=lambda k: _diffs[k]))
-                        # ถ้าเวลาเปิดไม้ห่างจากหน้าต่างกราฟเกิน 80 แท่ง (>20 ชม. สำหรับ 15m) ให้ไม่วาด B/S บนกราฟ (ยังเห็นเส้น ENTRY อยู่)
-                        if _diffs[_idx] > 80*900 and timeframe=='15m': _idx=None
-                        if _diffs[_idx] > 80*86400 and timeframe=='1d': _idx=None
+                        _e_tmp=float(_ot.get('entry',0))
+                        _cands=[k for k in range(len(data)) if float(data.iloc[k]['low']) <= _e_tmp <= float(data.iloc[k]['high'])]
+                        _idx=int(min(_cands, key=lambda k: _diffs[k])) if _cands else int(min(range(len(_diffs)), key=lambda k: _diffs[k]))
                     except: _idx=None
                 if _idx is None:
-                    # ไม่มีเวลาเปิดไม้ (ไม้เก่า) -> หาแท่งที่ close ใกล้ entry ที่สุด
                     try:
-                        _e=float(_ot.get('entry',0))
-                        _diffs2=[abs(float(c)-_e) for c in data['close']]
-                        _idx=int(min(range(len(_diffs2)), key=lambda k: _diffs2[k]))
-                    except: continue
-                _x=px(_idx)
-                # FIX: B/S ต้องอยู่ที่ราคา Entry เป๊ะๆ ไม่ใช่ High/Low ของแท่ง
-                # ถ้า 2 ไม้เปิดในแท่งเดียวกัน ให้ขยับ X ไม่ให้ทับกัน
-                if not hasattr(d, '_used_bs_x'): d._used_bs_x={}
-                _key=int(_idx)
-                _n_same=d._used_bs_x.get(_key, 0)
-                d._used_bs_x[_key]=_n_same+1
-                _x=_x + _n_same*44
-                _e_price=float(_ot.get('entry',0))
-                _y=py(_e_price)
-                if _sig=='LONG':
-                    d.ellipse([_x-16,_y-16,_x+16,_y+16],fill="#2ED573",outline="white",width=2)
-                    d.text((_x-6,_y-10),"B",font=f_tiny,fill="white")
-                    # Entry ข้างวงกลม S/B ที่ราคา Entry เป๊ะๆ - ถ้า S อยู่ขอบขวาให้ข้อความไปซ้าย จะได้ไม่ทับป้ายราคาขวา
-                    _ex=_x-190 if _x > cx1-350 else _x+24
-                    d.text((_ex,_y-12+_n_same*24),f"Entry {_e_price:,.0f}",font=f_small,fill="white")
-                else:
-                    d.ellipse([_x-16,_y-16,_x+16,_y+16],fill="#FF4757",outline="white",width=2)
-                    d.text((_x-6,_y-10),"S",font=f_tiny,fill="white")
-                    # Entry ข้างวงกลม S/B ที่ราคา Entry เป๊ะๆ - ถ้า S อยู่ขอบขวาให้ข้อความไปซ้าย จะได้ไม่ทับป้ายราคาขวา
-                    _ex=_x-190 if _x > cx1-350 else _x+24
-                    d.text((_ex,_y-12+_n_same*24),f"Entry {_e_price:,.0f}",font=f_small,fill="white")
-        except Exception as _e: print(f"real B/S err {_e}")
-        # เส้นtradesที่ถือ: Entry ขาว / SL แดง - ข้อความ ENTRY อยู่คู่กับวงกลม B/S (ตำแหน่งเปิดไม้จริง)
-        for _oi, ot in enumerate(open_trades):
-            try:
-                e=float(ot['entry']); s=float(ot.get('sl',e))
-                _tp=float(ot.get('tp',0)) or (e*(1+st.config['tp_pct']) if ot.get('signal')=='LONG' else e*(1-st.config['tp_pct']))
-                ye=py(e); ys=py(s); yt=py(_tp)
-                # เอาเส้นขาวยาวออกเลยตามที่ขอ - เหลือแค่ตัวเลข Entry ข้าง B/S + แผงล่างก็พอ
-                d.line([(cx0+10,ys),(cx1-10,ys)],fill="#FF4757",width=1)
-                # หา x ของวงกลม B/S จาก entry_time - ข้อความ ENTRY ต้องอยู่ตรงนั้น ไม่ใช่ขอบซ้าย
-                _x_lab=cx0+14
-                try:
-                    from datetime import datetime as _dt3
-                    _et3=str(ot.get('entry_time','') or '')
-                    if _et3 and 'datetime' in data.columns:
-                        _tt3=_dt3.fromisoformat(_et3.replace('Z',''))
-                        _diffs3=[]
-                        for _d in data['datetime']:
-                            try: _diffs3.append(abs((_d.to_pydatetime()-_tt3).total_seconds()))
-                            except: _diffs3.append(abs((pd.to_datetime(_d).to_pydatetime()-_tt3).total_seconds()))
-                        _idx3=int(min(range(len(_diffs3)), key=lambda k: _diffs3[k]))
-                        _x_lab=px(_idx3)
-                except: pass
-                # แบบที่ตกลงในรูป: ไม่ใส่ป้ายบนเส้น ENTRY แล้ว - ใส่คำว่า Entry ข้างวงกลม B/S แทน
-                # (รายละเอียด ENTRY/SL/TP เต็มๆ อยู่ในแผงล่างแล้ว)
-                d.text((cx0+14,ys+4),f"SL ${s:,.0f}",font=f_tiny,fill="#FF4757")
-                # no TP label on chart
-                # ป้ายราคาจริงด้านขวา - Entry / SL (กันทับกันถ้า 2 ไม้ราคาใกล้กัน)
-                try:
-                    if not hasattr(d, '_used_right_y'): d._used_right_y=[]
-                    def _place_y(_y):
-                        # ถ้าชนกับป้ายก่อนหน้า (<28px) ให้ขยับลง 30px
-                        for _uy in d._used_right_y:
-                            if abs(_y-_uy) < 28: _y=_uy+30
-                        d._used_right_y.append(_y)
-                        return _y
-                    if cy0 <= ye <= cy1:
-                        _yy=_place_y(ye)
-                        d.rectangle([cx1-105,_yy-12,cx1-8,_yy+12],fill="white")
-                        d.text((cx1-100,_yy-10),f"{e:,.0f}",font=f_tiny,fill="black")
-                    if cy0 <= ys <= cy1:
-                        _yy2=_place_y(ys)
-                        d.rectangle([cx1-105,_yy2-12,cx1-8,_yy2+12],fill="#FF4757")
-                        d.text((cx1-100,_yy2-10),f"{s:,.0f}",font=f_tiny,fill="white")
-                except: pass
-            except: pass
-        # ป้ายราคาปัจจุบันจริงด้านขวา - สีตามทิศทาง (เขียว LONG / แดง SHORT / เทา WAIT)
-        try:
-            _yp=py(price)
-            if cy0 <= _yp <= cy1:
-                # กันชนกับป้าย Entry/SL ที่อยู่ใกล้กัน
-                try:
-                    for _uy in getattr(d, '_used_right_y', []):
-                        if abs(_yp-_uy) < 28: _yp=_uy+30
-                except: pass
-                _pc="#2ED573" if signal=="LONG" else "#FF4757" if signal=="SHORT" else "#8FA3C8"
-                d.rectangle([cx1-105,_yp-13,cx1-8,_yp+13],fill=_pc)
-                d.text((cx1-100,_yp-11),f"{price:,.0f}",font=f_tiny,fill="white" if signal!="WAIT" else "black")
-        except: pass
-        # แผง ADX / +DI / -DI - ใช้ดูจุดเข้าไม้ถูก/ผิด TF 15m
-        # กลยุทธ์ G_POWER ใช้ ADX+DI เป็นตัวตัดสินใจหลัก: ADX>min + DI ฝั่งที่เข้า > อีกฝั่ง + >di_min
+                        _e=float(_ot.get('entry',0)); _d2=[abs(float(c)-_e) for c in data['close']]; _idx=int(min(range(len(_d2)), key=lambda k: _d2[k]))
+                    except: _idx=len(data)-1
+                trade_idx.append(_idx)
+        except: trade_idx=[len(data)-1]*len(open_trades)
+        # --- กราฟเดิม: ไม่วาดเส้น ENTRY ขาวยาว / เส้น SL ยาว บนกราฟหลักเลย ---
+        # ค่า ENTRY / SL / TP ดูที่แผงล่างเท่านั้น บนกราฟเหลือแค่วงกลม S/B
+        # --- S/B: ตรงทั้ง X (แท่งที่เปิดไม้) และ Y (ราคา Entry) บนแท่งราคาเป๊ะๆ ---
+        for _oi,_ot in enumerate(open_trades):
+            _sig=_ot.get('signal','')
+            if _sig not in ('LONG','SHORT'): continue
+            _idx=trade_idx[_oi]; _x=px(_idx); _e_price=float(_ot.get('entry',0)); _y=py(_e_price)
+            _col="#2ED573" if _sig=='LONG' else "#FF4757"; _lab="B" if _sig=='LONG' else "S"
+            d.ellipse([_x-16,_y-16,_x+16,_y+16],fill=_col,outline="white",width=2)
+            d.text((_x-6,_y-10),_lab,font=f_tiny,fill="white")
+        # --- แผง ADX แบบในรูป ---
         rx0,ry0,rx1,ry1=30,770,W-30,900
         d.rounded_rectangle([rx0,ry0,rx1,ry1],radius=16,fill="#141D33")
         try:
-            # ADX/DI ต้องเป็นของจริง - ถ้าแบน/NaN คำนวณใหม่จาก high/low/close จริง (สูตรเดียวกับ strategy)
-            try:
-                import pandas as _pd, numpy as _np
-                for _c in ['plus_di','minus_di','adx']:
-                    if _c not in data.columns or data[_c].astype(float).isna().all() or float(data[_c].astype(float).std() or 0) < 0.1:
-                        _up=data['high'].diff(); _dn=-data['low'].diff()
-                        _pdm=_pd.Series([u if (u>d and u>0) else 0 for u,d in zip(_up,_dn)], index=data.index).ewm(alpha=1/14, adjust=False).mean()
-                        _mdm=_pd.Series([d if (d>u and d>0) else 0 for u,d in zip(_up,_dn)], index=data.index).ewm(alpha=1/14, adjust=False).mean()
-                        _tr=_pd.concat([data['high']-data['low'],(data['high']-data['close'].shift()).abs(),(data['low']-data['close'].shift()).abs()],axis=1).max(axis=1).ewm(alpha=1/14, adjust=False).mean()
-                        data['plus_di']=100*_pdm/_tr; data['minus_di']=100*_mdm/_tr
-                        _dx=100*(data['plus_di']-data['minus_di']).abs()/(data['plus_di']+data['minus_di']).replace(0,_np.nan)
-                        data['adx']=_dx.ewm(alpha=1/14, adjust=False).mean().fillna(15)
-                        break
-            except Exception as _e: print(f"adx recompute err {_e}")
-            _adx=float(data.iloc[-1]['adx']); _pdi=float(data.iloc[-1]['plus_di']); _mdi=float(data.iloc[-1]['minus_di'])
-            _adx_min=cfg.get('adx_min',10); _di_min=cfg.get('di_min',10)
-            d.text((60,778),f"ADX {_adx:.1f}  +DI {_pdi:.1f}  -DI {_mdi:.1f}  (min {_adx_min}/{_di_min})",font=f_tiny,fill="white")
-            d.text((rx1-260,778),"ADX  +DI  -DI",font=f_tiny,fill="#8FA3C8")
-            def apy(v): return ry1-8 - max(0,min(60,v))/60*(ry1-ry0-50)
-            # เส้น ADX min (10/12) + เส้น 20
-            for _lvl,_col in [(_adx_min,"#8FA3C8"),(20,"#8FA3C8")]:
-                _y=apy(_lvl)
-                for _x in range(rx0+10,rx1-10,14): d.line([(_x,_y),(_x+7,_y)],fill=_col,width=1)
-                d.text((rx1-55,_y-10),str(_lvl),font=f_tiny,fill="#8FA3C8")
-            _n=len(data)
-            for _col_name,_col in [('adx',"#54A0FF"),('plus_di',"#2ED573"),('minus_di',"#FF4757")]:
-                _vals=data[_col_name].astype(float).clip(0,60).tolist()
-                _pts=[(cx0+30+i*(cx1-cx0-60)/max(1,_n-1), apy(v)) for i,v in enumerate(_vals)]
-                if len(_pts)>1: d.line(_pts,fill=_col,width=2)
-            # จุด B/S บนแผง ADX ด้วย - จะได้เห็นตอนเปิดไม้ ADX/DI เป็นยังไง (ถูก/ผิด)
-            _used_adx_x={}
-            for _ot in open_trades:
-                _et=str(_ot.get('entry_time','') or '')
-                try:
-                    from datetime import datetime as _dt2
-                    if _et and 'datetime' in data.columns:
-                        _tt=_dt2.fromisoformat(_et.replace('Z',''))
-                        _diffs=[]
-                        for _d in data['datetime']:
-                            try: _diffs.append(abs((_d.to_pydatetime()-_tt).total_seconds()))
-                            except: _diffs.append(abs((pd.to_datetime(_d).to_pydatetime()-_tt).total_seconds()))
-                        _idx=int(min(range(len(_diffs)), key=lambda k: _diffs[k]))
-                        _x=cx0+30+_idx*(cx1-cx0-60)/max(1,_n-1)
-                        # ถ้า 2 ไม้แท่งเดียวกัน ขยับไม่ให้ทับกัน
-                        _c=_used_adx_x.get(int(_idx),0); _used_adx_x[int(_idx)]=_c+1; _x=_x+_c*32
-                        _sig2=_ot.get('signal','')
-                        _col2="#2ED573" if _sig2=='LONG' else "#FF4757"
-                        _lab="B" if _sig2=='LONG' else "S"
-                        d.ellipse([_x-12,apy(float(data.iloc[_idx]['adx']))-12,_x+12,apy(float(data.iloc[_idx]['adx']))+12],fill=_col2,outline="white",width=1)
-                        d.text((_x-5,apy(float(data.iloc[_idx]['adx']))-9),_lab,font=f_tiny,fill="white")
-                except: pass
+            _adx=float(cond.get('adx',0)); _pdi=float(cond.get('plus_di',0)); _mdi=float(cond.get('minus_di',0))
+            _amin=st.config.get('adx_min',12); _dmin=st.config.get('di_min',10)
+            d.rounded_rectangle([50,772,560,804],radius=8,fill="#0A0E1A")
+            d.text((60,780),f"ADX {_adx:.1f}  +DI {_pdi:.1f}  -DI {_mdi:.1f}  (min {_amin:.0f}/{_dmin:.0f})",font=f_small,fill="white")
+            # เส้น ADX/DI อยู่ใต้แถบข้อความ (y 810-888) จะได้ไม่ทับข้อความ
+            def apy(v): return 888 - max(0,min(100,float(v)))/100*58
+            for col_name,color in [('adx',"#54A0FF"),('plus_di',"#2ED573"),('minus_di',"#FF4757")]:
+                pts=[]
+                for i,row in data.iterrows():
+                    try: pts.append((cx0+30+i*(_chart_right-cx0-60)/max(1,len(data)-1), apy(float(row[col_name]))))
+                    except: pass
+                if len(pts)>1: d.line(pts,fill=color,width=2)
+            # S/B บน ADX: X ต้องตรงกับกราฟหลักเป๊ะๆ (แท่งเดียวกัน)
+            _adx_dup={}
+            for _oi,_ot in enumerate(open_trades):
+                _idx=trade_idx[_oi]; _x=cx0+30+_idx*(_chart_right-cx0-60)/max(1,len(data)-1)
+                _dc=_adx_dup.get(int(_idx),0); _adx_dup[int(_idx)]=_dc+1; _off=_dc*16
+                _ay=apy(float(data.iloc[_idx]['adx']))+_off
+                _col2="#2ED573" if _ot.get('signal')=='LONG' else "#FF4757"; _lab2="B" if _ot.get('signal')=='LONG' else "S"
+                d.ellipse([_x-13,_ay-13,_x+13,_ay+13],fill=_col2,outline="white",width=2); d.text((_x-5,_ay-10),_lab2,font=f_tiny,fill="white")
+            _yl=apy(25)
+            for _x0 in range(rx0+10, rx1-10, 18): d.line([(_x0,_yl),(_x0+9,_yl)],fill="#8FA3C8",width=1)
+            d.text((rx1-50,_yl-10),"25",font=f_tiny,fill="#8FA3C8")
         except Exception as e: print(f"adx panel err {e}")
-        # แผง ENTRY / SL / TP - ตกลง: กราฟเดิม เปลี่ยนแค่ตรงนี้
+        # --- แผง ENTRY/SL/TP แบบในรูป ---
         d.rounded_rectangle([30,920,W-30,1350],radius=20,fill="#141D33")
         d.text((60,940),"ENTRY / SL / TP",font=f_mid,fill="white")
+        _yrow=980
         _sl_pct=st.config.get('sl_pct',0.034); _tp_pct=st.config.get('tp_pct',0.18)
-        rows=[]
         if open_trades:
-            for _i,_ot in enumerate(open_trades):
-                _e=float(_ot.get('entry',price)); _s=float(_ot.get('sl',_e))
-                _tp=float(_ot.get('tp',0)) or (_e*(1+_tp_pct) if _ot.get('signal')=='LONG' else _e*(1-_tp_pct))
-                _sig=_ot.get('signal','')
-                _pnl = (price-_e)/_e*100 if _sig=='LONG' else (_e-price)/_e*100
-                _sl_d = (_s-_e)/_e*100 if _sig=='LONG' else (_e-_s)/_e*100  # ระยะ SL จาก Entry (ติดลบถ้า LONG, บวกถ้า SHORT - ใช้ abs ในแสดงผล)
-                _sl_abs = abs(_s-_e)/_e*100; _tp_abs = abs(_tp-_e)/_e*100
-                # 1 ไม้ = 1 บรรทัดหลักตามที่ตกลง: SHORT 63617 SL 64167 TP 52166 NOW 63367
-                rows.append((f"{_sig}  {_e:,.0f}  SL {_s:,.0f}  TP {_tp:,.0f}  NOW {price:,.0f}", "#2ED573" if _sig=='LONG' else "#FF4757"))
-                rows.append((f"PnL {_pnl:+.2f}%  |  SL {_sl_abs:.2f}%  |  TP {_tp_abs:.2f}%  |  RR {_tp_abs/max(_sl_abs,0.01):.1f}R", "#FFA502"))
-        else:
-            _l_sl=price*(1-_sl_pct); _l_tp=price*(1+_tp_pct)
-            _s_sl=price*(1+_sl_pct); _s_tp=price*(1-_tp_pct)
-            rows.append((f"No Open Trade - Plan at NOW {price:,.0f}", "white"))
-            rows.append((f"LONG  {price:,.0f}  SL {_l_sl:,.0f}  TP {_l_tp:,.0f}  NOW {price:,.0f}", "#2ED573"))
-            rows.append((f"SHORT  {price:,.0f}  SL {_s_sl:,.0f}  TP {_s_tp:,.0f}  NOW {price:,.0f}", "#FF4757"))
-            rows.append((f"RR {_tp_pct/max(_sl_pct,0.001):.1f}R  -  SL {_sl_pct*100:.1f}% / TP {_tp_pct*100:.0f}%", "#FFA502"))
-        y=990
-        for txt,col in rows:
-            d.text((60,y),txt,font=f_small,fill=col)
-            y+=42
-        d.text((60,1370),"MEXC Paper Only - Not Real Trade  |  /chart btc  /chart gold  /chart all",font=f_tiny,fill="#8FA3C8")
-        buf=io.BytesIO(); img.save(buf,format="PNG"); buf.seek(0); return buf.getvalue()
+            for _ot in open_trades:
+                _e=float(_ot.get('entry',price)); _s=float(_ot.get('sl',_e)); _tp=float(_ot.get('tp',0)) or (_e*(1+_tp_pct) if _ot.get('signal')=='LONG' else _e*(1-_tp_pct))
+                _sig=_ot.get('signal',''); _pnl=(price-_e)/_e*100 if _sig=='LONG' else (_e-price)/_e*100
+                _sl_abs=abs(_s-_e)/_e*100; _tp_abs=abs(_tp-_e)/_e*100; _rr=(_tp_abs/_sl_abs) if _sl_abs>0 else 0
+                _col="#2ED573" if _sig=='LONG' else "#FF4757"
+                d.text((60,_yrow),f"{_sig}  {_e:,.0f}  SL {_s:,.0f}  TP {_tp:,.0f}  NOW {price:,.0f}",font=f_small,fill=_col); _yrow+=34
+                d.text((60,_yrow),f"PnL {_pnl:+.2f}%  |  SL {_sl_abs:.2f}%  |  TP {_tp_abs:.2f}%  |  RR {_rr:.1f}R",font=f_small,fill="#FFD700"); _yrow+=44
+        else: d.text((60,_yrow),"ยังไม่มีไม้เปิด - WAIT",font=f_small,fill="#8FA3C8")
+        d.text((60,1405),"MEXC Paper Only - Not Real Trade  |  /chart btc  /chart gold  /chart all",font=f_tiny,fill="#8FA3C8")
+        buf=io.BytesIO(); img.save(buf,format="PNG"); return buf.getvalue()
     except Exception as e:
-        print(f"make_chart err {e}")
-        import traceback; traceback.print_exc()
-        return None
-
-
-
-def send_chart_on_open(symbol, r, df=None):
-    # ส่งกราฟทันทีเมื่อเปิดไม้ใหม่ - เรียกจาก /check /port /info /auto/run
-    try:
-        st=get_strat(symbol)
-        if df is None:
-            df=get_data(symbol)
-            if isinstance(df,tuple): return
-            df=st.add_indicators(df)
-        trades=load_trades()
-        kk=st.symbol_key
-        opens=[x for x in trades if x.get("symbol_key")==kk and str(x.get("status")).upper() in ["OPEN","PAPER_OPEN","PAPER"]]
-        o_list=[{"signal":o.get("signal",""),"entry":float(o.get("entry",0)),"sl":float(o.get("sl",o.get("entry",0))),"tp":float(o.get("tp",0)),"entry_time":o.get("entry_time","")} for o in opens]
-        img=make_chart_image(df, st, symbol, float(r.get("price", df.iloc[-1]["close"])), r.get("signal","WAIT"), r, o_list)
-        sig=r.get("signal","")
-        cap=f"🚀 OPEN {sig} {symbol} ${r.get('price',0):,.2f} SL ${r.get('price',0)*(1-st.config['sl_pct']) if sig=='LONG' else r.get('price',0)*(1+st.config['sl_pct']):,.2f} ADX {r.get('adx',0):.1f} +DI {r.get('plus_di',0):.1f} -DI {r.get('minus_di',0):.1f} Retest {'✅' if r.get('retest') else '❌'}"
-        if img: send_tele_photo(img, cap, None)
-        else: send_tele(cap, None)
-    except Exception as e: print(f"send_chart_on_open err {e}")
+        print(f"chart err {e}"); import traceback; traceback.print_exc(); return None
 
 def get_strat(symbol):
     s=symbol.upper()
