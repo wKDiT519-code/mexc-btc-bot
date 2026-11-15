@@ -1,6 +1,6 @@
 """
-G_POWER V5.0 TREND FOLLOWING - 3 หัวใจตามที่ขอ
-1. จุดเข้าแม่น - ต้อง Retest + RSI 40-65 + Vol
+G_POWER V5.0 TREND FOLLOWING - ADX + DI ล้วน (ไม่มี RSI / Volume แล้ว)
+1. จุดเข้าแม่น - Retest + ADX + DI + CDC + EMA
 2. ยังอยู่ในเทรน -> Trailing SL กันทุน/กำไร (BE -> Lock -> CDC Trail)
 3. TP เมื่อเปลี่ยนเทรน - CDC Flip / EMA Cross / DI Cross
 """
@@ -15,13 +15,12 @@ class Strategy_G_Power:
         base = {
             "btc": {
                 "ema_fast": 12, "ema_slow": 26, "ema_trend": 50,
-                "rsi_fast": 12, "rsi_entry_long": (35, 70), "rsi_entry_short": (25, 65),
                 "adx_min": 10, "adx_sideway": 10, "adx_turbo": 28,
                 "di_min": 10, "di_turbo": 20,
                 "sl_pct": 0.034, "tp_pct": 0.18,
                 "cdc_atr_fast": 5, "cdc_mult_fast": 0.5,
                 "cdc_atr_slow": 10, "cdc_mult_slow": 2.0,
-                "vol_filter": 0.20, "sideway_pct": 1.2, # V5.2.1 ลด Vol 0.45->0.30 ตาม /check 04/11 19:00 Vol ❌
+                "sideway_pct": 1.2,
                 "retest_pct": 0.012,
                 "be_trigger": 0.01,
                 "lock_trigger": 0.02,
@@ -29,13 +28,12 @@ class Strategy_G_Power:
             },
             "gold": {
                 "ema_fast": 21, "ema_slow": 55, "ema_trend": 100,
-                "rsi_fast": 14, "rsi_entry_long": (40, 70), "rsi_entry_short": (25, 65),
                 "adx_min": 12, "adx_sideway": 12, "adx_turbo": 26,
                 "di_min": 10, "di_turbo": 20,
                 "sl_pct": 0.028, "tp_pct": 0.12,
                 "cdc_atr_fast": 10, "cdc_mult_fast": 1.0,
                 "cdc_atr_slow": 20, "cdc_mult_slow": 2.5,
-                "vol_filter": 0.20, "sideway_pct": 1.2,
+                "sideway_pct": 1.2,
                 "retest_pct": 0.012,
                 "be_trigger": 0.008, "lock_trigger": 0.015, "lock_pct": 0.004,
             },
@@ -43,12 +41,6 @@ class Strategy_G_Power:
         self.config = base.get(symbol_key, base["btc"])
 
     def _ema(self, s, p): return s.ewm(span=p, adjust=False).mean()
-    def _rsi(self, s, p):
-        d=s.diff()
-        g=d.where(d>0,0).ewm(alpha=1/p, adjust=False).mean()
-        l=(-d.where(d<0,0)).ewm(alpha=1/p, adjust=False).mean()
-        rs=g/l.replace(0,0.00001)
-        return 100-(100/(1+rs))
     def _atr(self, h,l,c,p=14):
         tr=pd.concat([h-l,(h-c.shift()).abs(),(l-c.shift()).abs()],axis=1).max(axis=1)
         return tr.ewm(alpha=1/p, adjust=False).mean()
@@ -91,13 +83,11 @@ class Strategy_G_Power:
         df['ema_fast']=self._ema(df['close'],c["ema_fast"])
         df['ema_slow']=self._ema(df['close'],c["ema_slow"])
         df['ema_trend']=self._ema(df['close'],c["ema_trend"])
-        df['rsi']=50.0  # ตัด RSI ออก
         df['atr']=self._atr(df['high'],df['low'],df['close'],14)
         pdi,mdi,adx,adx_s=self._adx_di(df['high'],df['low'],df['close'],14)
         df['plus_di']=pdi; df['minus_di']=mdi; df['adx']=adx; df['adx_slope']=adx_s
         tr, st, up=self._cdc(df)
         df['cdc_trend']=tr; df['cdc_stop']=st; df['cdc_up']=up
-        df['vol_avg']=df['volume'].rolling(20).mean()
         df['dist_ema_fast']= (df['close']-df['ema_fast']).abs()/df['close']
         df['cdc_dist_pct']=(df['close']-df['cdc_stop'])/df['close']*100
         return df
@@ -107,20 +97,18 @@ class Strategy_G_Power:
         c=self.config
         ema_diff=abs(curr['ema_fast']-curr['ema_slow'])/curr['close']*100
         sideway=(curr['adx']<c["adx_sideway"]) or (ema_diff<c["sideway_pct"] and curr['adx']<c["adx_turbo"])
-        # Retest - ราคาต้องใกล้ EMA fast
+        # Retest - ราคาต้องใกล้ EMA fast (ไม่ใช้ Volume แล้ว)
         retest=curr['dist_ema_fast'] <= c["retest_pct"]
-        vol_ok=True  # ตัด Vol ออก
         # CDC + DI
         long_core=curr['cdc_up'] and curr['plus_di']>curr['minus_di'] and curr['plus_di']>c["di_min"] and curr['adx']>c["adx_min"] and curr['close']>curr['ema_trend']
         short_core=not curr['cdc_up'] and curr['minus_di']>curr['plus_di'] and curr['minus_di']>c["di_min"] and curr['adx']>c["adx_min"] and curr['close']<curr['ema_trend']
         # Turbo bypass แต่ยังต้อง retest
         turbo_long=curr['adx']>c["adx_turbo"] and curr['plus_di']>c["di_turbo"]
         turbo_short=curr['adx']>c["adx_turbo"] and curr['minus_di']>c["di_turbo"]
-        # รวม - ต้องมี retest ถึงแม่น
-        # V5.2.3: Turbo bypass Vol - ถ้า ADX แรงมาก Vol บางก็เข้าได้ (แก้ GOLD $4131 Vol ❌ ADX 51.6)
+        # รวม - ต้องมี retest ถึงแม่น (ADX + DI ล้วน ไม่ใช้ RSI / Volume)
         long=(long_core or turbo_long) and retest
         short=(short_core or turbo_short) and retest
-        return {"long":long, "short":short, "sideway":sideway and not (turbo_long or turbo_short), "vol_ok":vol_ok, "retest":retest, "ema_diff":ema_diff, "long_core":long_core, "short_core":short_core}
+        return {"long":long, "short":short, "sideway":sideway and not (turbo_long or turbo_short), "retest":retest, "ema_diff":ema_diff, "long_core":long_core, "short_core":short_core}
 
     def check_reversal(self, prev, curr):
         # EMA cross + CDC flip = จุดกลับตัวแม่น
@@ -133,8 +121,16 @@ class Strategy_G_Power:
         return {"long":long, "short":short, "long_cross":long_cross, "short_cross":short_cross}
 
     def check_momentum(self, curr):
-        # ตัด RSI ออก - Momentum = True เสมอ ให้ Trend ตัดสิน
-        return {"long":True, "short":True, "rsi":50.0, "rsi_ok_long":True, "rsi_ok_short":True}
+        # ADX + DI ล้วน - ไม่ใช้ RSI แล้ว
+        c=self.config
+        long = curr['plus_di'] > curr['minus_di'] and curr['plus_di'] > c["di_min"] and curr['adx'] > c["adx_min"]
+        short = curr['minus_di'] > curr['plus_di'] and curr['minus_di'] > c["di_min"] and curr['adx'] > c["adx_min"]
+        # Turbo - ADX แรงมากยิ่งยืนยัน
+        turbo_long = curr['adx'] > c["adx_turbo"] and curr['plus_di'] > c["di_turbo"]
+        turbo_short = curr['adx'] > c["adx_turbo"] and curr['minus_di'] > c["di_turbo"]
+        long = long or turbo_long
+        short = short or turbo_short
+        return {"long":long, "short":short, "adx":curr['adx'], "plus_di":curr['plus_di'], "minus_di":curr['minus_di']}
 
     # 2. Trailing SL กันทุน/กำไร
     def get_trailing_sl(self, entry, curr_price, cdc_stop, signal, atr=None):
@@ -166,22 +162,20 @@ class Strategy_G_Power:
             cdc_flip=not curr['cdc_up'] and prev['cdc_up']
             ema_flip=curr['ema_fast']<curr['ema_slow'] and prev['ema_fast']>=prev['ema_slow']
             di_flip=curr['minus_di']>curr['plus_di'] and prev['plus_di']>=prev['minus_di'] and curr['adx']>15
-            should_tp=cdc_flip or ema_flip or di_flip  # ตัด RSI Exit ออก
+            should_tp=cdc_flip or ema_flip or di_flip
             reason=[]
             if cdc_flip: reason.append("CDC Flip")
             if ema_flip: reason.append(f"EMA{self.config['ema_fast']}x{self.config['ema_slow']} Cross Down")
             if di_flip: reason.append("DI Flip")
-            # ตัด RSI Exit ออก
             return {"tp":should_tp, "reasons":reason, "cdc_flip":cdc_flip, "ema_flip":ema_flip}
         elif open_signal=='SHORT':
             cdc_flip=curr['cdc_up'] and not prev['cdc_up']
             ema_flip=curr['ema_fast']>curr['ema_slow'] and prev['ema_fast']<=prev['ema_slow']
             di_flip=curr['plus_di']>curr['minus_di'] and prev['minus_di']>=prev['plus_di'] and curr['adx']>15
-            should_tp=cdc_flip or ema_flip or di_flip  # ตัด RSI Exit ออก
+            should_tp=cdc_flip or ema_flip or di_flip
             reason=[]
             if cdc_flip: reason.append("CDC Flip")
             if ema_flip: reason.append(f"EMA{self.config['ema_fast']}x{self.config['ema_slow']} Cross Up")
             if di_flip: reason.append("DI Flip")
-            # ตัด RSI Exit ออก
             return {"tp":should_tp, "reasons":reason, "cdc_flip":cdc_flip, "ema_flip":ema_flip}
         return {"tp":False, "reasons":[]}
