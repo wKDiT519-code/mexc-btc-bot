@@ -306,21 +306,28 @@ def make_chart_image(df, st, symbol_label, price, signal, cond, open_trades, tim
                         _diffs2=[abs(float(c)-_e) for c in data['close']]
                         _idx=int(min(range(len(_diffs2)), key=lambda k: _diffs2[k]))
                     except: continue
-                _x=px(_idx); _row=data.iloc[_idx]
+                _x=px(_idx)
+                # FIX: B/S ต้องอยู่ที่ราคา Entry เป๊ะๆ ไม่ใช่ High/Low ของแท่ง
+                # ถ้า 2 ไม้เปิดในแท่งเดียวกัน ให้ขยับ X ไม่ให้ทับกัน
+                if not hasattr(d, '_used_bs_x'): d._used_bs_x={}
+                _key=int(_idx)
+                _n_same=d._used_bs_x.get(_key, 0)
+                d._used_bs_x[_key]=_n_same+1
+                _x=_x + _n_same*44
+                _e_price=float(_ot.get('entry',0))
+                _y=py(_e_price)
                 if _sig=='LONG':
-                    _y=py(float(_row['low']))+28
                     d.ellipse([_x-16,_y-16,_x+16,_y+16],fill="#2ED573",outline="white",width=2)
                     d.text((_x-6,_y-10),"B",font=f_tiny,fill="white")
-                    # Entry ---------- value ข้างวงกลม B
-                    _ex=min(_x+24, cx1-280)
-                    d.text((_ex,_y-12),f"Entry {float(_ot.get('entry',0)):,.0f}",font=f_small,fill="white")
+                    # Entry ข้างวงกลม S/B ที่ราคา Entry เป๊ะๆ - ถ้า S อยู่ขอบขวาให้ข้อความไปซ้าย จะได้ไม่ทับป้ายราคาขวา
+                    _ex=_x-190 if _x > cx1-260 else _x+24
+                    d.text((_ex,_y-12+_n_same*24),f"Entry {_e_price:,.0f}",font=f_small,fill="white")
                 else:
-                    _y=py(float(_row['high']))-28
                     d.ellipse([_x-16,_y-16,_x+16,_y+16],fill="#FF4757",outline="white",width=2)
                     d.text((_x-6,_y-10),"S",font=f_tiny,fill="white")
-                    # Entry ---------- value ข้างวงกลม S
-                    _ex=min(_x+24, cx1-280)
-                    d.text((_ex,_y-12),f"Entry {float(_ot.get('entry',0)):,.0f}",font=f_small,fill="white")
+                    # Entry ข้างวงกลม S/B ที่ราคา Entry เป๊ะๆ - ถ้า S อยู่ขอบขวาให้ข้อความไปซ้าย จะได้ไม่ทับป้ายราคาขวา
+                    _ex=_x-190 if _x > cx1-260 else _x+24
+                    d.text((_ex,_y-12+_n_same*24),f"Entry {_e_price:,.0f}",font=f_small,fill="white")
         except Exception as _e: print(f"real B/S err {_e}")
         # เส้นtradesที่ถือ: Entry ขาว / SL แดง - ข้อความ ENTRY อยู่คู่กับวงกลม B/S (ตำแหน่งเปิดไม้จริง)
         for _oi, ot in enumerate(open_trades):
@@ -415,6 +422,7 @@ def make_chart_image(df, st, symbol_label, price, signal, cond, open_trades, tim
                 _pts=[(cx0+30+i*(cx1-cx0-60)/max(1,_n-1), apy(v)) for i,v in enumerate(_vals)]
                 if len(_pts)>1: d.line(_pts,fill=_col,width=2)
             # จุด B/S บนแผง ADX ด้วย - จะได้เห็นตอนเปิดไม้ ADX/DI เป็นยังไง (ถูก/ผิด)
+            _used_adx_x={}
             for _ot in open_trades:
                 _et=str(_ot.get('entry_time','') or '')
                 try:
@@ -427,6 +435,8 @@ def make_chart_image(df, st, symbol_label, price, signal, cond, open_trades, tim
                             except: _diffs.append(abs((pd.to_datetime(_d).to_pydatetime()-_tt).total_seconds()))
                         _idx=int(min(range(len(_diffs)), key=lambda k: _diffs[k]))
                         _x=cx0+30+_idx*(cx1-cx0-60)/max(1,_n-1)
+                        # ถ้า 2 ไม้แท่งเดียวกัน ขยับไม่ให้ทับกัน
+                        _c=_used_adx_x.get(int(_idx),0); _used_adx_x[int(_idx)]=_c+1; _x=_x+_c*32
                         _sig2=_ot.get('signal','')
                         _col2="#2ED573" if _sig2=='LONG' else "#FF4757"
                         _lab="B" if _sig2=='LONG' else "S"
