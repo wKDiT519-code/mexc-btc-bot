@@ -100,13 +100,13 @@ def calc_position(symbol_key="btc"):
     risk=CAPITAL*RISK_PCT
     pos=risk/sl if sl else risk/0.034
     return {"risk":risk,"pos":pos,"margin":pos/LEVERAGE,"sl":sl*100,"tp":tp*100,"rr":round(tp/sl,1)}
-def get_data(symbol="BTC/USDT"):
+def get_data(symbol="BTC/USDT", timeframe="15m"):
     candidates=[symbol]
     if "PAXG" in symbol: candidates+= ["PAXG/USDT","XAUT/USDT:USDT"]
     for sym in candidates:
         try:
             ex=ccxt.mexc({"options":{"defaultType":"swap"}})
-            ohlcv=ex.fetch_ohlcv(sym,'15m',limit=250)
+            ohlcv=ex.fetch_ohlcv(sym,timeframe,limit=250)
             if ohlcv and len(ohlcv)>50:
                 df=pd.DataFrame(ohlcv,columns=['timestamp','open','high','low','close','volume'])
                 df['datetime']=pd.to_datetime(df['timestamp'],unit='ms')
@@ -192,7 +192,7 @@ def make_portfolio_image(paper, unpnl, closed_pnl, win_rate, win_n, total_n, btc
     except Exception as e:
         print(f"make_image err {e}"); return None
 
-def make_chart_image(df, st, symbol_label, price, signal, cond, open_trades):
+def make_chart_image(df, st, symbol_label, price, signal, cond, open_trades, timeframe="15m"):
     # PIL chart - ไม่ใช้ matplotlib จะได้ไม่ต้องเพิ่ม lib บน Render
     try:
         from PIL import Image, ImageDraw, ImageFont
@@ -209,21 +209,27 @@ def make_chart_image(df, st, symbol_label, price, signal, cond, open_trades):
         # Header
         sig_color="#2ED573" if signal=="LONG" else "#FF4757" if signal=="SHORT" else "#8FA3C8"
         d.rounded_rectangle([30,30,W-30,150],radius=20,fill="#1E2A4A")
-        d.text((60,50),f"{symbol_label}  15m  G_POWER",font=f_big,fill="white")
+        d.text((60,50),f"{symbol_label}  {timeframe}  G_POWER",font=f_big,fill="white")
         d.text((60,105),f"${price:,.2f}  -  {signal}  -  {datetime.now().strftime('%d/%m %H:%M')}",font=f_small,fill=sig_color)
         # Legend
         d.text((60,170),"EMA Fast",font=f_tiny,fill="#2ED573")
         d.text((220,170),f"EMA Slow",font=f_tiny,fill="#FFD700")
         d.text((380,170),"EMA Trend",font=f_tiny,fill="#54A0FF")
         d.text((560,170),"CDC Stop",font=f_tiny,fill="#C56CF0")
-        d.text((720,170),"▲ Buy  ▼ Short",font=f_tiny,fill="white")
+        d.text((720,170),"EMA200",font=f_tiny,fill="#9B59B6")
+        d.text((850,170),"B Buy  S Short",font=f_tiny,fill="white")
         # Chart area
-        cx0,cy0,cx1,cy1=30,210,W-30,850
+        cx0,cy0,cx1,cy1=30,210,W-30,750
         d.rounded_rectangle([cx0,cy0,cx1,cy1],radius=16,fill="#141D33")
+        # EMA200 สำหรับสไตล์ TradingView ในรูป (BTC 1D ใช้ 200)
+        if 'ema200' not in df.columns:
+            try: df['ema200']=df['close'].ewm(span=200, adjust=False).mean()
+            except: df['ema200']=df['close']
         data=df.tail(80).reset_index(drop=True)
         if len(data)<5: return None
-        lo=float(data[['low','ema_trend','cdc_stop']].min().min())
-        hi=float(data[['high','ema_trend','cdc_stop']].max().max())
+        # FIX: ไม่เอา cdc_stop มาคิดสเกล เพราะ CDC Stop เป็น Trailing ที่ค้างที่ High เก่า ($71k) จะบีบกราฟให้เล็ก
+        lo=float(data[['low','ema_trend']].min().min())
+        hi=float(data[['high','ema_trend']].max().max())
         # เผื่อเส้นtradesที่ถือ
         for ot in open_trades:
             try:
@@ -260,11 +266,14 @@ def make_chart_image(df, st, symbol_label, price, signal, cond, open_trades):
         draw_line('ema_fast',"#2ED573",3)
         draw_line('ema_slow',"#FFD700",3)
         draw_line('ema_trend',"#54A0FF",2)
+        draw_line('ema200',"#9B59B6",2)
         # CDC stop dotted
         for i,row in data.iterrows():
             try:
-                x=px(i); y=py(float(row['cdc_stop']))
-                d.ellipse([x-2,y-2,x+2,y+2],fill="#C56CF0")
+                _cs=float(row['cdc_stop'])
+                if lo <= _cs <= hi:
+                    x=px(i); y=py(_cs)
+                    d.ellipse([x-2,y-2,x+2,y+2],fill="#C56CF0")
             except: pass
         # Buy / Short markers - เฉพาะจุดที่สัญญาณเปลี่ยน
         prev_sig=None
@@ -277,43 +286,71 @@ def make_chart_image(df, st, symbol_label, price, signal, cond, open_trades):
                 if cur and cur!=prev_sig:
                     x=px(i)
                     if cur=="LONG":
-                        y=py(float(row['low']))+22
-                        d.polygon([(x,y),(x-10,y+16),(x+10,y+16)],fill="#2ED573")
-                        d.text((x-16,y+20),"BUY",font=f_tiny,fill="#2ED573")
+                        y=py(float(row['low']))+28
+                        d.ellipse([x-14,y-14,x+14,y+14],fill="#2ED573",outline="white",width=2)
+                        d.text((x-6,y-9),"B",font=f_tiny,fill="white")
                     else:
-                        y=py(float(row['high']))-22
-                        d.polygon([(x,y),(x-10,y-16),(x+10,y-16)],fill="#FF4757")
-                        d.text((x-22,y-36),"SHORT",font=f_tiny,fill="#FF4757")
+                        y=py(float(row['high']))-28
+                        d.ellipse([x-14,y-14,x+14,y+14],fill="#FF4757",outline="white",width=2)
+                        d.text((x-6,y-9),"S",font=f_tiny,fill="white")
                 if cur: prev_sig=cur
             except: pass
-        # เส้นtradesที่ถือ: Entry ขาว / SL แดง
+        # เส้นtradesที่ถือ: Entry ขาว / SL แดง / TP เขียว
         for ot in open_trades:
             try:
                 e=float(ot['entry']); s=float(ot.get('sl',e))
-                ye=py(e); ys=py(s)
-                # dashed
+                _tp=float(ot.get('tp',0)) or (e*(1+st.config['tp_pct']) if ot.get('signal')=='LONG' else e*(1-st.config['tp_pct']))
+                ye=py(e); ys=py(s); yt=py(_tp)
                 for x in range(cx0+10,cx1-10,18): d.line([(x,ye),(x+9,ye)],fill="white",width=2)
                 for x in range(cx0+10,cx1-10,18): d.line([(x,ys),(x+9,ys)],fill="#FF4757",width=2)
+                # TP ไม่วาดเส้นบนกราฟ - โชว์แค่ในแผงล่างตามที่ตกลง
                 d.text((cx0+14,ye-22),f"ENTRY {ot.get('signal','')} ${e:,.0f}",font=f_tiny,fill="white")
                 d.text((cx0+14,ys+4),f"SL ${s:,.0f}",font=f_tiny,fill="#FF4757")
+                # no TP label on chart
             except: pass
-        # Condition panel
-        d.rounded_rectangle([30,870,W-30,1350],radius=20,fill="#141D33")
-        d.text((60,890),"CONDITIONS  -  ALL MUST PASS TO ENTER",font=f_mid,fill="white")
-        # cond dict จาก execute_symbol
-        rows=[
-            (f"CDC {'UP' if cond.get('cdc_up') else 'DOWN'}  Stop ${cond.get('cdc_stop',0):,.0f}", True),
-            (f"EMA{cfg['ema_fast']}/{cfg['ema_slow']}/{cfg['ema_trend']}  Close {' > ' if price>cond.get('ema_trend',price) else ' < '} Trend", True),
-            (f"RSI {cond.get('rsi',0):.0f}  (Long {cfg['rsi_entry_long'][0]}-{cfg['rsi_entry_long'][1]} / Short {cfg['rsi_entry_short'][0]}-{cfg['rsi_entry_short'][1]})", bool(cond.get('mom_long') or cond.get('mom_short') or cond.get('rsi',50) in range(25,71))),
-            (f"+DI {cond.get('plus_di',0):.1f}  -DI {cond.get('minus_di',0):.1f}  ADX {cond.get('adx',0):.1f} (min {cfg['adx_min']})", cond.get('adx',0)>=cfg['adx_min']),
-            (f"Retest {'YES' if cond.get('retest') else 'NO'}  -  Price near EMA Fast", bool(cond.get('retest'))),
-            (f"Vol {'OK' if cond.get('vol_ok') else 'LOW'}  -  Volume OK", bool(cond.get('vol_ok'))),
-            (f"Sideway {'YES - WAIT' if cond.get('sideway') else 'NO - TREND CLEAR'}", not cond.get('sideway')),
-            (f"Trend Long {cond.get('long')}  Short {cond.get('short')}  CanOpen {'YES' if cond.get('can_open') else 'NO'}  Open {cond.get('open_count',0)} trades", bool(cond.get('can_open'))),
-        ]
-        y=940
-        for txt,ok in rows:
-            d.text((60,y),("OK " if ok else "X  ")+txt,font=f_small,fill="#2ED573" if ok else "#FF4757" if "Retest" in txt or "Vol" in txt or "CanOpen" in txt else "white")
+        # RSI Panel สไตล์ TradingView - อยู่ใต้กราฟราคา
+        rx0,ry0,rx1,ry1=30,770,W-30,900
+        d.rounded_rectangle([rx0,ry0,rx1,ry1],radius=16,fill="#141D33")
+        d.text((60,778),"RSI",font=f_tiny,fill="#FFA502")
+        try:
+            rsi_vals=data['rsi'].astype(float).clip(0,100).tolist()
+            def rpy(v): return ry1-10 - v/100*(ry1-ry0-30)
+            # เส้น 70 / 30
+            for _lvl in [70,30]:
+                _y=rpy(_lvl)
+                for _x in range(rx0+10,rx1-10,14): d.line([(_x,_y),(_x+7,_y)],fill="#8FA3C8",width=1)
+                d.text((rx1-70,_y-10),str(_lvl),font=f_tiny,fill="#8FA3C8")
+            pts=[(cx0+30+i*(cx1-cx0-60)/max(1,len(data)-1), rpy(v)) for i,v in enumerate(rsi_vals)]
+            if len(pts)>1: d.line(pts,fill="#FFA502",width=2)
+            # ค่า RSI ล่าสุด
+            d.text((120,778),f"RSI {float(data.iloc[-1]['rsi']):.1f}  (30 / 70)",font=f_tiny,fill="white")
+        except Exception as e: print(f"rsi panel err {e}")
+        # แผง ENTRY / SL / TP - ตกลง: กราฟเดิม เปลี่ยนแค่ตรงนี้
+        d.rounded_rectangle([30,920,W-30,1350],radius=20,fill="#141D33")
+        d.text((60,940),"ENTRY / SL / TP",font=f_mid,fill="white")
+        _sl_pct=st.config.get('sl_pct',0.034); _tp_pct=st.config.get('tp_pct',0.18)
+        rows=[]
+        if open_trades:
+            for _i,_ot in enumerate(open_trades):
+                _e=float(_ot.get('entry',price)); _s=float(_ot.get('sl',_e))
+                _tp=float(_ot.get('tp',0)) or (_e*(1+_tp_pct) if _ot.get('signal')=='LONG' else _e*(1-_tp_pct))
+                _sig=_ot.get('signal','')
+                _pnl = (price-_e)/_e*100 if _sig=='LONG' else (_e-price)/_e*100
+                _sl_d = (_s-_e)/_e*100 if _sig=='LONG' else (_e-_s)/_e*100  # ระยะ SL จาก Entry (ติดลบถ้า LONG, บวกถ้า SHORT - ใช้ abs ในแสดงผล)
+                _sl_abs = abs(_s-_e)/_e*100; _tp_abs = abs(_tp-_e)/_e*100
+                # 1 ไม้ = 1 บรรทัดหลักตามที่ตกลง: SHORT 63617 SL 64167 TP 52166 NOW 63367
+                rows.append((f"{_sig}  {_e:,.0f}  SL {_s:,.0f}  TP {_tp:,.0f}  NOW {price:,.0f}", "#2ED573" if _sig=='LONG' else "#FF4757"))
+                rows.append((f"PnL {_pnl:+.2f}%  |  SL {_sl_abs:.2f}%  |  TP {_tp_abs:.2f}%  |  RR {_tp_abs/max(_sl_abs,0.01):.1f}R", "#FFA502"))
+        else:
+            _l_sl=price*(1-_sl_pct); _l_tp=price*(1+_tp_pct)
+            _s_sl=price*(1+_sl_pct); _s_tp=price*(1-_tp_pct)
+            rows.append((f"No Open Trade - Plan at NOW {price:,.0f}", "white"))
+            rows.append((f"LONG  {price:,.0f}  SL {_l_sl:,.0f}  TP {_l_tp:,.0f}  NOW {price:,.0f}", "#2ED573"))
+            rows.append((f"SHORT  {price:,.0f}  SL {_s_sl:,.0f}  TP {_s_tp:,.0f}  NOW {price:,.0f}", "#FF4757"))
+            rows.append((f"RR {_tp_pct/max(_sl_pct,0.001):.1f}R  -  SL {_sl_pct*100:.1f}% / TP {_tp_pct*100:.0f}%", "#FFA502"))
+        y=990
+        for txt,col in rows:
+            d.text((60,y),txt,font=f_small,fill=col)
             y+=42
         d.text((60,1370),"MEXC Paper Only - Not Real Trade  |  /chart btc  /chart gold  /chart all",font=f_tiny,fill="#8FA3C8")
         buf=io.BytesIO(); img.save(buf,format="PNG"); buf.seek(0); return buf.getvalue()
@@ -335,7 +372,7 @@ def send_chart_on_open(symbol, r, df=None):
         trades=load_trades()
         kk=st.symbol_key
         opens=[x for x in trades if x.get("symbol_key")==kk and str(x.get("status")).upper() in ["OPEN","PAPER_OPEN","PAPER"]]
-        o_list=[{"signal":o.get("signal",""),"entry":float(o.get("entry",0)),"sl":float(o.get("sl",o.get("entry",0)))} for o in opens]
+        o_list=[{"signal":o.get("signal",""),"entry":float(o.get("entry",0)),"sl":float(o.get("sl",o.get("entry",0))),"tp":float(o.get("tp",0))} for o in opens]
         img=make_chart_image(df, st, symbol, float(r.get("price", df.iloc[-1]["close"])), r.get("signal","WAIT"), r, o_list)
         sig=r.get("signal","")
         cap=f"🚀 OPEN {sig} {symbol} ${r.get('price',0):,.2f} SL ${r.get('price',0)*(1-st.config['sl_pct']) if sig=='LONG' else r.get('price',0)*(1+st.config['sl_pct']):,.2f} RSI {r.get('rsi',0):.0f} ADX {r.get('adx',0):.1f} Retest {'✅' if r.get('retest') else '❌'} Vol {'✅' if r.get('vol_ok') else '❌'}"
@@ -555,12 +592,15 @@ async def webhook(request: Request):
             return {'ok':True}
         elif tl.startswith('/chart'):
             parts=tl.split(); key='btc' if len(parts)<2 else parse_sym(parts[1])[0]
+            tf='15m'
+            if len(parts)>=3 and parts[2].lower() in ['15m','1h','4h','1d','1w']: tf=parts[2].lower()
+            elif len(parts)>=3 and parts[2].lower() in ['15','60','240']: tf={'15':'15m','60':'1h','240':'4h'}[parts[2].lower()]
             if key=="unknown": send_tele(f"❓ ไม่มีเหรียญ {parts[1]} แล้ว มีแค่ BTC / GOLD", chat_id); return {"ok":True}
             keys=['btc','gold'] if key=='all' else [key]
             for kk in keys:
                 try:
                     sym=SYMBOLS[kk]; st=STRATS[kk]
-                    df=get_data(sym)
+                    df=get_data(sym, tf)
                     if isinstance(df,tuple): send_tele(f"{kk.upper()} ❌ {df[1]}", chat_id); continue
                     df2=st.add_indicators(df)
                     r=execute_symbol(sym)
@@ -570,8 +610,8 @@ async def webhook(request: Request):
                     o_list=[]
                     for ot in opens:
                         o_list.append({'signal':ot.get('signal',''),'entry':float(ot.get('entry',0)),'sl':float(ot.get('sl',ot.get('entry',0)))})
-                    img_bytes=make_chart_image(df2, st, sym, float(r.get('price', df2.iloc[-1]['close'])), r.get('signal','WAIT'), r, o_list)
-                    cap=f"📈 {sym} ${r.get('price',0):,.2f} {r.get('signal','WAIT')} RSI {r.get('rsi',0):.0f} ADX {r.get('adx',0):.1f} +DI {r.get('plus_di',0):.1f} -DI {r.get('minus_di',0):.1f} CDC {'UP' if r.get('cdc_up') else 'DOWN'} Retest {'✅' if r.get('retest') else '❌'} Vol {'✅' if r.get('vol_ok') else '❌'} Open {r.get('open_count',0)}"
+                    img_bytes=make_chart_image(df2, st, sym, float(r.get('price', df2.iloc[-1]['close'])), r.get('signal','WAIT'), r, o_list, tf)
+                    cap=f"📈 {sym} {tf} ${r.get('price',0):,.2f} {r.get('signal','WAIT')} RSI {r.get('rsi',0):.0f} ADX {r.get('adx',0):.1f} +DI {r.get('plus_di',0):.1f} -DI {r.get('minus_di',0):.1f} CDC {'UP' if r.get('cdc_up') else 'DOWN'} Retest {'✅' if r.get('retest') else '❌'} Vol {'✅' if r.get('vol_ok') else '❌'} Open {r.get('open_count',0)}"
                     if img_bytes: send_tele_photo(img_bytes, cap, chat_id)
                     else: send_tele(cap+"\n(สร้างรูปกราฟไม่ได้)", chat_id)
                 except Exception as e: send_tele(f"{kk.upper()} CHART Error: {e}", chat_id)
@@ -616,7 +656,7 @@ async def webhook(request: Request):
             send_tele(f"🔴 Auto OFF {key.upper()}", chat_id)
             return {"ok":True}
         else:
-            send_tele(f"❓ {text}\n/check [btc|gold|all]\n/chart [btc|gold|all] = กราฟ+EMA+Buy/Short\n/on [btc|gold|all]\n/off [btc|gold|all]\n/portfolio = รูปสรุปพอร์ต\n/info = รูปอย่างเดียว\n/live [btc|gold]", chat_id)
+            send_tele(f"❓ {text}\n/check [btc|gold|all]\n/chart [btc|gold|all] [15m|1h|4h|1d] = กราฟ TradingView + EMA200 + RSI\n/on [btc|gold|all]\n/off [btc|gold|all]\n/portfolio = รูปสรุปพอร์ต\n/info = รูปอย่างเดียว\n/live [btc|gold]", chat_id)
             return {"ok":True}
     except Exception as e:
         print(f"ERR {e}"); return {"ok":True}
