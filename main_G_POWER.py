@@ -1,5 +1,5 @@
-"""G_POWER V6.1 SMC - BTC+GOLD - Real MEXC data only - EMA50/100/200 + Checklist 6 + Exit V6.1"""
-# V6.1 716 lines - SMC + EMA50/100/200 + Fix /close gold
+"""G_POWER V5.6.1.1 - BTC+GOLD - Real MEXC data only"""
+# 379 lines fixed - _m sets default config if old strategy has no ema_fast
 from fastapi import FastAPI, Query, Request
 from fastapi.responses import HTMLResponse
 try:
@@ -389,7 +389,14 @@ def execute_symbol(symbol, manage_open=True):
                 ot['sl']=new_sl; ot['trailing']=f"Trail {old_sl:.0f}->{new_sl:.0f}"; actions.append(f"Trailing LONG {symbol} SL {old_sl:.0f}->{new_sl:.0f}")
             elif sig=='SHORT' and new_sl<old_sl:
                 ot['sl']=new_sl; ot['trailing']=f"Trail {old_sl:.0f}->{new_sl:.0f}"; actions.append(f"Trailing SHORT {symbol} SL {old_sl:.0f}->{new_sl:.0f}")
+            # V6.2 Pattern TP: ถ้าราคาถึง Pattern TP ที่คำนวณไว้ตอนเปิดไม้ ให้ปิดเลย (ไม่ต้องรอ TP 18%/12% หรือ Trend Change)
+            try:
+                _ptp=float(ot.get("pattern_tp", ot.get("tp", 0)))
+                _hit_ptp=(price>=_ptp and sig=="LONG") or (price<=_ptp and sig=="SHORT")
+            except: _hit_ptp=False
             exit_info=st.check_exit_trend_change(curr, prev, sig, smc=smc_info_early, df=df)
+            if _hit_ptp:
+                exit_info={"tp": True, "reasons": [f"Pattern TP { _ptp:.2f}"], "cdc_flip": False, "ema_flip": False}
             if exit_info['tp']:
                 ot['status']='CLOSED'; ot['result']='WIN' if (price>entry and sig=='LONG') or (price<entry and sig=='SHORT') else 'LOSS'
                 ot['exit']=price; ot['exit_time']=datetime.now().isoformat(); ot['exit_reason']='TREND CHANGE: '+','.join(exit_info['reasons'])
@@ -411,7 +418,7 @@ def execute_symbol(symbol, manage_open=True):
             if (trend['long'] and existing_sig!='LONG') or (trend['short'] and existing_sig!='SHORT'):
                 can_open=False  # ไม่เพิ่มtradesสวนทาง
         if can_open and not trend['sideway']:
-            # V6.1 SMC+PULLBACK ENTRY: ไม่ต้องWAIT cross ทุกครั้ง
+            # V5.2.2 PULLBACK ENTRY: ไม่ต้องWAIT cross ทุกครั้ง
             if trend['long'] and mom['long']:
                 signal="LONG"
             elif trend['short'] and mom['short']:
@@ -425,24 +432,35 @@ def execute_symbol(symbol, manage_open=True):
                 signal="COOLDOWN"
         if signal in ['LONG','SHORT'] and can_open:
             pos_info=calc_position(symbol_key)
+            # Pattern TP V6.2: ถ้า Pattern ที่เข้าเป็นกลุ่มวัด TP ได้ (Flag/Triangle/Double/QML/SMC) ให้ใช้ TP นั้นเป็น TP หลัก
+            # ถ้าวัดไม่ได้ (Engulfing/Pin Bar) ให้ใช้ TP ตายตัวเดิม BTC 18% / GOLD 12%
+            pattern_tp_info=None
+            try:
+                # หาชื่อ Pattern ที่เข้า - ใช้จาก trend/smc หรือเดาจาก smc detail ถ้าไม่มีให้ลอง Flag เป็นตัวแทนวัดระยะ
+                _pat="flag"  # วัดระยะจาก Swing เป็นตัวแทน ถ้า Pattern จริงเป็น Flag/Triangle/Double/QML จะใกล้เคียงกัน
+                pattern_tp_info=st.get_pattern_tp(df, signal, _pat) if hasattr(st, 'get_pattern_tp') else None
+            except: pattern_tp_info=None
+            pattern_tp_price=pattern_tp_info["tp"] if pattern_tp_info else (price*(1+st.config['tp_pct']) if signal=='LONG' else price*(1-st.config['tp_pct']))
             new_trade={
                 "id":len(trades)+1,
                 "symbol":symbol,
                 "symbol_key":symbol_key,
                 "signal":signal,
+                "pattern_tp":pattern_tp_price,
+                "pattern_tp_info":pattern_tp_info,
                 "entry":price,
                 "entry_time":datetime.now().isoformat(),
                 "position_size":pos_info['pos'],
                 "sl":price*(1-st.config['sl_pct']) if signal=='LONG' else price*(1+st.config['sl_pct']),
-                "tp":price*(1+st.config['tp_pct']) if signal=='LONG' else price*(1-st.config['tp_pct']),
+                "tp":pattern_tp_price,
                 "status":"PAPER_OPEN",
                 "real":False,
-                "note":f"V6.1 SMC pullback rev:{rev['long'] or rev['short']}"
+                "note":f"V6.1 SMC pullback rev:{rev['long'] or rev['short']} pattern_tp:{pattern_tp_price:.2f}"
             }
             trades.append(new_trade)
             save_trades(trades)
             set_last_trade_time(symbol_key)
-            actions.append(f"OPEN {signal} {symbol} ${price:.2f} SL {new_trade['sl']:.2f}")
+            actions.append(f"OPEN {signal} {symbol} ${price:.2f} SL {new_trade['sl']:.2f} PatternTP {pattern_tp_price:.2f}")
         _is_new = any(a.startswith("OPEN ") for a in actions)
         return {"ok":True,"symbol":symbol,"symbol_key":symbol_key,"signal":signal,"price":price,"new_trade":_is_new,
                 "plus_di":float(curr['plus_di']),"minus_di":float(curr['minus_di']),"adx":float(curr['adx']),
@@ -481,7 +499,7 @@ async def webhook(request: Request):
                 if key!='all' and k!=key: continue
                 results[k]=execute_symbol(SYMBOLS[k])
             trades=load_trades(); auto=get_auto_state(); bal=get_mexc_balance()
-            out=f"📊 <b>G_POWER V6.1 SMC CHECK {key.upper()}</b> {datetime.now().strftime('%d/%m %H:%M')}\n"
+            out=f"📊 <b>G_POWER V5.2.2 CHECK {key.upper()}</b> {datetime.now().strftime('%d/%m %H:%M')}\n"
             for k,r in results.items():
                 if not r.get('ok'): out+=f"\n{k.upper()} ❌ {r.get('error')}\n"
                 else:
@@ -500,7 +518,7 @@ async def webhook(request: Request):
                     out+=f"{sig} {ot['symbol']} Entry ${entry:,.2f} Now ${curr_p:,.2f} UnPnL ${upnl:+.2f} ({upp:+.1f}%) SL ${sl:,.2f} {ot.get('trailing','')}\n"
             else: out+=f"\n📌 ไม่มีtradesถืออยู่ - WAIT\n"
             if bal.get('ok'): out+=f"\n🏦 MEXC {bal.get('total')} USDT | Pos {len(bal.get('positions',[]))}\n"
-            out+=f"\n✅ V6.1 SMC + EMA50/100/200 + PULLBACK + BTC+GOLD\n💡 1.Retest 2.Trailing 3.TP Trend"
+            out+=f"\n✅ V5.2.2 VOL 0.25 + PULLBACK + BTC+GOLD FIX\n💡 1.Retest 2.Trailing 3.TP Trend"
             send_tele(out, chat_id)
             # AUTO: เปิดไม้ใหม่ -> ส่งกราฟทันที
             for _k,_r in results.items():
@@ -660,7 +678,7 @@ async def webhook(request: Request):
             parts=tl.split(); key='all' if len(parts)<2 else parse_sym(parts[1])[0]
             if key=="unknown": send_tele(f"❓ ไม่มีเหรียญ {parts[1]} แล้ว มีแค่ BTC / GOLD", chat_id); return {"ok":True}
             set_auto_state(key, True)
-            send_tele(f"🟢 Auto ON {key.upper()} {datetime.now().strftime('%d/%m %H:%M')} V6.1 SMC+PULLBACK", chat_id)
+            send_tele(f"🟢 Auto ON {key.upper()} {datetime.now().strftime('%d/%m %H:%M')} V5.2.2 PULLBACK", chat_id)
             return {"ok":True}
         elif tl.startswith('/off'):
             parts=tl.split(); key='all' if len(parts)<2 else parse_sym(parts[1])[0]
@@ -713,4 +731,4 @@ def ping():
 @app.get("/", response_class=HTMLResponse)
 def home():
     auto=get_auto_state()
-    return f"<html><body style='background:#0a0e1a;color:#fff;font-family:Arial;padding:20px'><h1>G_POWER V6.1 SMC BTC+GOLD</h1><p>BTC {'🟢' if auto.get('btc') else '🔴'} GOLD {'🟢' if auto.get('gold') else '🔴'}</p><p>✅ V6.1 SMC + EMA50/100/200 | PULLBACK ENTRY | BTC+GOLD</p><a href='/ping'>Ping</a></body></html>"
+    return f"<html><body style='background:#0a0e1a;color:#fff;font-family:Arial;padding:20px'><h1>G_POWER V5.2.3 BTC+GOLD 2COINS</h1><p>BTC {'🟢' if auto.get('btc') else '🔴'} GOLD {'🟢' if auto.get('gold') else '🔴'}</p><p>✅ VOL 0.25 | PULLBACK ENTRY | BTC+GOLD FIX</p><a href='/ping'>Ping</a></body></html>"
