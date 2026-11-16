@@ -89,7 +89,11 @@ def run_bt(symbol, days=30, capital=40.0):
         # --- ว่าง: เช็คเข้า Pullback ---
         if not pos:
             smc = st.check_smc(df.iloc[:i+1]) if hasattr(st, 'check_smc') else None
-            trend = st.check_trend(curr, prev, smc=smc)
+            # รองรับทั้ง strategy ใหม่ (รับ smc) และเก่า (ไม่รับ smc) - ถ้าเก่าจะได้ไม่พัง
+            try:
+                trend = st.check_trend(curr, prev, smc=smc)
+            except TypeError:
+                trend = st.check_trend(curr, prev)
             side = "LONG" if trend["long"] else "SHORT" if trend["short"] else None
             if side:
                 sl = price*(1-c["sl_pct"]) if side=="LONG" else price*(1+c["sl_pct"])
