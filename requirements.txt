@@ -5,4 +5,3 @@ numpy
 ccxt
 requests
 python-multipart
-Pillow
