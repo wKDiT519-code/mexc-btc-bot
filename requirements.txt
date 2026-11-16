@@ -5,3 +5,4 @@ numpy
 ccxt
 requests
 python-multipart
+Pillow==10.4.0
