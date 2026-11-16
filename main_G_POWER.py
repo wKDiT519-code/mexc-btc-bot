@@ -1,5 +1,5 @@
 """G_POWER V5.6.1.1 - BTC+GOLD - Real MEXC data only"""
-# 379 lines fixed - _m sets default config if old strategy has no ema_fast
+# V6.1 716 lines - SMC + EMA50/100/200 + Fix /close gold
 from fastapi import FastAPI, Query, Request
 from fastapi.responses import HTMLResponse
 try:
@@ -235,10 +235,15 @@ def make_chart_image(df, st, symbol_label, price, signal, cond, open_trades, tim
         # กันโซนตัวเลขขวา 150px ไว้: แท่งราคา/EMA/S จบที่ cx1-170 จะได้ไม่ทับตัวเลขราคา
         _chart_right=cx1-170
         def px(i): return cx0+30 + i*(_chart_right-cx0-60)/max(1,len(data)-1)
+        # คำนวณ Y ของราคาปิดแท่งสุดท้ายก่อน เพื่อกันตัวเลขกริดทับป้ายราคาสุดท้าย
+        try: _y_last_pre=py(float(data.iloc[-1]['close']))
+        except: _y_last_pre=-9999
         for k in range(4):
             yv=cy0+20+k*(cy1-cy0-40)//3
             pv=hi-(hi-lo)*(yv-cy0)/(cy1-cy0)
             d.line([(cx0+10,yv),(_chart_right,yv)],fill="#1E2A4A",width=1)
+            # ถ้าตัวเลขกริดอยู่ใกล้ป้ายราคาสุดท้าย (<22px) ให้ข้ามตัวเลขกริดนั้นไป จะได้ไม่ทับกัน
+            if abs(yv-_y_last_pre)<22: continue
             d.text((cx1-150,yv-10),f"{pv:,.0f}",font=f_tiny,fill="#8FA3C8")
         cw=(_chart_right-cx0-60)/max(1,len(data))*0.6
         for i,row in data.iterrows():
@@ -372,6 +377,9 @@ def execute_symbol(symbol, manage_open=True):
         price=float(curr['close'])
         trades=load_trades()
         open_trades=[t for t in trades if t.get('symbol')==symbol and str(t.get('status')).upper() in ['OPEN','PAPER_OPEN','PAPER']]
+        # V6.1: คำนวณ SMC ตั้งแต่ต้น (ก่อนเช็ค exit) ไม่งั้นตอนเช็คปิดไม้จะไม่มี smc
+        try: smc_info_early=st.check_smc(df)
+        except Exception: smc_info_early=None
         actions=[]
         for ot in open_trades:
             entry=float(ot['entry']); sig=ot['signal']
@@ -381,7 +389,7 @@ def execute_symbol(symbol, manage_open=True):
                 ot['sl']=new_sl; ot['trailing']=f"Trail {old_sl:.0f}->{new_sl:.0f}"; actions.append(f"Trailing LONG {symbol} SL {old_sl:.0f}->{new_sl:.0f}")
             elif sig=='SHORT' and new_sl<old_sl:
                 ot['sl']=new_sl; ot['trailing']=f"Trail {old_sl:.0f}->{new_sl:.0f}"; actions.append(f"Trailing SHORT {symbol} SL {old_sl:.0f}->{new_sl:.0f}")
-            exit_info=st.check_exit_trend_change(curr, prev, sig)
+            exit_info=st.check_exit_trend_change(curr, prev, sig, smc=smc_info_early, df=df)
             if exit_info['tp']:
                 ot['status']='CLOSED'; ot['result']='WIN' if (price>entry and sig=='LONG') or (price<entry and sig=='SHORT') else 'LOSS'
                 ot['exit']=price; ot['exit_time']=datetime.now().isoformat(); ot['exit_reason']='TREND CHANGE: '+','.join(exit_info['reasons'])
@@ -391,7 +399,9 @@ def execute_symbol(symbol, manage_open=True):
         if actions:
             save_trades(trades)
         rev=st.check_reversal(prev,curr)
-        trend=st.check_trend(curr)
+        # SMC Checklist 6 ข้อ: ใช้ตัวเดียวกับที่เช็ค exit ข้างบน
+        smc_info=smc_info_early
+        trend=st.check_trend(curr, prev, smc=smc_info)
         mom=st.check_momentum(curr)
         signal="WAIT"
         # V5.2.4 PYRAMID: เข้าเพิ่มได้ถ้ามีจังหวะดี จาก 1 เป็น 3 trades
@@ -567,10 +577,9 @@ async def webhook(request: Request):
             return {'ok':True}
         elif tl.startswith('/chart'):
             parts=tl.split(); key='btc' if len(parts)<2 else parse_sym(parts[1])[0]
-            # แสดงภาพอย่างเดียว 30m (80 แท่ง = 40 ชม. กว้างกว่า 15m 2 เท่า) - กลยุทธ์เทรดยัง 15m เหมือนเดิม
-            tf='30m'
-            if len(parts)>=3 and parts[2].lower() in ['15m','30m','1h','4h','1d','1w']: tf=parts[2].lower()
-            elif len(parts)>=3 and parts[2].lower() in ['15','30','60','240']: tf={'15':'15m','30':'30m','60':'1h','240':'4h'}[parts[2].lower()]
+            tf='15m'
+            if len(parts)>=3 and parts[2].lower() in ['15m','1h','4h','1d','1w']: tf=parts[2].lower()
+            elif len(parts)>=3 and parts[2].lower() in ['15','60','240']: tf={'15':'15m','60':'1h','240':'4h'}[parts[2].lower()]
             if key=="unknown": send_tele(f"❓ ไม่มีเหรียญ {parts[1]} แล้ว มีแค่ BTC / GOLD", chat_id); return {"ok":True}
             keys=['btc','gold'] if key=='all' else [key]
             for kk in keys:
@@ -593,21 +602,49 @@ async def webhook(request: Request):
                 except Exception as e: send_tele(f"{kk.upper()} CHART Error: {e}", chat_id)
             return {"ok":True}
         elif tl.startswith('/close'):
+            # FIX: /close gold ต้องปิดแค่ GOLD / /close btc ปิดแค่ BTC / /close all ปิดทั้งหมด
+            # เดิม: ไม่ว่าพิมพ์อะไรก็ปิดทั้งหมด (เคสพี่พิมพ์ /close gold แล้ว BTC โดนปิดไปด้วย)
+            _arg=tl.replace('/close','').strip().lower()
+            _want=None
+            if _arg in ['gold','paxg','xau']: _want='gold'
+            elif _arg in ['btc','bitcoin']: _want='btc'
+            elif _arg in ['all','']: _want=None
+            else: _want=None
             trades=load_trades(); opens=[t for t in trades if str(t.get('status')).upper() in ['OPEN','PAPER_OPEN','PAPER']]
-            if not opens: send_tele('ไม่มีtradesถืออยู่', chat_id); return {'ok':True}
+            if _want is not None: opens=[o for o in opens if o.get('symbol_key')==_want]
+            if not opens: send_tele(f"ไม่มีtrades {_want if _want else ''} ถืออยู่", chat_id); return {'ok':True}
             results={}
             for k in ['btc','gold']:
                 try: results[k]=execute_symbol(SYMBOLS[k])
                 except: results[k]={'ok':False}
-            total=0; out=f"CLOSE ALL {len(opens)} trades\n"
+            total=0; out=f"CLOSE {(_want.upper() if _want else 'ALL')} {len(opens)} trades\n"
             for ot in opens:
                 key=ot.get('symbol_key','btc'); curr_p=results.get(key,{}).get('price', ot.get('entry')); entry=float(ot['entry']); sig=ot['signal']; ps=float(ot.get('position_size',0))
                 pnl=(curr_p-entry)/entry*ps if sig=='LONG' else (entry-curr_p)/entry*ps
                 total+=pnl; ot['status']='CLOSED'; ot['result']='WIN' if pnl>0 else 'LOSS'; ot['exit']=curr_p; ot['exit_time']=datetime.now().isoformat(); ot['exit_reason']='MANUAL CLOSE'; ot['pnl_usd']=pnl
                 out+=f"{sig} {ot['symbol']} PnL ${pnl:+.2f}\n"
-            save_trades(trades); set_auto_state('all', False)
-            out+=f"รวม PnL ${total:+.2f} Auto OFF แล้ว"
+            save_trades(trades)
+            if _want is None: set_auto_state('all', False); out+=f"รวม PnL ${total:+.2f} Auto OFF แล้ว"
+            else: set_auto_state(_want, False); out+=f"รวม PnL ${total:+.2f} Auto {_want.upper()} OFF แล้ว (อีกตัววิ่งต่อ)" 
             send_tele(out, chat_id); return {'ok':True}
+        elif tl.startswith('/bt'):
+            # ดูผล BT ล่าสุดจาก Disk (ไม่ต้องเข้า Shell) - ถ้ายังไม่เคยรัน BT จะบอกให้รันใน Shell ก่อน
+            try:
+                import json as _js
+                f=DATA_DIR/"bt_results.json"
+                if not f.exists():
+                    send_tele("ยังไม่มีผล BT ครับ รันใน Render Shell ก่อน: python backtest_G_POWER.py --days 30 แล้วพิมพ์ /bt อีกที", chat_id); return {'ok':True}
+                out=_js.loads(f.read_text())
+                lines=["📊 BT ล่าสุด (15m MEXC Perp)"]
+                for sym in ["btc","gold"]:
+                    if sym not in out: continue
+                    r=out[sym]
+                    lines.append(f"\n{'BTC' if sym=='btc' else 'GOLD'} {r['days']} วัน: {r['trades']} ไม้ Win {r['winrate_pct']}% PnL ${r['total_pnl']:+.2f} ทุน ${r['capital_start']} -> ${r['capital_end']} PF {r['profit_factor']}")
+                    lines.append(f"Avg Win ${r['avg_win']:+.2f} / Avg Loss ${r['avg_loss']:+.2f}")
+                    for tr in r['trade_list'][-5:]:
+                        lines.append(f"  {tr['side']} {tr['entry']:.1f}->{tr['exit']:.1f} {tr['exit_reason']} ${tr['pnl_usd']:+.2f}")
+                send_tele("\n".join(lines), chat_id); return {'ok':True}
+            except Exception as e: send_tele(f"/bt Error: {e}", chat_id); return {'ok':True}
         elif tl.startswith('/reset'):
             trades=load_trades(); opens=[t for t in trades if str(t.get('status')).upper() in ['OPEN','PAPER_OPEN','PAPER']]
             if opens: send_tele(f"ยังถือ {len(opens)} tradesอยู่! พิมพ์ /close all ก่อน", chat_id); return {'ok':True}
@@ -632,7 +669,7 @@ async def webhook(request: Request):
             send_tele(f"🔴 Auto OFF {key.upper()}", chat_id)
             return {"ok":True}
         else:
-            send_tele(f"❓ {text}\n/check [btc|gold|all]\n/chart [btc|gold|all] [30m|15m|1h|4h|1d] = กราฟ TradingView + EMA200 + ADX/DI\n/on [btc|gold|all]\n/off [btc|gold|all]\n/portfolio = รูปสรุปพอร์ต\n/info = รูปอย่างเดียว\n/live [btc|gold]", chat_id)
+            send_tele(f"❓ {text}\n/check [btc|gold|all]\n/chart [btc|gold|all] [15m|1h|4h|1d] = กราฟ TradingView + EMA200 + ADX/DI\n/on [btc|gold|all]\n/off [btc|gold|all]\n/portfolio = รูปสรุปพอร์ต\n/info = รูปอย่างเดียว\n/live [btc|gold]", chat_id)
             return {"ok":True}
     except Exception as e:
         print(f"ERR {e}"); return {"ok":True}
