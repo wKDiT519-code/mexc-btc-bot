@@ -1,237 +1,394 @@
-
 """
-G_POWER V2.8 B - LONG/SHORT ไม่ดู EMA200 + EMA12x26 ทั้งคู่
-- LONG: ไม่ดู EMA200 เปิดได้แม้ใต้ EMA200 ถ้า CDC เขียว + DI BLUE + EMA12>EMA26
-- SHORT: ไม่ดู EMA200 เปิดได้แม้เหนือ EMA200 ถ้า CDC แดง + DI BEAR + EMA12<EMA26
-- แก้บอทเงียบ /check + Render suspend ไม่มี Disk
+G_POWER V5.0 TREND FOLLOWING - ADX + DI ล้วน (ไม่มี RSI / Volume แล้ว)
+1. จุดเข้าแม่น - Retest + ADX + DI + CDC + EMA
+2. ยังอยู่ในเทรน -> Trailing SL กันทุน/กำไร (BE -> Lock -> CDC Trail)
+3. TP เมื่อเปลี่ยนเทรน - CDC Flip / EMA Cross / DI Cross
 """
 
 import pandas as pd
 import numpy as np
 
 class Strategy_G_Power:
-    def __init__(self):
-        self.name = "G_POWER V2.8 B - ไม่ดู EMA200 + EMA12x26 - NO DISK"
-        self.config = {
-            "ema_fast": 12,
-            "ema_slow": 26,
-            "ema_trend": 200,
-            "rsi_fast": 12,
-            "rsi_slow": 26,
-            "rsi_trend": 200,
-            "sweep_lookback": 20,
-            "fractal_period": 5,
-            "mfi_period": 14,
-            "obv_fast": 3,
-            "obv_slow": 9,
-            "adx_min": 15,
-            "adx_sideway": 15,
-            "di_min": 15,
-            "sl_pct": 0.034,
-            "tp_pct": 0.18,
-            "sl_atr_mult": 1.5,
-            "risk_per_trade": 0.02,
-            "max_positions": 2,
-            "cooldown_after_2_losses": 16,
-            "cdc_atr_fast": 5,
-            "cdc_mult_fast": 0.5,
-            "cdc_atr_slow": 10,
-            "cdc_mult_slow": 2.0,
-            "cdc_use": True,
-            "sideway_pct": 0.015,
+    def __init__(self, symbol_key="btc"):
+        self.symbol_key = symbol_key
+        self.name = f"G_POWER V5.0 TREND {symbol_key.upper()}"
+        base = {
+            "btc": {
+                # BTC นิสัย: เร็ว + เหวี่ยงแรง + หลอกบ่อย (15m ATR% ~0.8-1.2% vs GOLD ~0.3-0.5%)
+                # เลยต้อง: EMA เร็วกว่า GOLD นิดนึง / ADX สูงกว่า (กรองหลอก) / Retest กว้างกว่า (noise ใหญ่) / ห้ามไล่กว้างกว่า (BTC ยืดได้ 3%)
+                "ema_fast": 15, "ema_slow": 40, "ema_trend": 80, "ema50": 50, "ema100": 100, "ema200": 200, "smc_min_score": 4,
+                "adx_min": 15, "adx_sideway": 15, "adx_turbo": 30,
+                "di_min": 12, "di_turbo": 22,
+                "sl_pct": 0.034, "tp_pct": 0.18,
+                "cdc_atr_fast": 7, "cdc_mult_fast": 0.8,
+                "cdc_atr_slow": 14, "cdc_mult_slow": 2.0,
+                "sideway_pct": 1.5,
+                "retest_pct": 0.009, "max_extension_pct": 3.0,
+                "be_trigger": 0.01,
+                "lock_trigger": 0.02,
+                "lock_pct": 0.005,
+            },
+            "gold": {
+                # GOLD นิสัย: ช้า + เทรนด์เนียน + เคารพ EMA/CDC (15m ATR% ~0.3-0.5%)
+                # เลย: EMA ช้า / ADX ต่ำกว่า / Retest แคบ / ห้ามไล่แคบ
+                "ema_fast": 21, "ema_slow": 55, "ema_trend": 100, "ema50": 50, "ema100": 100, "ema200": 200, "smc_min_score": 4,
+                "adx_min": 12, "adx_sideway": 12, "adx_turbo": 26,
+                "di_min": 10, "di_turbo": 20,
+                "sl_pct": 0.028, "tp_pct": 0.12,
+                "cdc_atr_fast": 10, "cdc_mult_fast": 1.0,
+                "cdc_atr_slow": 20, "cdc_mult_slow": 2.5,
+                "sideway_pct": 1.2,
+                "retest_pct": 0.006, "max_extension_pct": 2.0,
+                "be_trigger": 0.008, "lock_trigger": 0.015, "lock_pct": 0.004,
+            },
         }
-        self.loss_streak = 0
-        self.cooldown = 0
-        self.positions = []
-    
-    def _ema(self, series, period):
-        return series.ewm(span=period, adjust=False).mean()
-    
-    def _rsi(self, series, period):
-        delta = series.diff()
-        gain = delta.where(delta>0, 0).ewm(alpha=1/period, adjust=False).mean()
-        loss = (-delta.where(delta<0, 0)).ewm(alpha=1/period, adjust=False).mean()
-        rs = gain / loss.replace(0, 0.00001)
-        return 100 - (100/(1+rs))
-    
-    def _atr(self, high, low, close, period=14):
-        tr = pd.concat([high-low, (high-close.shift()).abs(), (low-close.shift()).abs()], axis=1).max(axis=1)
-        return tr.ewm(alpha=1/period, adjust=False).mean()
-    
-    def _adx_di(self, high, low, close, period=14):
-        up = high.diff()
-        down = -low.diff()
-        plus_dm = pd.Series([u if (u>d and u>0) else 0 for u,d in zip(up,down)], index=high.index).ewm(alpha=1/period, adjust=False).mean()
-        minus_dm = pd.Series([d if (d>u and d>0) else 0 for u,d in zip(up,down)], index=high.index).ewm(alpha=1/period, adjust=False).mean()
-        tr = pd.concat([high-low, (high-close.shift()).abs(), (low-close.shift()).abs()], axis=1).max(axis=1)
-        tr14 = tr.ewm(alpha=1/period, adjust=False).mean()
-        plus_di = 100*plus_dm/tr14
-        minus_di = 100*minus_dm/tr14
-        dx = 100*(plus_di-minus_di).abs()/(plus_di+minus_di).replace(0, np.nan)
-        adx = dx.ewm(alpha=1/period, adjust=False).mean().fillna(15)
-        adx_slope = adx.diff(3)
-        return plus_di.fillna(0), minus_di.fillna(0), adx, adx_slope
-    
-    def _mfi(self, high, low, close, volume, period=14):
-        tp = (high+low+close)/3
-        rmf = tp * volume
-        pos = rmf.where(tp > tp.shift(1), 0).rolling(period).sum()
-        neg = rmf.where(tp < tp.shift(1), 0).rolling(period).sum().replace(0, 0.00001)
-        mfr = pos/neg
-        return 100 - (100/(1+mfr))
-    
-    def _obv(self, close, volume):
-        return (np.sign(close.diff()) * volume).fillna(0).cumsum()
+        self.config = base.get(symbol_key, base["btc"])
 
-    def _cdc_atr_trailing(self, df):
-        atr_fast = self._atr(df['high'], df['low'], df['close'], self.config["cdc_atr_fast"])
-        atr_slow = self._atr(df['high'], df['low'], df['close'], self.config["cdc_atr_slow"])
-        long_stop_fast = df['close'] - atr_fast * self.config["cdc_mult_fast"]
-        short_stop_fast = df['close'] + atr_fast * self.config["cdc_mult_fast"]
-        long_stop_slow = df['close'] - atr_slow * self.config["cdc_mult_slow"]
-        short_stop_slow = df['close'] + atr_slow * self.config["cdc_mult_slow"]
-        long_stop = pd.concat([long_stop_fast, long_stop_slow], axis=1).max(axis=1)
-        short_stop = pd.concat([short_stop_fast, short_stop_slow], axis=1).min(axis=1)
-        trend = np.zeros(len(df), dtype=int)
-        stop_level = np.zeros(len(df))
-        trend[0] = 1
-        stop_level[0] = long_stop.iloc[0]
-        for i in range(1, len(df)):
-            close = df['close'].iloc[i]
-            prev_trend = trend[i-1]
-            prev_stop = stop_level[i-1]
-            if prev_trend == 1:
-                curr_long = long_stop.iloc[i]
-                new_stop = max(curr_long, prev_stop) if not np.isnan(prev_stop) else curr_long
-                if close < new_stop:
-                    trend[i] = -1
-                    stop_level[i] = short_stop.iloc[i]
-                else:
-                    trend[i] = 1
-                    stop_level[i] = new_stop
+    def _ema(self, s, p): return s.ewm(span=p, adjust=False).mean()
+    def _atr(self, h,l,c,p=14):
+        tr=pd.concat([h-l,(h-c.shift()).abs(),(l-c.shift()).abs()],axis=1).max(axis=1)
+        return tr.ewm(alpha=1/p, adjust=False).mean()
+    def _adx_di(self, h,l,c,p=14):
+        up=h.diff(); down=-l.diff()
+        pdm=pd.Series([u if (u>d and u>0) else 0 for u,d in zip(up,down)], index=h.index).ewm(alpha=1/p, adjust=False).mean()
+        mdm=pd.Series([d if (d>u and d>0) else 0 for u,d in zip(up,down)], index=h.index).ewm(alpha=1/p, adjust=False).mean()
+        tr=pd.concat([h-l,(h-c.shift()).abs(),(l-c.shift()).abs()],axis=1).max(axis=1).ewm(alpha=1/p, adjust=False).mean()
+        pdi=100*pdm/tr; mdi=100*mdm/tr
+        dx=100*(pdi-mdi).abs()/(pdi+mdi).replace(0,np.nan)
+        adx=dx.ewm(alpha=1/p, adjust=False).mean().fillna(15)
+        return pdi.fillna(0), mdi.fillna(0), adx, adx.diff(3)
+
+    def _cdc(self, df):
+        c=self.config
+        af=self._atr(df['high'],df['low'],df['close'],c["cdc_atr_fast"])
+        asl=self._atr(df['high'],df['low'],df['close'],c["cdc_atr_slow"])
+        ls_f=df['close']-af*c["cdc_mult_fast"]; ss_f=df['close']+af*c["cdc_mult_fast"]
+        ls_s=df['close']-asl*c["cdc_mult_slow"]; ss_s=df['close']+asl*c["cdc_mult_slow"]
+        ls=pd.concat([ls_f,ls_s],axis=1).max(axis=1); ss=pd.concat([ss_f,ss_s],axis=1).min(axis=1)
+        trend=np.zeros(len(df),dtype=int); stop=np.zeros(len(df))
+        trend[0]=1; stop[0]=ls.iloc[0]
+        for i in range(1,len(df)):
+            if df['close'].iloc[i]>stop[i-1] and trend[i-1]==1:
+                trend[i]=1; stop[i]=max(ls.iloc[i],stop[i-1])
+            elif df['close'].iloc[i]<stop[i-1] and trend[i-1]==-1:
+                trend[i]=-1; stop[i]=min(ss.iloc[i],stop[i-1])
             else:
-                curr_short = short_stop.iloc[i]
-                new_stop = min(curr_short, prev_stop) if not np.isnan(prev_stop) else curr_short
-                if close > new_stop:
-                    trend[i] = 1
-                    stop_level[i] = long_stop.iloc[i]
+                if trend[i-1]==1:
+                    if df['close'].iloc[i]<ls.iloc[i]: trend[i]=-1; stop[i]=ss.iloc[i]
+                    else: trend[i]=1; stop[i]=max(ls.iloc[i],stop[i-1])
                 else:
-                    trend[i] = -1
-                    stop_level[i] = new_stop
-        df['cdc_trend'] = trend
-        df['cdc_stop'] = stop_level
-        df['cdc_long_stop'] = long_stop
-        df['cdc_short_stop'] = short_stop
-        df['cdc_up'] = (trend == 1)
-        df['cdc_down'] = (trend == -1)
-        df['cdc_dist_pct'] = (df['close'] - df['cdc_stop']) / df['close'] * 100
-        return df
-    
+                    if df['close'].iloc[i]>ss.iloc[i]: trend[i]=1; stop[i]=ls.iloc[i]
+                    else: trend[i]=-1; stop[i]=min(ss.iloc[i],stop[i-1])
+        return pd.Series(trend,index=df.index), pd.Series(stop,index=df.index), trend==1
+
     def add_indicators(self, df):
-        df['ema12'] = self._ema(df['close'], 12)
-        df['ema26'] = self._ema(df['close'], 26)
-        df['ema200'] = self._ema(df['close'], 200)
-        df['ema200_slope'] = df['ema200'].diff(5)
-        df['rsi12'] = self._rsi(df['close'], 12)
-        df['rsi26'] = self._rsi(df['close'], 26)
-        df['rsi200'] = self._rsi(df['close'], 200)
-        df['fractal_high'] = df['high'].rolling(5, center=True).max() == df['high']
-        df['fractal_low'] = df['low'].rolling(5, center=True).min() == df['low']
-        df['high_20'] = df['high'].rolling(20).max()
-        df['low_20'] = df['low'].rolling(20).min()
-        df['sweep_high'] = (df['high'] > df['high_20'].shift(1)) & (df['close'] < df['high_20'].shift(1))
-        df['sweep_low'] = (df['low'] < df['low_20'].shift(1)) & (df['close'] > df['low_20'].shift(1))
-        df['swing_high'] = df['high'].where(df['fractal_high'])
-        df['swing_low'] = df['low'].where(df['fractal_low'])
-        df['last_swing_high'] = df['swing_high'].ffill()
-        df['last_swing_low'] = df['swing_low'].ffill()
-        df['supertrend_dir'] = np.where(df['close'] > df['ema200'], 1, -1)
-        df['mfi'] = self._mfi(df['high'], df['low'], df['close'], df['volume'], 14)
-        df['obv'] = self._obv(df['close'], df['volume'])
-        df['obv_ema3'] = self._ema(df['obv'], 3)
-        df['obv_ema9'] = self._ema(df['obv'], 9)
-        plus_di, minus_di, adx, adx_slope = self._adx_di(df['high'], df['low'], df['close'], 14)
-        df['plus_di'] = plus_di
-        df['minus_di'] = minus_di
-        df['adx'] = adx
-        df['adx_slope'] = adx_slope
-        df['di_diff'] = plus_di - minus_di
-        df['atr'] = self._atr(df['high'], df['low'], df['close'], 14)
-        df['vol_avg'] = df['volume'].rolling(20).mean()
-        df = self._cdc_atr_trailing(df)
+        df=df.copy()
+        c=self.config
+        df['ema_fast']=self._ema(df['close'],c["ema_fast"])
+        df['ema_slow']=self._ema(df['close'],c["ema_slow"])
+        df['ema_trend']=self._ema(df['close'],c["ema_trend"])
+        # SMC Trend: EMA 50/100/200 ของพี่ (ดูเทรนด์หลัก)
+        df['ema50']=self._ema(df['close'],50)
+        df['ema100']=self._ema(df['close'],100)
+        df['ema200']=self._ema(df['close'],200)
+        df['atr']=self._atr(df['high'],df['low'],df['close'],14)
+        pdi,mdi,adx,adx_s=self._adx_di(df['high'],df['low'],df['close'],14)
+        df['plus_di']=pdi; df['minus_di']=mdi; df['adx']=adx; df['adx_slope']=adx_s
+        tr, st, up=self._cdc(df)
+        df['cdc_trend']=tr; df['cdc_stop']=st; df['cdc_up']=up
+        df['dist_ema_fast']= (df['close']-df['ema_fast']).abs()/df['close']
+        df['cdc_dist_pct']=(df['close']-df['cdc_stop'])/df['close']*100
         return df
-    
+
+    # SMC Checklist 6 ข้อ (ตามที่พี่ใช้) - รับ df ทั้งก้อนเพื่อดูโครงสร้างย้อนหลัง
+    def check_smc(self, df):
+        # df ต้องผ่าน add_indicators แล้ว มี ema50/100/200, high/low/close
+        if df is None or len(df) < 30:
+            return {"long_score": 0, "short_score": 0, "long_pass": False, "short_pass": False, "detail": {}, "need": self.config.get("smc_min_score", 4)}
+        curr = df.iloc[-1]; prev = df.iloc[-2]
+        close = float(curr["close"]); high = float(curr["high"]); low = float(curr["low"])
+        ema50=float(curr["ema50"]); ema100=float(curr["ema100"]); ema200=float(curr["ema200"])
+        # --- 6) เทรนด์หลัก EMA 50/100/200 ---
+        trend_long = ema50 > ema100 > ema200 and close > ema50
+        trend_short = ema50 < ema100 < ema200 and close < ema50
+        # --- 1) CHoCH / BOS: เบรก Swing High/Low 10 แท่งย้อนหลัง ---
+        look = df.iloc[-11:-1]  # 10 แท่งก่อนแท่งปัจจุบัน
+        swing_high = float(look["high"].max()); swing_low = float(look["low"].min())
+        # BOS = เบรกตามเทรนด์, CHoCH = เบรกสวนเทรนด์ (ใช้รวมกันเป็นข้อ 1 ตาม Checklist พี่)
+        bos_long = close > swing_high
+        bos_short = close < swing_low
+        # CHoCH: ถ้าเทรนด์ลงอยู่แต่เบรก High = CHoCH ขึ้น, เทรนด์ขึ้นอยู่แต่เบรก Low = CHoCH ลง
+        choch_long = bos_long and (ema50 < ema100)  # เดิมลงอยู่ เบรกขึ้น = เปลี่ยนคาแรคเตอร์
+        choch_short = bos_short and (ema50 > ema100)
+        check1_long = bos_long or choch_long
+        check1_short = bos_short or choch_short
+        # --- 2) FVG: ช่องว่างราคา 3 แท่งย้อนหลัง ---
+        fvg_long = False; fvg_short = False
+        for i in range(max(2, len(df)-4), len(df)):
+            # Bullish FVG: low[i] > high[i-2]
+            try:
+                if float(df.iloc[i]["low"]) > float(df.iloc[i-2]["high"]): fvg_long = True
+                if float(df.iloc[i]["high"]) < float(df.iloc[i-2]["low"]): fvg_short = True
+            except: pass
+        # FVG ต้องอยู่ใกล้ราคาปัจจุบัน (ห่างไม่เกิน 1.5% สำหรับ BTC, 0.8% GOLD) ถึงนับ
+        # ใช้แบบง่าย: ถ้ามี FVG ใน 3 แท่งล่าสุดให้นับเลย เพราะเพิ่งเกิด
+        # --- 3) Discount / Premium: Swing 50 แท่ง ---
+        w = df.iloc[-50:]
+        sh = float(w["high"].max()); sl = float(w["low"].min())
+        mid = (sh + sl) / 2
+        # Fibonacci 61.8 / 78.6 ของ Swing: สำหรับ LONG ต้องอยู่ Discount (<50%) ดีสุดคือแถว 61.8-78.6% retracement จาก High
+        # คิดแบบ Swing Low->High: retracement = (sh - close)/(sh-sl)
+        retr = (sh - close) / (sh - sl) if (sh-sl) != 0 else 0.5
+        discount_long = close < mid  # อยู่โซน Discount
+        premium_short = close > mid  # อยู่โซน Premium
+        # โซนทอง 61.8-78.6%: retracement 0.618-0.886 = จุดที่ SMC บอกว่า 61.8 คือ BSL / 78.6 คือ IDM ดักหลอก ต้องระวัง
+        in_golden = 0.618 <= retr <= 0.886
+        # สำหรับ LONG: ถ้าอยู่ใน Golden + Discount = ดี, สำหรับ SHORT: ถ้าอยู่ Premium + Golden = ดี (แต่ถ้าเป็น IDM หลอก ต้องมี Sweep ยืนยัน)
+        check3_long = discount_long
+        check3_short = premium_short
+        # --- 4) Fresh OB: Order Block ยังไม่เคยถูกใช้ = ยังไม่โดนทะลุ ---
+        # OB คือแท่งก่อนเบรก (prev) - Fresh ถ้าราคายังไม่เคยปิดทะลุ OB นั้น (แค่แตะแล้วเด้งกลับ ยังถือว่า Fresh)
+        # แบบเดิมที่เช็คแค่แตะ จะบล็อกทุกไม้ เพราะราคาต้องแตะ OB อยู่แล้วตอน Pullback
+        fresh_long = True; fresh_short = True
+        try:
+            ob_high = float(prev["high"]); ob_low = float(prev["low"])
+            hist = df.iloc[-12:-1]  # 11 แท่งก่อนแท่งปัจจุบัน
+            # นับปิดใน OB: ถ้าปิดใน OB 2 แท่งติด = OB ถูกใช้แล้ว / แค่แตะแล้วเด้งกลับ ยัง Fresh
+            inside = ((hist["close"] >= ob_low) & (hist["close"] <= ob_high)).astype(int)
+            # เช็ค 2 แท่งติด
+            used = False
+            for k in range(len(inside)-1):
+                if inside.iloc[k]==1 and inside.iloc[k+1]==1: used=True; break
+            fresh_long = not used; fresh_short = not used
+        except: pass
+        # --- 5) IDM / Liquidity Sweep: กวาด High/Low แล้วปิดกลับ ---
+        # Sweep High: high แท่งล่าสุด > swing_high เก่า แต่ close < swing_high (กวาดแล้วโดนตบกลับ) = IDM หลอกขาขึ้น -> เตรียม SHORT
+        # Sweep Low: low < swing_low เก่า แต่ close > swing_low = IDM หลอกขาลง -> เตรียม LONG
+        sweep_high = high > swing_high and close < swing_high
+        sweep_low = low < swing_low and close > swing_low
+        check5_long = sweep_low  # กวาด Low แล้วดีดกลับ = สะสม Long
+        check5_short = sweep_high  # กวาด High แล้วร่วงกลับ = สะสม Short
+        # --- รวมคะแนน ---
+        long_checks = [check1_long, fvg_long, check3_long, fresh_long, check5_long, trend_long]
+        short_checks = [check1_short, fvg_short, check3_short, fresh_short, check5_short, trend_short]
+        long_score = sum(1 for x in long_checks if x)
+        short_score = sum(1 for x in short_checks if x)
+        need = self.config.get("smc_min_score", 4)
+        detail = {
+            "choch_bos_long": bool(check1_long), "choch_bos_short": bool(check1_short),
+            "fvg_long": bool(fvg_long), "fvg_short": bool(fvg_short),
+            "discount_long": bool(check3_long), "premium_short": bool(check3_short), "retr_pct": round(retr*100,1), "in_golden_618_886": bool(in_golden),
+            "fresh_ob": bool(fresh_long),
+            "sweep_low_long": bool(check5_long), "sweep_high_short": bool(check5_short),
+            "trend_long_ema501001200": bool(trend_long), "trend_short_ema501001200": bool(trend_short),
+            "swing_high": swing_high, "swing_low": swing_low,
+        }
+        return {"long_score": long_score, "short_score": short_score, "long_pass": long_score >= need, "short_pass": short_score >= need, "detail": detail, "need": need, "long_checks": long_checks, "short_checks": short_checks}
+
+    # Pattern TP: วัดระยะ Pattern ที่พรีดิก TP ได้ (Flag/Triangle/Double/QML/SMC Liquidity)
+    # Pattern แท่งเทียนเดี่ยว (Engulfing/Pin Bar/Doji) วัด TP ไม่ได้ -> return None ให้ใช้ TP ตายตัวเดิม
+    def get_pattern_tp(self, df, signal, pattern_name=""):
+        if df is None or len(df) < 20: return None
+        try:
+            curr = df.iloc[-1]; close=float(curr["close"])
+            # Swing 30 แท่ง: ใช้วัดระยะ Pattern
+            w30 = df.iloc[-30:]; swing_high=float(w30["high"].max()); swing_low=float(w30["low"].min()); swing_range=swing_high-swing_low
+            w20 = df.iloc[-20:]; base=float(w20["high"].max())-float(w20["low"].min())
+            # EMA200 = แนวต้าน/รับถัดไป (Liquidity) - ถ้า Pattern TP เลย EMA200 ให้ตัด TP ไว้ก่อน EMA200
+            ema200=float(curr.get("ema200", close))
+            name=(pattern_name or "").lower()
+            factor=None; tp=None
+            if "flag" in name or "pennant" in name:
+                # Flag: TP = วัดเสาธง (Swing 30) ต่อจากจุดเบรก
+                factor=1.0; tp=close + swing_range*factor if signal=="LONG" else close - swing_range*factor
+            elif "triangle" in name:
+                # Triangle: TP = ฐานสามเหลี่ยม (20 แท่ง)
+                factor=1.0; tp=close + base*factor if signal=="LONG" else close - base*factor
+            elif "double" in name:
+                # Double Top/Bottom: TP = ระยะยอด -> Neckline (ใช้ Swing 30)
+                factor=1.0; tp=close + swing_range*factor if signal=="LONG" else close - swing_range*factor
+            elif "qml" in name or "quasimodo" in name:
+                # QML: TP = OB ถัดไป (ไหล่ -> หัว) ใช้ 1.2 เท่าของ Swing เพราะ QML ยืดไปถึง 88.6%
+                factor=1.2; tp=close + swing_range*factor if signal=="LONG" else close - swing_range*factor
+            elif "head" in name and "shoulder" in name:
+                # H&S: TP = หัว -> Neckline
+                factor=1.0; tp=close + swing_range*factor if signal=="LONG" else close - swing_range*factor
+            elif "smc" in name or "liquidity" in name or "fvg" in name or "order_block" in name or "ob" in name:
+                # SMC: TP = Liquidity ถัดไป = Swing High/Low เดิม หรือ EMA200
+                if signal=="LONG":
+                    tp=min(swing_high, ema200) if ema200>close else swing_high
+                    # ถ้า TP ใกล้เกินไป (<0.5%) ให้ใช้ Swing แทน
+                    if (tp-close)/close < 0.005: tp=swing_high
+                else:
+                    tp=max(swing_low, ema200) if ema200<close else swing_low
+                    if (close-tp)/close < 0.005: tp=swing_low
+                factor=0.0  # SMC ไม่ใช้ factor ใช้ Liquidity ตรงๆ
+            else:
+                return None  # Engulfing/Pin Bar/Doji/Morning Star วัด TP ไม่ได้
+            # กัน TP เลย TP ตายตัวเดิม (BTC 18% / GOLD 12%) - ถ้า Pattern TP ไกลกว่า TP ตายตัว ให้ใช้ TP ตายตัวเป็นเพดาน
+            max_tp_pct=self.config.get("tp_pct", 0.12)
+            max_tp=close*(1+max_tp_pct) if signal=="LONG" else close*(1-max_tp_pct)
+            if signal=="LONG": tp=min(tp, max_tp)
+            else: tp=max(tp, max_tp)
+            # กัน TP ใกล้เกินไป (<0.8% BTC / <0.5% GOLD) ไม่คุ้มค่าธรรมเนียม
+            min_dist=0.008 if self.symbol_key=="btc" else 0.005
+            if abs(tp-close)/close < min_dist: return None
+            return {"tp": float(tp), "pattern": pattern_name, "factor": factor, "swing_range": swing_range, "max_tp": float(max_tp)}
+        except Exception as e:
+            return None
+
+    # 1. จุดเข้าแม่น - Pullback แบบในรูป: เทรนด์ลง + ดีดกลับหา EMA Fast/CDC + Rejection กลับลง = S
+    # S1/S2/S3 ในรูปคือจุดนี้ ไม่ใช่ S ตรงก้น
+    def check_trend(self, curr, prev=None, prev2=None, smc=None):
+        c=self.config
+        ema_diff=abs(curr['ema_fast']-curr['ema_slow'])/curr['close']*100
+        sideway=(curr['adx']<c["adx_sideway"]) or (ema_diff<c["sideway_pct"] and curr['adx']<c["adx_turbo"])
+        # ห้ามไล่ตอนยืด: ราคาห่าง EMA Trend เกิน 2% = วิ่งไปไกลแล้ว ข้าม รอ Pullback
+        ext=(curr['close']-curr['ema_trend'])/curr['close']*100
+        extended=abs(ext)>c.get("max_extension_pct",2.0)
+        # เทรนด์หลัก (ADX + DI ล้วน ไม่ใช้ RSI/Volume) - Turbo ไม่ Bypass เทรนด์แล้ว
+        long_core=curr['cdc_up'] and curr['plus_di']>curr['minus_di'] and curr['plus_di']>c["di_min"] and curr['adx']>c["adx_min"] and curr['close']>curr['ema_trend']
+        short_core=not curr['cdc_up'] and curr['minus_di']>curr['plus_di'] and curr['minus_di']>c["di_min"] and curr['adx']>c["adx_min"] and curr['close']<curr['ema_trend']
+        # Pullback + Rejection: แท่งก่อนหน้าดีดขึ้นไปแตะ EMA Fast/CDC แล้วแท่งนี้ปิดกลับลงมา
+        pull_short=False; pull_long=False
+        if prev is not None:
+            try:
+                # SHORT: แท่งก่อน High แตะ EMA Fast/CDC (Pullback ขึ้น) + แท่งนี้ปิดต่ำกว่า EMA Fast + ปิดต่ำกว่าแท่งก่อน (Rejection)
+                _prev_touch_high=max(float(prev.get('high',0)), float(prev.get('close',0)))>=float(prev.get('ema_fast',0))
+                _prev_touch_cdc=float(prev.get('high',0))>=float(prev.get('cdc_stop',0)) if 'cdc_stop' in prev else False
+                pull_short=(_prev_touch_high or _prev_touch_cdc) and float(curr['close'])<float(curr['ema_fast']) and float(curr['close'])<float(prev.get('close',0))
+                # LONG: แท่งก่อน Low แตะ EMA Fast/CDC (Pullback ลง) + แท่งนี้ปิดสูงกว่า EMA Fast + ปิดสูงกว่าแท่งก่อน
+                _prev_touch_low=min(float(prev.get('low',0)), float(prev.get('close',0)))<=float(prev.get('ema_fast',0))
+                _prev_touch_cdc_l=float(prev.get('low',0))<=float(prev.get('cdc_stop',0)) if 'cdc_stop' in prev else False
+                pull_long=(_prev_touch_low or _prev_touch_cdc_l) and float(curr['close'])>float(curr['ema_fast']) and float(curr['close'])>float(prev.get('close',0))
+            except: pass
+        # กรณี Pullback+Rejection ในแท่งเดียว: High แตะ EMA Fast แล้วปิดต่ำกว่า EMA Fast
+        try:
+            if float(curr.get('high',0))>=float(curr['ema_fast']) and float(curr['close'])<float(curr['ema_fast']):
+                pull_short=True
+            if float(curr.get('low',0))<=float(curr['ema_fast']) and float(curr['close'])>float(curr['ema_fast']):
+                pull_long=True
+        except: pass
+        retest=curr['dist_ema_fast'] <= c["retest_pct"]
+        # SMC Checklist 6 ข้อ: ถ้ามี smc ส่งมา ต้องผ่าน >=4/6 ถึงเข้า (ถ้าไม่ส่งมา = ใช้ Pullback เดิม ไม่กรอง SMC)
+        smc_long_ok = True if smc is None else bool(smc.get("long_pass"))
+        smc_short_ok = True if smc is None else bool(smc.get("short_pass"))
+        long=long_core and pull_long and retest and not extended and smc_long_ok
+        short=short_core and pull_short and retest and not extended and smc_short_ok
+        return {"long":long, "short":short, "sideway":sideway and not (long or short), "retest":retest, "ema_diff":ema_diff, "long_core":long_core, "short_core":short_core, "pull_long":pull_long, "pull_short":pull_short, "extended":extended, "smc_long_ok":smc_long_ok, "smc_short_ok":smc_short_ok, "smc":smc}
+
     def check_reversal(self, prev, curr):
-        ema_cross_up = prev['ema12'] <= prev['ema26'] and curr['ema12'] > curr['ema26']
-        ema_cross_down = prev['ema12'] >= prev['ema26'] and curr['ema12'] < curr['ema26']
-        rsi_cross_up = prev['rsi12'] <= prev['rsi26'] and curr['rsi12'] > curr['rsi26']
-        rsi_cross_down = prev['rsi12'] >= prev['rsi26'] and curr['rsi12'] < curr['rsi26']
-        new_long = ema_cross_up and rsi_cross_up
-        new_short = ema_cross_down and rsi_cross_down
-        sweep_ok_long = curr['sweep_low'] or prev['sweep_low']
-        sweep_ok_short = curr['sweep_high'] or prev['sweep_high']
-        fractal_long = curr['fractal_low']
-        fractal_short = curr['fractal_high']
-        cdc_flip_long = prev['cdc_down'] and curr['cdc_up']
-        cdc_flip_short = prev['cdc_up'] and curr['cdc_down']
-        di_cross_long = prev['plus_di'] <= prev['minus_di'] and curr['plus_di'] > curr['minus_di']
-        di_cross_short = prev['minus_di'] <= prev['plus_di'] and curr['minus_di'] > curr['plus_di']
-        return {
-            'long': (new_long and (sweep_ok_long or fractal_long)) or cdc_flip_long or di_cross_long,
-            'short': (new_short and (sweep_ok_short or fractal_short)) or cdc_flip_short or di_cross_short,
-            'di_cross_long': di_cross_long,
-            'di_cross_short': di_cross_short,
-        }
-    
-    def check_trend(self, curr):
-        # V2.8 B - ไม่ดู EMA200 ทั้ง LONG/SHORT + บังคับ EMA12x26 ทั้งคู่ - NO DISK VERSION
-        ema_align_bull = curr['ema12'] > curr['ema26']
-        ema_align_bear = curr['ema12'] < curr['ema26']
-        sideway_thresh = self.config.get("sideway_pct", 0.015)
-        adx_sideway = curr['adx'] < self.config.get("adx_sideway", 15)
-        ema_sideway = abs(curr['close'] - curr['ema200']) / curr['ema200'] < sideway_thresh if curr['ema200']>0 else False
-        sideway = adx_sideway or ema_sideway
-        cdc_up = bool(curr.get('cdc_up', True))
-        cdc_down = bool(curr.get('cdc_down', False))
-        plus_di = curr.get('plus_di', 0)
-        minus_di = curr.get('minus_di', 0)
-        di_bull = plus_di > minus_di and plus_di > self.config.get("di_min", 15)
-        di_bear = minus_di > plus_di and minus_di > self.config.get("di_min", 15)
-        # LONG: CDC เขียว + DI BLUE + EMA12>EMA26 + ไม่ Sideway (ไม่ดู EMA200)
-        long_trend = (cdc_up and di_bull) and ema_align_bull and not sideway
-        # SHORT: CDC แดง + DI BEAR + EMA12<EMA26 + ไม่ Sideway (ไม่ดู EMA200)
-        short_trend = (cdc_down and di_bear) and ema_align_bear and not sideway
-        return {
-            'long': long_trend,
-            'short': short_trend,
-            'sideway': sideway,
-            'cdc_up': cdc_up,
-            'cdc_down': cdc_down,
-            'di_bull': di_bull,
-            'di_bear': di_bear,
-            'plus_di': plus_di,
-            'minus_di': minus_di,
-            'cdc_dist': curr.get('cdc_dist_pct', 0)
-        }
-    
+        # EMA cross + CDC flip = จุดกลับตัวแม่น
+        long_cross=curr['ema_fast']>curr['ema_slow'] and prev['ema_fast']<=prev['ema_slow']
+        short_cross=curr['ema_fast']<curr['ema_slow'] and prev['ema_fast']>=prev['ema_slow']
+        cdc_long=curr['cdc_up'] and not prev['cdc_up']
+        cdc_short=not curr['cdc_up'] and prev['cdc_up']
+        long=long_cross or cdc_long
+        short=short_cross or cdc_short
+        return {"long":long, "short":short, "long_cross":long_cross, "short_cross":short_cross}
+
     def check_momentum(self, curr):
-        rsi_double_bull = curr['rsi12']>45 and curr['rsi26']>45
-        rsi_double_bear = curr['rsi12']<55 and curr['rsi26']<55
-        rsi_not_ob = curr['rsi12'] < 75
-        rsi_not_os = curr['rsi12'] > 25
-        mfi_bull = 40 < curr['mfi'] < 85 if curr['mfi']==curr['mfi'] else False
-        mfi_bear = 15 < curr['mfi'] < 60 if curr['mfi']==curr['mfi'] else False
-        obv_bull = curr['obv_ema3'] > curr['obv_ema9'] if curr['obv_ema3']==curr['obv_ema3'] else False
-        obv_bear = curr['obv_ema3'] < curr['obv_ema9'] if curr['obv_ema3']==curr['obv_ema3'] else False
-        adx_ok = curr['adx'] > self.config.get("adx_min", 15) if curr['adx']==curr['adx'] else False
-        adx_slope_ok = curr.get('adx_slope', 0) > -1
-        plus_di = curr.get('plus_di', 0)
-        minus_di = curr.get('minus_di', 0)
-        di_mom_bull = plus_di > minus_di
-        di_mom_bear = minus_di > plus_di
-        vol_ok = curr['volume'] > curr['vol_avg']*0.6 if curr['vol_avg']==curr['vol_avg'] else False
-        cdc_strength = abs(curr.get('cdc_dist_pct', 0)) > 0.15
-        return {
-            'long': rsi_double_bull and rsi_not_ob and mfi_bull and (obv_bull or adx_ok) and (di_mom_bull or cdc_strength) and adx_slope_ok,
-            'short': rsi_double_bear and rsi_not_os and mfi_bear and (obv_bear or adx_ok) and (di_mom_bear or cdc_strength) and vol_ok and adx_slope_ok
-        }
+        # ADX + DI ล้วน - ไม่ใช้ RSI แล้ว
+        c=self.config
+        long = curr['plus_di'] > curr['minus_di'] and curr['plus_di'] > c["di_min"] and curr['adx'] > c["adx_min"]
+        short = curr['minus_di'] > curr['plus_di'] and curr['minus_di'] > c["di_min"] and curr['adx'] > c["adx_min"]
+        # Turbo - ADX แรงมากยิ่งยืนยัน
+        turbo_long = curr['adx'] > c["adx_turbo"] and curr['plus_di'] > c["di_turbo"]
+        turbo_short = curr['adx'] > c["adx_turbo"] and curr['minus_di'] > c["di_turbo"]
+        long = long or turbo_long
+        short = short or turbo_short
+        return {"long":long, "short":short, "adx":curr['adx'], "plus_di":curr['plus_di'], "minus_di":curr['minus_di']}
+
+    # 2. Trailing SL กันทุน/กำไร
+    def get_trailing_sl(self, entry, curr_price, cdc_stop, signal, atr=None):
+        c=self.config
+        if signal=='LONG':
+            profit_pct=(curr_price-entry)/entry
+            if profit_pct>=c["lock_trigger"]:
+                # Lock 0.5% + ตาม CDC
+                lock_sl=entry*(1+c["lock_pct"])
+                return max(lock_sl, cdc_stop, entry) # สูงสุด
+            elif profit_pct>=c["be_trigger"]:
+                return max(entry, cdc_stop) # BE
+            else:
+                return min(entry*(1-c["sl_pct"]), cdc_stop) if cdc_stop<entry else entry*(1-c["sl_pct"])
+        else: # SHORT
+            profit_pct=(entry-curr_price)/entry
+            if profit_pct>=c["lock_trigger"]:
+                lock_sl=entry*(1-c["lock_pct"])
+                return min(lock_sl, cdc_stop, entry)
+            elif profit_pct>=c["be_trigger"]:
+                return min(entry, cdc_stop)
+            else:
+                return max(entry*(1+c["sl_pct"]), cdc_stop) if cdc_stop>entry else entry*(1+c["sl_pct"])
+
+    # 3. TP เมื่อเปลี่ยนเทรน
+    def check_exit_trend_change(self, curr, prev, open_signal, smc=None, df=None):
+        # ถือ LONG อยู่ แต่เทรนเปลี่ยน -> TP
+        if open_signal=='LONG':
+            cdc_flip=not curr['cdc_up'] and prev['cdc_up']
+            ema_flip=curr['ema_fast']<curr['ema_slow'] and prev['ema_fast']>=prev['ema_slow']
+            di_flip=curr['minus_di']>curr['plus_di'] and prev['plus_di']>=prev['minus_di'] and curr['adx']>15
+            # ออกไว: ปิดหลุด EMA Fast ลงมา 2 แท่งติด = Pullback ล้มเหลว ออกเลย ไม่รอ CDC Flip
+            ema_fail=float(curr['close'])<float(curr['ema_fast']) and float(prev.get('close',0))<float(prev.get('ema_fast',0))
+            # --- V6.1 FIX: ทำไมบอทไม่ปิด SHORT ในภาพ PAXG 3,847 --- 
+            # ปัญหาเดิม: ต้องรอ CDC Flip / EMA Cross พอดีแท่งนั้น / DI Flip พอดีแท่งนั้น / EMA Fast Fail 2 แท่งติด
+            # แต่ในภาพ ราคาขึ้นไปเหนือ EMA Trend + EMA50 แล้วหลายแท่ง แต่ Cross พอดีแท่งนั้นมันผ่านไปแล้ว -> บอทเลยไม่ปิด
+            # แก้: ออกทันทีถ้า ราคาปิดสวน EMA Trend หรือ EMA50 (เทรนด์หลัก SMC) หรือ SMC ฝั่งตรงข้ามผ่าน 4/6 หรือ CHoCH ฝั่งตรงข้าม
+            trend_break=False; ema50_break=False; smc_flip=False; choch_flip=False
+            try:
+                trend_break=float(curr['close'])<float(curr.get('ema_trend', curr['close']))
+                ema50_break=float(curr['close'])<float(curr.get('ema50', curr['close']))
+            except: pass
+            try:
+                if smc is not None: smc_flip=bool(smc.get('short_pass'))
+            except: pass
+            try:
+                if df is not None and len(df)>=12:
+                    swing_low=float(df.iloc[-11:-1]['low'].min())
+                    # CHoCH ลง: ปิดต่ำกว่า Swing Low เดิม = โครงสร้างเปลี่ยนลง
+                    choch_flip=float(curr['close'])<swing_low
+            except: pass
+            should_tp=cdc_flip or ema_flip or di_flip or ema_fail or trend_break or ema50_break or smc_flip or choch_flip
+            reason=[]
+            if cdc_flip: reason.append("CDC Flip")
+            if ema_fail: reason.append("EMA Fast Fail")
+            if ema_flip: reason.append(f"EMA{self.config['ema_fast']}x{self.config['ema_slow']} Cross Down")
+            if di_flip: reason.append("DI Flip")
+            if trend_break: reason.append("Close < EMA Trend")
+            if ema50_break: reason.append("Close < EMA50 (SMC Trend)")
+            if smc_flip: reason.append("SMC SHORT 4/6 Flip")
+            if choch_flip: reason.append("CHoCH Down")
+            return {"tp":should_tp, "reasons":reason, "cdc_flip":cdc_flip, "ema_flip":ema_flip}
+        elif open_signal=='SHORT':
+            cdc_flip=curr['cdc_up'] and not prev['cdc_up']
+            ema_flip=curr['ema_fast']>curr['ema_slow'] and prev['ema_fast']<=prev['ema_slow']
+            di_flip=curr['plus_di']>curr['minus_di'] and prev['minus_di']>=prev['plus_di'] and curr['adx']>15
+            # ออกไว: ปิดทะลุ EMA Fast ขึ้นไป 2 แท่งติด = Pullback ล้มเหลว ออกเลย
+            ema_fail=float(curr['close'])>float(curr['ema_fast']) and float(prev.get('close',0))>float(prev.get('ema_fast',0))
+            # --- V6.1 FIX SHORT (เคสในภาพ PAXG) ---
+            trend_break=False; ema50_break=False; smc_flip=False; choch_flip=False
+            try:
+                trend_break=float(curr['close'])>float(curr.get('ema_trend', curr['close']))
+                ema50_break=float(curr['close'])>float(curr.get('ema50', curr['close']))
+            except: pass
+            try:
+                if smc is not None: smc_flip=bool(smc.get('long_pass'))
+            except: pass
+            try:
+                if df is not None and len(df)>=12:
+                    swing_high=float(df.iloc[-11:-1]['high'].max())
+                    choch_flip=float(curr['close'])>swing_high
+            except: pass
+            should_tp=cdc_flip or ema_flip or di_flip or ema_fail or trend_break or ema50_break or smc_flip or choch_flip
+            reason=[]
+            if cdc_flip: reason.append("CDC Flip")
+            if ema_fail: reason.append("EMA Fast Fail")
+            if ema_flip: reason.append(f"EMA{self.config['ema_fast']}x{self.config['ema_slow']} Cross Up")
+            if di_flip: reason.append("DI Flip")
+            if trend_break: reason.append("Close > EMA Trend")
+            if ema50_break: reason.append("Close > EMA50 (SMC Trend)")
+            if smc_flip: reason.append("SMC LONG 4/6 Flip")
+            if choch_flip: reason.append("CHoCH Up")
+            return {"tp":should_tp, "reasons":reason, "cdc_flip":cdc_flip, "ema_flip":ema_flip}
+        return {"tp":False, "reasons":[]}
