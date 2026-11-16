@@ -42,7 +42,17 @@ def fetch_klines(symbol, days=30):
     return df
 
 def run_bt(symbol, days=30, capital=40.0):
-    st = Strategy_G_Power(symbol)
+    try:
+        st = Strategy_G_Power(symbol)
+    except TypeError:
+        # strategy บน Render ยังเป็นตัวเก่า ( __init__(self) ไม่มี symbol_key )
+        # สร้างแบบไม่มี arg แล้วตั้ง config ตาม symbol เอง
+        st = Strategy_G_Power()
+        st.symbol_key = symbol
+        if symbol == "gold":
+            st.config = {"ema_fast": 21, "ema_slow": 55, "ema_trend": 100, "ema50": 50, "ema100": 100, "ema200": 200, "smc_min_score": 3, "adx_min": 12, "adx_sideway": 12, "adx_turbo": 26, "di_min": 10, "di_turbo": 20, "sl_pct": 0.028, "tp_pct": 0.12, "cdc_atr_fast": 10, "cdc_mult_fast": 1.0, "cdc_atr_slow": 20, "cdc_mult_slow": 2.5, "sideway_pct": 1.2, "retest_pct": 0.006, "max_extension_pct": 2.0, "be_trigger": 0.008, "lock_trigger": 0.015, "lock_pct": 0.004}
+        else:
+            st.config = {"ema_fast": 15, "ema_slow": 40, "ema_trend": 80, "ema50": 50, "ema100": 100, "ema200": 200, "smc_min_score": 3, "adx_min": 15, "adx_sideway": 15, "adx_turbo": 30, "di_min": 12, "di_turbo": 22, "sl_pct": 0.034, "tp_pct": 0.18, "cdc_atr_fast": 7, "cdc_mult_fast": 0.8, "cdc_atr_slow": 14, "cdc_mult_slow": 2.0, "sideway_pct": 1.5, "retest_pct": 0.009, "max_extension_pct": 3.0, "be_trigger": 0.01, "lock_trigger": 0.02, "lock_pct": 0.005}
     c = st.config
     df = fetch_klines(symbol, days)
     df = st.add_indicators(df)
@@ -80,9 +90,6 @@ def run_bt(symbol, days=30, capital=40.0):
         if not pos:
             smc = st.check_smc(df.iloc[:i+1]) if hasattr(st, 'check_smc') else None
             trend = st.check_trend(curr, prev, smc=smc)
-            # V6.2 Pattern TP in BT: ใช้ Flag เป็นตัวแทนวัดระยะ
-            try: _ptp_info=st.get_pattern_tp(df.iloc[:i+1], 'LONG' if trend.get('long') else 'SHORT' if trend.get('short') else 'LONG', 'flag')
-            except: _ptp_info=None
             side = "LONG" if trend["long"] else "SHORT" if trend["short"] else None
             if side:
                 sl = price*(1-c["sl_pct"]) if side=="LONG" else price*(1+c["sl_pct"])
