@@ -1,4 +1,4 @@
-"""G_POWER V5.6.1.1 - BTC+GOLD - Real MEXC data only"""
+"""G_POWER V6.1 SMC - BTC+GOLD - Real MEXC data only - EMA50/100/200 + Checklist 6 + Exit V6.1"""
 # V6.1 716 lines - SMC + EMA50/100/200 + Fix /close gold
 from fastapi import FastAPI, Query, Request
 from fastapi.responses import HTMLResponse
@@ -411,7 +411,7 @@ def execute_symbol(symbol, manage_open=True):
             if (trend['long'] and existing_sig!='LONG') or (trend['short'] and existing_sig!='SHORT'):
                 can_open=False  # ไม่เพิ่มtradesสวนทาง
         if can_open and not trend['sideway']:
-            # V5.2.2 PULLBACK ENTRY: ไม่ต้องWAIT cross ทุกครั้ง
+            # V6.1 SMC+PULLBACK ENTRY: ไม่ต้องWAIT cross ทุกครั้ง
             if trend['long'] and mom['long']:
                 signal="LONG"
             elif trend['short'] and mom['short']:
@@ -437,7 +437,7 @@ def execute_symbol(symbol, manage_open=True):
                 "tp":price*(1+st.config['tp_pct']) if signal=='LONG' else price*(1-st.config['tp_pct']),
                 "status":"PAPER_OPEN",
                 "real":False,
-                "note":f"V5.2.2 pullback rev:{rev['long'] or rev['short']}"
+                "note":f"V6.1 SMC pullback rev:{rev['long'] or rev['short']}"
             }
             trades.append(new_trade)
             save_trades(trades)
@@ -481,7 +481,7 @@ async def webhook(request: Request):
                 if key!='all' and k!=key: continue
                 results[k]=execute_symbol(SYMBOLS[k])
             trades=load_trades(); auto=get_auto_state(); bal=get_mexc_balance()
-            out=f"📊 <b>G_POWER V5.2.2 CHECK {key.upper()}</b> {datetime.now().strftime('%d/%m %H:%M')}\n"
+            out=f"📊 <b>G_POWER V6.1 SMC CHECK {key.upper()}</b> {datetime.now().strftime('%d/%m %H:%M')}\n"
             for k,r in results.items():
                 if not r.get('ok'): out+=f"\n{k.upper()} ❌ {r.get('error')}\n"
                 else:
@@ -500,7 +500,7 @@ async def webhook(request: Request):
                     out+=f"{sig} {ot['symbol']} Entry ${entry:,.2f} Now ${curr_p:,.2f} UnPnL ${upnl:+.2f} ({upp:+.1f}%) SL ${sl:,.2f} {ot.get('trailing','')}\n"
             else: out+=f"\n📌 ไม่มีtradesถืออยู่ - WAIT\n"
             if bal.get('ok'): out+=f"\n🏦 MEXC {bal.get('total')} USDT | Pos {len(bal.get('positions',[]))}\n"
-            out+=f"\n✅ V5.2.2 VOL 0.25 + PULLBACK + BTC+GOLD FIX\n💡 1.Retest 2.Trailing 3.TP Trend"
+            out+=f"\n✅ V6.1 SMC + EMA50/100/200 + PULLBACK + BTC+GOLD\n💡 1.Retest 2.Trailing 3.TP Trend"
             send_tele(out, chat_id)
             # AUTO: เปิดไม้ใหม่ -> ส่งกราฟทันที
             for _k,_r in results.items():
@@ -660,7 +660,7 @@ async def webhook(request: Request):
             parts=tl.split(); key='all' if len(parts)<2 else parse_sym(parts[1])[0]
             if key=="unknown": send_tele(f"❓ ไม่มีเหรียญ {parts[1]} แล้ว มีแค่ BTC / GOLD", chat_id); return {"ok":True}
             set_auto_state(key, True)
-            send_tele(f"🟢 Auto ON {key.upper()} {datetime.now().strftime('%d/%m %H:%M')} V5.2.2 PULLBACK", chat_id)
+            send_tele(f"🟢 Auto ON {key.upper()} {datetime.now().strftime('%d/%m %H:%M')} V6.1 SMC+PULLBACK", chat_id)
             return {"ok":True}
         elif tl.startswith('/off'):
             parts=tl.split(); key='all' if len(parts)<2 else parse_sym(parts[1])[0]
@@ -713,4 +713,4 @@ def ping():
 @app.get("/", response_class=HTMLResponse)
 def home():
     auto=get_auto_state()
-    return f"<html><body style='background:#0a0e1a;color:#fff;font-family:Arial;padding:20px'><h1>G_POWER V5.2.3 BTC+GOLD 2COINS</h1><p>BTC {'🟢' if auto.get('btc') else '🔴'} GOLD {'🟢' if auto.get('gold') else '🔴'}</p><p>✅ VOL 0.25 | PULLBACK ENTRY | BTC+GOLD FIX</p><a href='/ping'>Ping</a></body></html>"
+    return f"<html><body style='background:#0a0e1a;color:#fff;font-family:Arial;padding:20px'><h1>G_POWER V6.1 SMC BTC+GOLD</h1><p>BTC {'🟢' if auto.get('btc') else '🔴'} GOLD {'🟢' if auto.get('gold') else '🔴'}</p><p>✅ V6.1 SMC + EMA50/100/200 | PULLBACK ENTRY | BTC+GOLD</p><a href='/ping'>Ping</a></body></html>"
