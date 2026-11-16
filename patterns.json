@@ -22,7 +22,8 @@
       "gold": {
         "min_body_ratio": 1.1,
         "need_pullback": true
-      }
+      },
+      "can_predict_tp": false
     },
     "engulfing_bearish": {
       "name_th": "กลืนกินขาลง",
@@ -39,7 +40,8 @@
       "gold": {
         "min_body_ratio": 1.1,
         "need_pullback": true
-      }
+      },
+      "can_predict_tp": false
     },
     "pinbar_bullish": {
       "name_th": "Pin Bar / Hammer ขาขึ้น",
@@ -54,7 +56,8 @@
       },
       "gold": {
         "wick_body_ratio": 2.0
-      }
+      },
+      "can_predict_tp": false
     },
     "pinbar_bearish": {
       "name_th": "Pin Bar / Shooting Star ขาลง",
@@ -69,7 +72,8 @@
       },
       "gold": {
         "wick_body_ratio": 2.0
-      }
+      },
+      "can_predict_tp": false
     },
     "morning_star": {
       "name_th": "Morning Star",
@@ -84,7 +88,8 @@
       },
       "gold": {
         "need_pullback": true
-      }
+      },
+      "can_predict_tp": false
     },
     "evening_star": {
       "name_th": "Evening Star",
@@ -99,7 +104,8 @@
       },
       "gold": {
         "need_pullback": true
-      }
+      },
+      "can_predict_tp": false
     },
     "harami_bullish": {
       "name_th": "Harami ขาขึ้น",
@@ -114,7 +120,8 @@
       },
       "gold": {
         "need_pullback": true
-      }
+      },
+      "can_predict_tp": false
     },
     "harami_bearish": {
       "name_th": "Harami ขาลง",
@@ -129,7 +136,8 @@
       },
       "gold": {
         "need_pullback": true
-      }
+      },
+      "can_predict_tp": false
     },
     "doji": {
       "name_th": "Doji",
@@ -147,7 +155,8 @@
       "gold": {
         "body_pct_max": 0.15,
         "need_confirm_next_candle": true
-      }
+      },
+      "can_predict_tp": false
     },
     "double_top": {
       "name_th": "Double Top",
@@ -165,7 +174,9 @@
       "gold": {
         "tolerance_pct": 0.3,
         "need_neckline_break": true
-      }
+      },
+      "tp_factor": 1.0,
+      "can_predict_tp": true
     },
     "double_bottom": {
       "name_th": "Double Bottom",
@@ -183,7 +194,9 @@
       "gold": {
         "tolerance_pct": 0.3,
         "need_neckline_break": true
-      }
+      },
+      "tp_factor": 1.0,
+      "can_predict_tp": true
     },
     "head_shoulders": {
       "name_th": "Head & Shoulders",
@@ -199,7 +212,9 @@
       },
       "gold": {
         "need_neckline_break": true
-      }
+      },
+      "tp_factor": 1.0,
+      "can_predict_tp": true
     },
     "inverse_head_shoulders": {
       "name_th": "Inverse Head & Shoulders",
@@ -215,7 +230,9 @@
       },
       "gold": {
         "need_neckline_break": true
-      }
+      },
+      "tp_factor": 1.0,
+      "can_predict_tp": true
     },
     "triple_top": {
       "name_th": "Triple Top",
@@ -231,7 +248,8 @@
       },
       "gold": {
         "tolerance_pct": 0.3
-      }
+      },
+      "can_predict_tp": false
     },
     "triple_bottom": {
       "name_th": "Triple Bottom",
@@ -247,7 +265,8 @@
       },
       "gold": {
         "tolerance_pct": 0.3
-      }
+      },
+      "can_predict_tp": false
     },
     "bull_flag": {
       "name_th": "Bull Flag",
@@ -262,7 +281,9 @@
       },
       "gold": {
         "need_break": true
-      }
+      },
+      "tp_factor": 1.0,
+      "can_predict_tp": true
     },
     "bear_flag": {
       "name_th": "Bear Flag",
@@ -277,7 +298,9 @@
       },
       "gold": {
         "need_break": true
-      }
+      },
+      "tp_factor": 1.0,
+      "can_predict_tp": true
     },
     "bull_pennant": {
       "name_th": "Bull Pennant",
@@ -292,7 +315,8 @@
       },
       "gold": {
         "need_break": true
-      }
+      },
+      "can_predict_tp": false
     },
     "bear_pennant": {
       "name_th": "Bear Pennant",
@@ -307,7 +331,8 @@
       },
       "gold": {
         "need_break": true
-      }
+      },
+      "can_predict_tp": false
     },
     "ascending_triangle": {
       "name_th": "Ascending Triangle",
@@ -322,7 +347,9 @@
       },
       "gold": {
         "need_break": true
-      }
+      },
+      "tp_factor": 1.0,
+      "can_predict_tp": true
     },
     "descending_triangle": {
       "name_th": "Descending Triangle",
@@ -337,7 +364,9 @@
       },
       "gold": {
         "need_break": true
-      }
+      },
+      "tp_factor": 1.0,
+      "can_predict_tp": true
     },
     "symmetrical_triangle": {
       "name_th": "Symmetrical Triangle",
@@ -353,7 +382,9 @@
       },
       "gold": {
         "need_break": true
-      }
+      },
+      "tp_factor": 1.0,
+      "can_predict_tp": true
     },
     "rising_wedge": {
       "name_th": "Rising Wedge",
@@ -369,7 +400,8 @@
       },
       "gold": {
         "need_break": true
-      }
+      },
+      "can_predict_tp": false
     },
     "falling_wedge": {
       "name_th": "Falling Wedge",
@@ -385,7 +417,8 @@
       },
       "gold": {
         "need_break": true
-      }
+      },
+      "can_predict_tp": false
     },
     "break_retest_up": {
       "name_th": "Break & Retest ขาขึ้น",
@@ -400,7 +433,8 @@
       },
       "gold": {
         "need_retest": true
-      }
+      },
+      "can_predict_tp": false
     },
     "break_retest_down": {
       "name_th": "Break & Retest ขาลง",
@@ -415,7 +449,8 @@
       },
       "gold": {
         "need_retest": true
-      }
+      },
+      "can_predict_tp": false
     },
     "order_block_bullish": {
       "name_th": "Order Block ขาขึ้น (Demand)",
@@ -430,7 +465,10 @@
       },
       "gold": {
         "need_fresh": true
-      }
+      },
+      "can_predict_tp": true,
+      "tp_factor": 0.0,
+      "tp_note": "TP = Liquidity ถัดไป (Swing High/Low / EMA200)"
     },
     "order_block_bearish": {
       "name_th": "Order Block ขาลง (Supply)",
@@ -445,7 +483,10 @@
       },
       "gold": {
         "need_fresh": true
-      }
+      },
+      "can_predict_tp": true,
+      "tp_factor": 0.0,
+      "tp_note": "TP = Liquidity ถัดไป (Swing High/Low / EMA200)"
     },
     "fvg_bullish": {
       "name_th": "FVG ขาขึ้น",
@@ -460,7 +501,10 @@
       },
       "gold": {
         "need_fvg": true
-      }
+      },
+      "can_predict_tp": true,
+      "tp_factor": 0.0,
+      "tp_note": "TP = Liquidity ถัดไป (Swing High/Low / EMA200)"
     },
     "fvg_bearish": {
       "name_th": "FVG ขาลง",
@@ -475,7 +519,10 @@
       },
       "gold": {
         "need_fvg": true
-      }
+      },
+      "can_predict_tp": true,
+      "tp_factor": 0.0,
+      "tp_note": "TP = Liquidity ถัดไป (Swing High/Low / EMA200)"
     },
     "choch_bullish": {
       "name_th": "CHoCH ขาขึ้น",
@@ -530,7 +577,10 @@
       "enabled": true,
       "desc": "กวาด High เก่าแล้วปิดกลับต่ำกว่า = 61.8% BSL / 78.6% IDM หลอก เตรียม SHORT",
       "btc": {},
-      "gold": {}
+      "gold": {},
+      "can_predict_tp": true,
+      "tp_factor": 0.0,
+      "tp_note": "TP = Liquidity ถัดไป (Swing High/Low / EMA200)"
     },
     "idm_sweep_low": {
       "name_th": "IDM / Sweep Low (ดักหลอกขาลง)",
@@ -541,7 +591,10 @@
       "enabled": true,
       "desc": "กวาด Low เก่าแล้วปิดกลับสูงกว่า = ดักหลอก เตรียม LONG",
       "btc": {},
-      "gold": {}
+      "gold": {},
+      "can_predict_tp": true,
+      "tp_factor": 0.0,
+      "tp_note": "TP = Liquidity ถัดไป (Swing High/Low / EMA200)"
     },
     "discount_zone": {
       "name_th": "Discount Zone",
@@ -552,7 +605,10 @@
       "enabled": true,
       "desc": "ราคาอยู่ใต้ 50% ของ Swing 50 แท่ง (ดีสุด 61.8-78.6% Retracement) = โซนถูก ซื้อ",
       "btc": {},
-      "gold": {}
+      "gold": {},
+      "can_predict_tp": true,
+      "tp_factor": 0.0,
+      "tp_note": "TP = Liquidity ถัดไป (Swing High/Low / EMA200)"
     },
     "premium_zone": {
       "name_th": "Premium Zone",
@@ -563,7 +619,10 @@
       "enabled": true,
       "desc": "ราคาอยู่เหนือ 50% ของ Swing 50 แท่ง (ดีสุด 61.8-78.6%) = โซนแพง ขาย",
       "btc": {},
-      "gold": {}
+      "gold": {},
+      "can_predict_tp": true,
+      "tp_factor": 0.0,
+      "tp_note": "TP = Liquidity ถัดไป (Swing High/Low / EMA200)"
     },
     "ema_50_100_200_trend": {
       "name_th": "EMA 50/100/200 เทรนด์หลัก",
@@ -575,7 +634,10 @@
       "enabled": true,
       "desc": "LONG ต้อง EMA50>100>200 + ราคา>EMA50 / SHORT ต้อง EMA50<100<200 + ราคา<EMA50",
       "btc": {},
-      "gold": {}
+      "gold": {},
+      "can_predict_tp": true,
+      "tp_factor": 0.0,
+      "tp_note": "TP = Liquidity ถัดไป (Swing High/Low / EMA200)"
     }
   }
 }
