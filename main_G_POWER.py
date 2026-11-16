@@ -191,7 +191,7 @@ def make_portfolio_image(paper, unpnl, closed_pnl, win_rate, win_n, total_n, btc
     except Exception as e:
         print(f"make_image err {e}"); return None
 
-def make_chart_image(df, st, symbol_label, price, signal, cond, open_trades, timeframe="15m"):
+def make_chart_image(df, st, symbol_label, price, signal, cond, open_trades, timeframe="30m"):  # แค่แสดงผลกราฟ = 30m, กลยุทธ์ยัง 15m
     # แบบเดียวกับรูป 15/11 03:01 ที่ดูเข้าใจแล้ว - เปลี่ยนแค่ S ให้ตรงแท่ง + ตรงราคาจริง
     try:
         from PIL import Image, ImageDraw, ImageFont
@@ -359,6 +359,17 @@ def make_chart_image(df, st, symbol_label, price, signal, cond, open_trades, tim
         buf=io.BytesIO(); img.save(buf,format="PNG"); return buf.getvalue()
     except Exception as e:
         print(f"chart err {e}"); import traceback; traceback.print_exc(); return None
+
+def send_chart_on_open(symbol, r):
+    # ส่งกราฟตอนเปิดไม้ใหม่ - ใช้กราฟ 30m แค่แสดงผล กลยุทธ์ยัง 15m
+    try:
+        kk="btc" if "BTC" in symbol else "gold"
+        st=STRATS[kk]; df=get_data(symbol, "30m")
+        if isinstance(df, tuple): return
+        df2=st.add_indicators(df)
+        img=make_chart_image(df2, st, symbol, float(r.get("price", df2.iloc[-1]["close"])), r.get("signal","WAIT"), r, [], "30m")
+        if img: send_tele_photo(img, f"OPEN {r.get('signal')} {symbol} ${r.get('price',0):,.2f} - Chart 30m")
+    except Exception as e: print(f"send_chart_on_open err {e}")
 
 def get_strat(symbol):
     s=symbol.upper()
@@ -595,9 +606,9 @@ async def webhook(request: Request):
             return {'ok':True}
         elif tl.startswith('/chart'):
             parts=tl.split(); key='btc' if len(parts)<2 else parse_sym(parts[1])[0]
-            tf='15m'
-            if len(parts)>=3 and parts[2].lower() in ['15m','1h','4h','1d','1w']: tf=parts[2].lower()
-            elif len(parts)>=3 and parts[2].lower() in ['15','60','240']: tf={'15':'15m','60':'1h','240':'4h'}[parts[2].lower()]
+            tf='30m'  # ค่าเริ่มต้นกราฟ = 30m (แค่แสดงผล) กลยุทธ์ยัง 15m
+            if len(parts)>=3 and parts[2].lower() in ['30s','30m','15m','5m','1m','1h','4h','1d','1w']: tf=parts[2].lower()
+            elif len(parts)>=3 and parts[2].lower() in ['15','30','60','240']: tf={'15':'15m','30':'30m','60':'1h','240':'4h'}[parts[2].lower()]
             if key=="unknown": send_tele(f"❓ ไม่มีเหรียญ {parts[1]} แล้ว มีแค่ BTC / GOLD", chat_id); return {"ok":True}
             keys=['btc','gold'] if key=='all' else [key]
             for kk in keys:
@@ -687,7 +698,7 @@ async def webhook(request: Request):
             send_tele(f"🔴 Auto OFF {key.upper()}", chat_id)
             return {"ok":True}
         else:
-            send_tele(f"❓ {text}\n/check [btc|gold|all]\n/chart [btc|gold|all] [15m|1h|4h|1d] = กราฟ TradingView + EMA200 + ADX/DI\n/on [btc|gold|all]\n/off [btc|gold|all]\n/portfolio = รูปสรุปพอร์ต\n/info = รูปอย่างเดียว\n/live [btc|gold]", chat_id)
+            send_tele(f"❓ {text}\n/check [btc|gold|all]\n/chart [btc|gold|all] [30m|30s|15m|1h|4h|1d] = กราฟ 30m (default) TradingView + EMA200 + ADX/DI\n/on [btc|gold|all]\n/off [btc|gold|all]\n/portfolio = รูปสรุปพอร์ต\n/info = รูปอย่างเดียว\n/live [btc|gold]", chat_id)
             return {"ok":True}
     except Exception as e:
         print(f"ERR {e}"); return {"ok":True}
