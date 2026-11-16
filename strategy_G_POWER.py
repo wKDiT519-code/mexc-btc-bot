@@ -336,7 +336,9 @@ class Strategy_G_Power:
                     # CHoCH ลง: ปิดต่ำกว่า Swing Low เดิม = โครงสร้างเปลี่ยนลง
                     choch_flip=float(curr['close'])<swing_low
             except: pass
-            should_tp=cdc_flip or ema_flip or di_flip or ema_fail or trend_break or ema50_break or smc_flip or choch_flip
+            # V6.3 FIX: เอา EMA Fast Fail + Close<EMA50 ออก - มันไวเกินไป Pullback ธรรมดาก็โดนตัดออกก่อนถึง TP
+            # เหลือแค่ CDC Flip / EMA Cross / DI Flip / Close<EMA Trend / SMC Flip / CHoCH = เปลี่ยนเทรนด์จริงถึงออก
+            should_tp=cdc_flip or ema_flip or di_flip or trend_break or smc_flip or choch_flip
             reason=[]
             if cdc_flip: reason.append("CDC Flip")
             if ema_fail: reason.append("EMA Fast Fail")
@@ -367,7 +369,8 @@ class Strategy_G_Power:
                     swing_high=float(df.iloc[-11:-1]['high'].max())
                     choch_flip=float(curr['close'])>swing_high
             except: pass
-            should_tp=cdc_flip or ema_flip or di_flip or ema_fail or trend_break or ema50_break or smc_flip or choch_flip
+            # V6.3 FIX: เอา EMA Fast Fail + Close>EMA50 ออก - เหตุผลเดียวกับ LONG
+            should_tp=cdc_flip or ema_flip or di_flip or trend_break or smc_flip or choch_flip
             reason=[]
             if cdc_flip: reason.append("CDC Flip")
             if ema_fail: reason.append("EMA Fast Fail")
