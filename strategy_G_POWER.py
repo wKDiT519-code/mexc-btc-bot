@@ -336,16 +336,14 @@ class Strategy_G_Power:
                     # CHoCH ลง: ปิดต่ำกว่า Swing Low เดิม = โครงสร้างเปลี่ยนลง
                     choch_flip=float(curr['close'])<swing_low
             except: pass
-            # V6.3 FIX: เอา EMA Fast Fail + Close<EMA50 ออก - มันไวเกินไป Pullback ธรรมดาก็โดนตัดออกก่อนถึง TP
-            # เหลือแค่ CDC Flip / EMA Cross / DI Flip / Close<EMA Trend / SMC Flip / CHoCH = เปลี่ยนเทรนด์จริงถึงออก
-            should_tp=cdc_flip or ema_flip or di_flip or trend_break or smc_flip or choch_flip
+            # V6.4 FIX: ออกต้องมี 2 เงื่อนไขพร้อมกัน (เช่น CDC Flip + DI Flip) ข้อเดียวไม่พอ - DI Flip / Close<EMA Trend ข้อเดียวไวเกินไป
+            _votes=sum([1 for x in [cdc_flip, ema_flip, di_flip, trend_break, smc_flip, choch_flip] if x])
+            should_tp=_votes>=2
             reason=[]
             if cdc_flip: reason.append("CDC Flip")
-            if ema_fail: reason.append("EMA Fast Fail")
             if ema_flip: reason.append(f"EMA{self.config['ema_fast']}x{self.config['ema_slow']} Cross Down")
             if di_flip: reason.append("DI Flip")
             if trend_break: reason.append("Close < EMA Trend")
-            if ema50_break: reason.append("Close < EMA50 (SMC Trend)")
             if smc_flip: reason.append("SMC SHORT 4/6 Flip")
             if choch_flip: reason.append("CHoCH Down")
             return {"tp":should_tp, "reasons":reason, "cdc_flip":cdc_flip, "ema_flip":ema_flip}
@@ -369,15 +367,14 @@ class Strategy_G_Power:
                     swing_high=float(df.iloc[-11:-1]['high'].max())
                     choch_flip=float(curr['close'])>swing_high
             except: pass
-            # V6.3 FIX: เอา EMA Fast Fail + Close>EMA50 ออก - เหตุผลเดียวกับ LONG
-            should_tp=cdc_flip or ema_flip or di_flip or trend_break or smc_flip or choch_flip
+            # V6.4 FIX: ออกต้องมี 2 เงื่อนไขพร้อมกัน - เหตุผลเดียวกับ LONG
+            _votes=sum([1 for x in [cdc_flip, ema_flip, di_flip, trend_break, smc_flip, choch_flip] if x])
+            should_tp=_votes>=2
             reason=[]
             if cdc_flip: reason.append("CDC Flip")
-            if ema_fail: reason.append("EMA Fast Fail")
             if ema_flip: reason.append(f"EMA{self.config['ema_fast']}x{self.config['ema_slow']} Cross Up")
             if di_flip: reason.append("DI Flip")
             if trend_break: reason.append("Close > EMA Trend")
-            if ema50_break: reason.append("Close > EMA50 (SMC Trend)")
             if smc_flip: reason.append("SMC LONG 4/6 Flip")
             if choch_flip: reason.append("CHoCH Up")
             return {"tp":should_tp, "reasons":reason, "cdc_flip":cdc_flip, "ema_flip":ema_flip}
