@@ -78,7 +78,11 @@ def run_bt(symbol, days=30, capital=40.0):
                 pos = None
         # --- ว่าง: เช็คเข้า Pullback ---
         if not pos:
-            trend = st.check_trend(curr, prev)
+            smc = st.check_smc(df.iloc[:i+1]) if hasattr(st, 'check_smc') else None
+            trend = st.check_trend(curr, prev, smc=smc)
+            # V6.2 Pattern TP in BT: ใช้ Flag เป็นตัวแทนวัดระยะ
+            try: _ptp_info=st.get_pattern_tp(df.iloc[:i+1], 'LONG' if trend.get('long') else 'SHORT' if trend.get('short') else 'LONG', 'flag')
+            except: _ptp_info=None
             side = "LONG" if trend["long"] else "SHORT" if trend["short"] else None
             if side:
                 sl = price*(1-c["sl_pct"]) if side=="LONG" else price*(1+c["sl_pct"])
@@ -92,6 +96,26 @@ def run_bt(symbol, days=30, capital=40.0):
     avg_loss = sum(t["pnl_usd"] for t in losses)/len(losses) if losses else 0
     return {"symbol": symbol, "days": days, "capital_start": capital, "capital_end": round(bal,2), "total_pnl": round(total_pnl,2), "trades": len(trades), "wins": len(wins), "losses": len(losses), "winrate_pct": round(winrate,1), "avg_win": round(avg_win,2), "avg_loss": round(avg_loss,2), "profit_factor": round(abs(sum(t["pnl_usd"] for t in wins)/sum(t["pnl_usd"] for t in losses)) if losses and sum(t["pnl_usd"] for t in losses)!=0 else 0,2), "config": {"ema": f"{c['ema_fast']}/{c['ema_slow']}/{c['ema_trend']}", "adx_min": c["adx_min"], "retest_pct": c["retest_pct"], "max_ext": c["max_extension_pct"]}, "trade_list": trades}
 
+def send_tele_bt(msg):
+    import os, requests
+    tok=os.getenv("TELEGRAM_BOT_TOKEN",""); chat=os.getenv("TELEGRAM_CHAT_ID","")
+    if not tok or not chat: print("ไม่มี TELEGRAM env เลยส่ง Telegram ไม่ได้ ดูผลใน Shell แทน"); return
+    try: requests.post(f"https://api.telegram.org/bot{tok}/sendMessage", json={"chat_id": chat, "text": msg}, timeout=15)
+    except Exception as e: print("send tele err", e)
+
+def format_bt_msg(out):
+    lines=["📊 BT ผล Backtest Pullback (15m MEXC Perp)"]
+    for sym in ["btc","gold"]:
+        r=out[sym]
+        lines.append(f"\n{'BTC' if sym=='btc' else 'GOLD'} {r['days']} วัน: {r['trades']} ไม้ Win {r['winrate_pct']}%")
+        lines.append(f"PnL ${r['total_pnl']:+.2f} ทุน ${r['capital_start']} -> ${r['capital_end']} PF {r['profit_factor']}")
+        lines.append(f"Avg Win ${r['avg_win']:+.2f} / Avg Loss ${r['avg_loss']:+.2f} | EMA {r['config']['ema']} Retest {r['config']['retest_pct']*100:.1f}% MaxExt {r['config']['max_ext']}%")
+        # 5 ไม้ล่าสุด
+        for tr in r['trade_list'][-5:]:
+            lines.append(f"  {tr['side']} เข้า {tr['entry']:.1f} ออก {tr['exit']:.1f} {tr['exit_reason']} PnL ${tr['pnl_usd']:+.2f}")
+    lines.append("\nดูรายละเอียดทุกไม้ใน /data/bt_results.json (บน Disk)")
+    return "\n".join(lines)
+
 if __name__ == "__main__":
     days = int(sys.argv[sys.argv.index("--days")+1]) if "--days" in sys.argv else 30
     out = {}
@@ -101,4 +125,7 @@ if __name__ == "__main__":
         r = out[sym]
         print(f"  {sym}: {r['trades']} ไม้ Win {r['winrate_pct']}% PnL ${r['total_pnl']:+.2f} ทุน ${r['capital_start']} -> ${r['capital_end']} PF {r['profit_factor']}")
     (DATA_DIR / "bt_results.json").write_text(json.dumps(out, indent=2, ensure_ascii=False))
+    msg=format_bt_msg(out)
+    print(msg)
     print(f"บันทึกแล้วที่ {DATA_DIR}/bt_results.json (อยู่บน Disk ไม่หายตอน Deploy)")
+    send_tele_bt(msg)
