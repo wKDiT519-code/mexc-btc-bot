@@ -1,0 +1,581 @@
+{
+  "_meta": {
+    "version": "2.0",
+    "tf": "15m",
+    "check_after_close_sec": 15,
+    "note": "V2: เดิม 26 + SMC 13 = 39 ตัว (OB/FVG/CHoCH/BOS/IDM/Discount/Premium/EMA50-100-200)",
+    "rule": "Pattern เข้าอย่างเดียวไม่พอ ต้องผ่าน Pullback + ADX/DI + ค่า BTC/GOLD ของ Pattern นั้นด้วยถึงเปิดไม้"
+  },
+  "patterns": {
+    "engulfing_bullish": {
+      "name_th": "กลืนกินขาขึ้น",
+      "type": "reversal",
+      "use_for": [
+        "entry_long"
+      ],
+      "enabled": true,
+      "desc": "แท่งเขียวกลืน Body แท่งแดงก่อนหน้าทั้งแท่ง + เกิดตรง Pullback ลงหา EMA",
+      "btc": {
+        "min_body_ratio": 1.2,
+        "need_pullback": true
+      },
+      "gold": {
+        "min_body_ratio": 1.1,
+        "need_pullback": true
+      }
+    },
+    "engulfing_bearish": {
+      "name_th": "กลืนกินขาลง",
+      "type": "reversal",
+      "use_for": [
+        "entry_short"
+      ],
+      "enabled": true,
+      "desc": "แท่งแดงกลืน Body แท่งเขียวก่อนหน้าทั้งแท่ง + เกิดตรง Pullback ขึ้นหา EMA",
+      "btc": {
+        "min_body_ratio": 1.2,
+        "need_pullback": true
+      },
+      "gold": {
+        "min_body_ratio": 1.1,
+        "need_pullback": true
+      }
+    },
+    "pinbar_bullish": {
+      "name_th": "Pin Bar / Hammer ขาขึ้น",
+      "type": "reversal",
+      "use_for": [
+        "entry_long"
+      ],
+      "enabled": true,
+      "desc": "ไส้ล่างยาวกว่า Body 2 เท่า + ปิดเหนือ EMA Fast + อยู่ตรง Pullback",
+      "btc": {
+        "wick_body_ratio": 2.2
+      },
+      "gold": {
+        "wick_body_ratio": 2.0
+      }
+    },
+    "pinbar_bearish": {
+      "name_th": "Pin Bar / Shooting Star ขาลง",
+      "type": "reversal",
+      "use_for": [
+        "entry_short"
+      ],
+      "enabled": true,
+      "desc": "ไส้บนยาวกว่า Body 2 เท่า + ปิดต่ำกว่า EMA Fast + อยู่ตรง Pullback",
+      "btc": {
+        "wick_body_ratio": 2.2
+      },
+      "gold": {
+        "wick_body_ratio": 2.0
+      }
+    },
+    "morning_star": {
+      "name_th": "Morning Star",
+      "type": "reversal",
+      "use_for": [
+        "entry_long"
+      ],
+      "enabled": true,
+      "desc": "3 แท่ง: แดงใหญ่ -> โดจิ/แท่งเล็ก -> เขียวใหญ่ปิดเกินครึ่งแท่งแรก",
+      "btc": {
+        "need_pullback": true
+      },
+      "gold": {
+        "need_pullback": true
+      }
+    },
+    "evening_star": {
+      "name_th": "Evening Star",
+      "type": "reversal",
+      "use_for": [
+        "entry_short"
+      ],
+      "enabled": true,
+      "desc": "3 แท่ง: เขียวใหญ่ -> โดจิ/แท่งเล็ก -> แดงใหญ่ปิดต่ำกว่าครึ่งแท่งแรก",
+      "btc": {
+        "need_pullback": true
+      },
+      "gold": {
+        "need_pullback": true
+      }
+    },
+    "harami_bullish": {
+      "name_th": "Harami ขาขึ้น",
+      "type": "reversal",
+      "use_for": [
+        "entry_long"
+      ],
+      "enabled": true,
+      "desc": "แท่งเขียวเล็กอยู่ใน Body แท่งแดงใหญ่ก่อนหน้า + เกิดตรง Pullback",
+      "btc": {
+        "need_pullback": true
+      },
+      "gold": {
+        "need_pullback": true
+      }
+    },
+    "harami_bearish": {
+      "name_th": "Harami ขาลง",
+      "type": "reversal",
+      "use_for": [
+        "entry_short"
+      ],
+      "enabled": true,
+      "desc": "แท่งแดงเล็กอยู่ใน Body แท่งเขียวใหญ่ก่อนหน้า + เกิดตรง Pullback",
+      "btc": {
+        "need_pullback": true
+      },
+      "gold": {
+        "need_pullback": true
+      }
+    },
+    "doji": {
+      "name_th": "Doji",
+      "type": "reversal_weak",
+      "use_for": [
+        "entry_long",
+        "entry_short"
+      ],
+      "enabled": true,
+      "desc": "เปิด≈ปิด Body เล็กมาก ต้องรอแท่งถัดไปยืนยันเท่านั้น ห้ามเข้าด้วย Doji เดี่ยวๆ (BTC หลอกบ่อย)",
+      "btc": {
+        "body_pct_max": 0.1,
+        "need_confirm_next_candle": true
+      },
+      "gold": {
+        "body_pct_max": 0.15,
+        "need_confirm_next_candle": true
+      }
+    },
+    "double_top": {
+      "name_th": "Double Top",
+      "type": "reversal",
+      "use_for": [
+        "entry_short",
+        "exit_long"
+      ],
+      "enabled": true,
+      "desc": "ยอด 2 ยอดใกล้กัน (±0.5%) แล้วหลุด Neckline ลงมา",
+      "btc": {
+        "tolerance_pct": 0.5,
+        "need_neckline_break": true
+      },
+      "gold": {
+        "tolerance_pct": 0.3,
+        "need_neckline_break": true
+      }
+    },
+    "double_bottom": {
+      "name_th": "Double Bottom",
+      "type": "reversal",
+      "use_for": [
+        "entry_long",
+        "exit_short"
+      ],
+      "enabled": true,
+      "desc": "ก้น 2 ก้นใกล้กัน แล้วทะลุ Neckline ขึ้นไป",
+      "btc": {
+        "tolerance_pct": 0.5,
+        "need_neckline_break": true
+      },
+      "gold": {
+        "tolerance_pct": 0.3,
+        "need_neckline_break": true
+      }
+    },
+    "head_shoulders": {
+      "name_th": "Head & Shoulders",
+      "type": "reversal",
+      "use_for": [
+        "entry_short",
+        "exit_long"
+      ],
+      "enabled": true,
+      "desc": "ไหล่ซ้าย-หัว-ไหล่ขวา หัวสูงกว่าไหล่ แล้วหลุด Neckline",
+      "btc": {
+        "need_neckline_break": true
+      },
+      "gold": {
+        "need_neckline_break": true
+      }
+    },
+    "inverse_head_shoulders": {
+      "name_th": "Inverse Head & Shoulders",
+      "type": "reversal",
+      "use_for": [
+        "entry_long",
+        "exit_short"
+      ],
+      "enabled": true,
+      "desc": "ไหล่ซ้าย-หัว-ไหล่ขวา กลับด้าน หัวต่ำกว่าไหล่ แล้วทะลุ Neckline",
+      "btc": {
+        "need_neckline_break": true
+      },
+      "gold": {
+        "need_neckline_break": true
+      }
+    },
+    "triple_top": {
+      "name_th": "Triple Top",
+      "type": "reversal",
+      "use_for": [
+        "entry_short",
+        "exit_long"
+      ],
+      "enabled": true,
+      "desc": "ยอด 3 ยอดใกล้กัน แล้วหลุด Neckline",
+      "btc": {
+        "tolerance_pct": 0.5
+      },
+      "gold": {
+        "tolerance_pct": 0.3
+      }
+    },
+    "triple_bottom": {
+      "name_th": "Triple Bottom",
+      "type": "reversal",
+      "use_for": [
+        "entry_long",
+        "exit_short"
+      ],
+      "enabled": true,
+      "desc": "ก้น 3 ก้นใกล้กัน แล้วทะลุ Neckline",
+      "btc": {
+        "tolerance_pct": 0.5
+      },
+      "gold": {
+        "tolerance_pct": 0.3
+      }
+    },
+    "bull_flag": {
+      "name_th": "Bull Flag",
+      "type": "continuation",
+      "use_for": [
+        "entry_long"
+      ],
+      "enabled": true,
+      "desc": "ธงขึ้น: ขึ้นแรง -> พักตัวลาดลงแคบๆ -> เบรกกรอบบนขึ้นไป",
+      "btc": {
+        "need_break": true
+      },
+      "gold": {
+        "need_break": true
+      }
+    },
+    "bear_flag": {
+      "name_th": "Bear Flag",
+      "type": "continuation",
+      "use_for": [
+        "entry_short"
+      ],
+      "enabled": true,
+      "desc": "ธงลง: ลงแรง -> พักตัวลาดขึ้นแคบๆ -> เบรกกรอบล่างลงมา",
+      "btc": {
+        "need_break": true
+      },
+      "gold": {
+        "need_break": true
+      }
+    },
+    "bull_pennant": {
+      "name_th": "Bull Pennant",
+      "type": "continuation",
+      "use_for": [
+        "entry_long"
+      ],
+      "enabled": true,
+      "desc": "ธงสามเหลี่ยมเล็กพักตัวหลังขึ้นแรง แล้วเบรกขึ้น",
+      "btc": {
+        "need_break": true
+      },
+      "gold": {
+        "need_break": true
+      }
+    },
+    "bear_pennant": {
+      "name_th": "Bear Pennant",
+      "type": "continuation",
+      "use_for": [
+        "entry_short"
+      ],
+      "enabled": true,
+      "desc": "ธงสามเหลี่ยมเล็กพักตัวหลังลงแรง แล้วเบรกลง",
+      "btc": {
+        "need_break": true
+      },
+      "gold": {
+        "need_break": true
+      }
+    },
+    "ascending_triangle": {
+      "name_th": "Ascending Triangle",
+      "type": "continuation",
+      "use_for": [
+        "entry_long"
+      ],
+      "enabled": true,
+      "desc": "แนวต้านบนแนวนอน + แนวรับล่างยกขึ้นเรื่อยๆ -> เบรกต้านขึ้น",
+      "btc": {
+        "need_break": true
+      },
+      "gold": {
+        "need_break": true
+      }
+    },
+    "descending_triangle": {
+      "name_th": "Descending Triangle",
+      "type": "continuation",
+      "use_for": [
+        "entry_short"
+      ],
+      "enabled": true,
+      "desc": "แนวรับล่างแนวนอน + แนวต้านบนกดลงเรื่อยๆ -> เบรกรับลง",
+      "btc": {
+        "need_break": true
+      },
+      "gold": {
+        "need_break": true
+      }
+    },
+    "symmetrical_triangle": {
+      "name_th": "Symmetrical Triangle",
+      "type": "continuation",
+      "use_for": [
+        "entry_long",
+        "entry_short"
+      ],
+      "enabled": true,
+      "desc": "กรอบบีบเข้าหากัน เบรกทางไหนไปทางนั้น + ต้องมี Pullback/ADX ยืนยัน",
+      "btc": {
+        "need_break": true
+      },
+      "gold": {
+        "need_break": true
+      }
+    },
+    "rising_wedge": {
+      "name_th": "Rising Wedge",
+      "type": "reversal",
+      "use_for": [
+        "entry_short",
+        "exit_long"
+      ],
+      "enabled": true,
+      "desc": "กรอบลิ่มยกขึ้นบีบเข้าหากัน แล้วเบรกลง",
+      "btc": {
+        "need_break": true
+      },
+      "gold": {
+        "need_break": true
+      }
+    },
+    "falling_wedge": {
+      "name_th": "Falling Wedge",
+      "type": "reversal",
+      "use_for": [
+        "entry_long",
+        "exit_short"
+      ],
+      "enabled": true,
+      "desc": "กรอบลิ่มกดลงบีบเข้าหากัน แล้วเบรกขึ้น",
+      "btc": {
+        "need_break": true
+      },
+      "gold": {
+        "need_break": true
+      }
+    },
+    "break_retest_up": {
+      "name_th": "Break & Retest ขาขึ้น",
+      "type": "continuation",
+      "use_for": [
+        "entry_long"
+      ],
+      "enabled": true,
+      "desc": "เบรกแนวต้านขึ้นไปแล้ว กลับลงมาเทสแนวเดิมแล้วดีดขึ้น = Pullback แบบเดียวกับที่ทำอยู่",
+      "btc": {
+        "need_retest": true
+      },
+      "gold": {
+        "need_retest": true
+      }
+    },
+    "break_retest_down": {
+      "name_th": "Break & Retest ขาลง",
+      "type": "continuation",
+      "use_for": [
+        "entry_short"
+      ],
+      "enabled": true,
+      "desc": "เบรกแนวรับลงมาแล้ว ดีดกลับขึ้นมาเทสแนวเดิมแล้วร่วงต่อ = Pullback S ในรูป GOLD",
+      "btc": {
+        "need_retest": true
+      },
+      "gold": {
+        "need_retest": true
+      }
+    },
+    "order_block_bullish": {
+      "name_th": "Order Block ขาขึ้น (Demand)",
+      "type": "smc",
+      "use_for": [
+        "entry_long"
+      ],
+      "enabled": true,
+      "desc": "แท่งสุดท้ายก่อน BOS ขึ้น / โซน Demand ที่ราคากลับมาเทสแล้วดีดขึ้น + Fresh (ยังไม่โดนทะลุ 2 แท่งติด)",
+      "btc": {
+        "need_fresh": true
+      },
+      "gold": {
+        "need_fresh": true
+      }
+    },
+    "order_block_bearish": {
+      "name_th": "Order Block ขาลง (Supply)",
+      "type": "smc",
+      "use_for": [
+        "entry_short"
+      ],
+      "enabled": true,
+      "desc": "แท่งสุดท้ายก่อน BOS ลง / โซน Supply ที่ราคากลับมาเทสแล้วร่วง + Fresh",
+      "btc": {
+        "need_fresh": true
+      },
+      "gold": {
+        "need_fresh": true
+      }
+    },
+    "fvg_bullish": {
+      "name_th": "FVG ขาขึ้น",
+      "type": "smc",
+      "use_for": [
+        "entry_long"
+      ],
+      "enabled": true,
+      "desc": "ช่องว่าง low[i] > high[i-2] เกิดใน 3 แท่งล่าสุด + อยู่ใกล้ราคา",
+      "btc": {
+        "need_fvg": true
+      },
+      "gold": {
+        "need_fvg": true
+      }
+    },
+    "fvg_bearish": {
+      "name_th": "FVG ขาลง",
+      "type": "smc",
+      "use_for": [
+        "entry_short"
+      ],
+      "enabled": true,
+      "desc": "ช่องว่าง high[i] < low[i-2] เกิดใน 3 แท่งล่าสุด + อยู่ใกล้ราคา",
+      "btc": {
+        "need_fvg": true
+      },
+      "gold": {
+        "need_fvg": true
+      }
+    },
+    "choch_bullish": {
+      "name_th": "CHoCH ขาขึ้น",
+      "type": "smc",
+      "use_for": [
+        "entry_long"
+      ],
+      "enabled": true,
+      "desc": "เทรนด์ลงอยู่ แต่เบรก Swing High ขึ้น = เปลี่ยนคาแรคเตอร์",
+      "btc": {},
+      "gold": {}
+    },
+    "choch_bearish": {
+      "name_th": "CHoCH ขาลง",
+      "type": "smc",
+      "use_for": [
+        "entry_short"
+      ],
+      "enabled": true,
+      "desc": "เทรนด์ขึ้นอยู่ แต่เบรก Swing Low ลง = เปลี่ยนคาแรคเตอร์",
+      "btc": {},
+      "gold": {}
+    },
+    "bos_bullish": {
+      "name_th": "BOS ขาขึ้น",
+      "type": "smc",
+      "use_for": [
+        "entry_long"
+      ],
+      "enabled": true,
+      "desc": "เบรก Swing High ตามเทรนด์ขึ้น",
+      "btc": {},
+      "gold": {}
+    },
+    "bos_bearish": {
+      "name_th": "BOS ขาลง",
+      "type": "smc",
+      "use_for": [
+        "entry_short"
+      ],
+      "enabled": true,
+      "desc": "เบรก Swing Low ตามเทรนด์ลง",
+      "btc": {},
+      "gold": {}
+    },
+    "idm_sweep_high": {
+      "name_th": "IDM / Sweep High (ดักหลอกขาขึ้น)",
+      "type": "smc",
+      "use_for": [
+        "entry_short"
+      ],
+      "enabled": true,
+      "desc": "กวาด High เก่าแล้วปิดกลับต่ำกว่า = 61.8% BSL / 78.6% IDM หลอก เตรียม SHORT",
+      "btc": {},
+      "gold": {}
+    },
+    "idm_sweep_low": {
+      "name_th": "IDM / Sweep Low (ดักหลอกขาลง)",
+      "type": "smc",
+      "use_for": [
+        "entry_long"
+      ],
+      "enabled": true,
+      "desc": "กวาด Low เก่าแล้วปิดกลับสูงกว่า = ดักหลอก เตรียม LONG",
+      "btc": {},
+      "gold": {}
+    },
+    "discount_zone": {
+      "name_th": "Discount Zone",
+      "type": "smc",
+      "use_for": [
+        "entry_long"
+      ],
+      "enabled": true,
+      "desc": "ราคาอยู่ใต้ 50% ของ Swing 50 แท่ง (ดีสุด 61.8-78.6% Retracement) = โซนถูก ซื้อ",
+      "btc": {},
+      "gold": {}
+    },
+    "premium_zone": {
+      "name_th": "Premium Zone",
+      "type": "smc",
+      "use_for": [
+        "entry_short"
+      ],
+      "enabled": true,
+      "desc": "ราคาอยู่เหนือ 50% ของ Swing 50 แท่ง (ดีสุด 61.8-78.6%) = โซนแพง ขาย",
+      "btc": {},
+      "gold": {}
+    },
+    "ema_50_100_200_trend": {
+      "name_th": "EMA 50/100/200 เทรนด์หลัก",
+      "type": "smc",
+      "use_for": [
+        "entry_long",
+        "entry_short"
+      ],
+      "enabled": true,
+      "desc": "LONG ต้อง EMA50>100>200 + ราคา>EMA50 / SHORT ต้อง EMA50<100<200 + ราคา<EMA50",
+      "btc": {},
+      "gold": {}
+    }
+  }
+}
