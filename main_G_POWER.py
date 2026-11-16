@@ -418,7 +418,7 @@ def execute_symbol(symbol, manage_open=True):
             if (trend['long'] and existing_sig!='LONG') or (trend['short'] and existing_sig!='SHORT'):
                 can_open=False  # ไม่เพิ่มtradesสวนทาง
         if can_open and not trend['sideway']:
-            # V5.2.2 PULLBACK ENTRY: ไม่ต้องWAIT cross ทุกครั้ง
+            # V6.2 PULLBACK ENTRY: ไม่ต้องWAIT cross ทุกครั้ง
             if trend['long'] and mom['long']:
                 signal="LONG"
             elif trend['short'] and mom['short']:
@@ -499,7 +499,7 @@ async def webhook(request: Request):
                 if key!='all' and k!=key: continue
                 results[k]=execute_symbol(SYMBOLS[k])
             trades=load_trades(); auto=get_auto_state(); bal=get_mexc_balance()
-            out=f"📊 <b>G_POWER V5.2.2 CHECK {key.upper()}</b> {datetime.now().strftime('%d/%m %H:%M')}\n"
+            out=f"📊 <b>G_POWER V6.2 CHECK {key.upper()}</b> {datetime.now().strftime('%d/%m %H:%M')}\n"
             for k,r in results.items():
                 if not r.get('ok'): out+=f"\n{k.upper()} ❌ {r.get('error')}\n"
                 else:
@@ -518,7 +518,7 @@ async def webhook(request: Request):
                     out+=f"{sig} {ot['symbol']} Entry ${entry:,.2f} Now ${curr_p:,.2f} UnPnL ${upnl:+.2f} ({upp:+.1f}%) SL ${sl:,.2f} {ot.get('trailing','')}\n"
             else: out+=f"\n📌 ไม่มีtradesถืออยู่ - WAIT\n"
             if bal.get('ok'): out+=f"\n🏦 MEXC {bal.get('total')} USDT | Pos {len(bal.get('positions',[]))}\n"
-            out+=f"\n✅ V5.2.2 VOL 0.25 + PULLBACK + BTC+GOLD FIX\n💡 1.Retest 2.Trailing 3.TP Trend"
+            out+=f"\n✅ V6.2 VOL 0.25 + PULLBACK + BTC+GOLD FIX\n💡 1.Retest 2.Trailing 3.TP Trend"
             send_tele(out, chat_id)
             # AUTO: เปิดไม้ใหม่ -> ส่งกราฟทันที
             for _k,_r in results.items():
@@ -678,7 +678,7 @@ async def webhook(request: Request):
             parts=tl.split(); key='all' if len(parts)<2 else parse_sym(parts[1])[0]
             if key=="unknown": send_tele(f"❓ ไม่มีเหรียญ {parts[1]} แล้ว มีแค่ BTC / GOLD", chat_id); return {"ok":True}
             set_auto_state(key, True)
-            send_tele(f"🟢 Auto ON {key.upper()} {datetime.now().strftime('%d/%m %H:%M')} V5.2.2 PULLBACK", chat_id)
+            send_tele(f"🟢 Auto ON {key.upper()} {datetime.now().strftime('%d/%m %H:%M')} V6.2 PULLBACK", chat_id)
             return {"ok":True}
         elif tl.startswith('/off'):
             parts=tl.split(); key='all' if len(parts)<2 else parse_sym(parts[1])[0]
