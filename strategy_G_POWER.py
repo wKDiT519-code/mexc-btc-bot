@@ -1,5 +1,5 @@
 """
-G_POWER V6.7 TREND PULLBACK + REVERSAL PATTERN - ADX + DI ล้วน (ไม่มี RSI / Volume แล้ว)
+G_POWER V6.8 HTF 1H TREND + 15M PULLBACK - ADX + DI ล้วน (ไม่มี RSI / Volume แล้ว)
 1. จุดเข้าแม่น - Retest + ADX + DI + CDC + EMA
 2. ยังอยู่ในเทรน -> Trailing SL กันทุน/กำไร (BE -> Lock -> CDC Trail)
 3. TP เมื่อเปลี่ยนเทรน - CDC Flip / EMA Cross / DI Cross
@@ -11,7 +11,7 @@ import numpy as np
 class Strategy_G_Power:
     def __init__(self, symbol_key="btc"):
         self.symbol_key = symbol_key
-        self.name = f"G_POWER V6.7 TREND PULLBACK {symbol_key.upper()}"
+        self.name = f"G_POWER V6.8 HTF 1H {symbol_key.upper()}"
         base = {
             "btc": {
                 # BTC นิสัย: เร็ว + เหวี่ยงแรง + หลอกบ่อย (15m ATR% ~0.8-1.2% vs GOLD ~0.3-0.5%)
@@ -19,12 +19,12 @@ class Strategy_G_Power:
                 "ema_fast": 15, "ema_slow": 40, "ema_trend": 80, "ema50": 50, "ema100": 100, "ema200": 200, "smc_min_score": 3,
                 "adx_min": 18, "adx_sideway": 15, "adx_turbo": 30,
                 "di_min": 14, "di_turbo": 22,
-                "sl_pct": 0.008, "tp_pct": 0.016,  # V6.7: TP 1.6% / SL 0.8% R:R 2.0 (เดิม TP 18% ไม่มีทางถึง)
+                "sl_pct": 0.008, "tp_pct": 0.016,  # V6.8: TP 1.6% / SL 0.8% R:R 2.0 (เดิม TP 18% ไม่มีทางถึง)
                 "cdc_atr_fast": 7, "cdc_mult_fast": 0.8,
                 "cdc_atr_slow": 14, "cdc_mult_slow": 2.0,
                 "sideway_pct": 1.5,
-                "retest_pct": 0.009, "max_extension_pct": 1.5,  # V6.7: ห้ามไล่เกิน 1.5% (เดิม 3.0% ไล่ยอดดอย)
-                "be_trigger": 0.004,  # V6.7: กำไร 0.4% ย้าย SL ไปทุนเลย กันแพ้เล็กๆ กลายเป็น BE
+                "retest_pct": 0.009, "max_extension_pct": 1.5,  # V6.8: ห้ามไล่เกิน 1.5% (เดิม 3.0% ไล่ยอดดอย)
+                "be_trigger": 0.004,  # V6.8: กำไร 0.4% ย้าย SL ไปทุนเลย กันแพ้เล็กๆ กลายเป็น BE
                 "lock_trigger": 0.008,
                 "lock_pct": 0.003,
             },
@@ -34,12 +34,12 @@ class Strategy_G_Power:
                 "ema_fast": 21, "ema_slow": 55, "ema_trend": 100, "ema50": 50, "ema100": 100, "ema200": 200, "smc_min_score": 3,
                 "adx_min": 15, "adx_sideway": 12, "adx_turbo": 26,
                 "di_min": 12, "di_turbo": 20,
-                "sl_pct": 0.006, "tp_pct": 0.012,  # V6.7: TP 1.2% / SL 0.6% R:R 2.0 (เดิม TP 12% ไม่มีทางถึง)
+                "sl_pct": 0.006, "tp_pct": 0.012,  # V6.8: TP 1.2% / SL 0.6% R:R 2.0 (เดิม TP 12% ไม่มีทางถึง)
                 "cdc_atr_fast": 10, "cdc_mult_fast": 1.0,
                 "cdc_atr_slow": 20, "cdc_mult_slow": 2.5,
                 "sideway_pct": 1.2,
-                "retest_pct": 0.006, "max_extension_pct": 1.0,  # V6.7: ห้ามไล่เกิน 1.0%
-                "be_trigger": 0.003, "lock_trigger": 0.006, "lock_pct": 0.002,  # V6.7: BE เร็ว
+                "retest_pct": 0.006, "max_extension_pct": 1.0,  # V6.8: ห้ามไล่เกิน 1.0%
+                "be_trigger": 0.003, "lock_trigger": 0.006, "lock_pct": 0.002,  # V6.8: BE เร็ว
             },
         }
         self.config = base.get(symbol_key, base["btc"])
@@ -229,7 +229,8 @@ class Strategy_G_Power:
 
     # 1. จุดเข้าแม่น - Pullback แบบในรูป: เทรนด์ลง + ดีดกลับหา EMA Fast/CDC + Rejection กลับลง = S
     # S1/S2/S3 ในรูปคือจุดนี้ ไม่ใช่ S ตรงก้น
-    def check_trend(self, curr, prev=None, prev2=None, smc=None):
+    def check_trend(self, curr, prev=None, prev2=None, smc=None, htf_trend=None):
+        # V6.8 HTF: htf_trend = 'long' / 'short' / None มาจาก 1h ถ้าไม่มี = ใช้ 15m เดิม
         c=self.config
         ema_diff=abs(curr['ema_fast']-curr['ema_slow'])/curr['close']*100
         sideway=(curr['adx']<c["adx_sideway"]) or (ema_diff<c["sideway_pct"] and curr['adx']<c["adx_turbo"])
@@ -237,9 +238,11 @@ class Strategy_G_Power:
         ext=(curr['close']-curr['ema_trend'])/curr['close']*100
         extended=abs(ext)>c.get("max_extension_pct",2.0)
         # เทรนด์หลัก (ADX + DI ล้วน ไม่ใช้ RSI/Volume) - Turbo ไม่ Bypass เทรนด์แล้ว
-        long_core=curr['cdc_up'] and curr['plus_di']>curr['minus_di'] and curr['plus_di']>c["di_min"] and curr['adx']>c["adx_min"] and curr['close']>curr['ema_trend']
-        short_core=not curr['cdc_up'] and curr['minus_di']>curr['plus_di'] and curr['minus_di']>c["di_min"] and curr['adx']>c["adx_min"] and curr['close']<curr['ema_trend']
-        # V6.7 PULLBACK TO TREND: แตะเส้น Trend (ema_trend) แล้วกลับตัวตามแพทเทิร์นถึงเปิด
+        htf_long_ok = True if htf_trend is None else (htf_trend=='long')
+        htf_short_ok = True if htf_trend is None else (htf_trend=='short')
+        long_core=curr['cdc_up'] and curr['plus_di']>curr['minus_di'] and curr['plus_di']>c["di_min"] and curr['adx']>c["adx_min"] and curr['close']>curr['ema_trend'] and htf_long_ok
+        short_core=not curr['cdc_up'] and curr['minus_di']>curr['plus_di'] and curr['minus_di']>c["di_min"] and curr['adx']>c["adx_min"] and curr['close']<curr['ema_trend'] and htf_short_ok
+        # V6.8 PULLBACK TO TREND: แตะเส้น Trend (ema_trend) แล้วกลับตัวตามแพทเทิร์นถึงเปิด
         # แพทเทิร์นกลับตัวที่ยอมรับ (อย่างใดอย่างหนึ่ง): Engulfing / Pin Bar (ไส้ยาว) / ปิดทะลุ High/Low แท่งก่อน
         def _rev_pat(prev_c, curr_c, is_long):
             try:
@@ -268,13 +271,13 @@ class Strategy_G_Power:
                 _touched_trend_s=max(float(prev.get('high',0)), float(prev.get('close',0)))>=float(prev.get('ema_trend',0)) or float(curr.get('high',0))>=float(curr.get('ema_trend',0))
                 pull_short=_touched_trend_s and float(curr['close'])<float(curr['ema_trend']) and float(curr['close'])<float(prev.get('close',0)) and _rev_pat(prev, curr, False)
             except: pass
-        retest=curr['dist_ema_trend'] <= c["retest_pct"]*2  # V6.7: วัดห่างจากเส้น Trend เพราะจุดเข้าคือเส้น Trend
+        retest=curr['dist_ema_trend'] <= c["retest_pct"]*2  # V6.8: วัดห่างจากเส้น Trend เพราะจุดเข้าคือเส้น Trend
         # SMC Checklist 6 ข้อ: ถ้ามี smc ส่งมา ต้องผ่าน >=4/6 ถึงเข้า (ถ้าไม่ส่งมา = ใช้ Pullback เดิม ไม่กรอง SMC)
         smc_long_ok = True if smc is None else bool(smc.get("long_pass"))
         smc_short_ok = True if smc is None else bool(smc.get("short_pass"))
         long=long_core and pull_long and retest and not extended and smc_long_ok
         short=short_core and pull_short and retest and not extended and smc_short_ok
-        return {"long":long, "short":short, "sideway":sideway and not (long or short), "retest":retest, "ema_diff":ema_diff, "long_core":long_core, "short_core":short_core, "pull_long":pull_long, "pull_short":pull_short, "extended":extended, "smc_long_ok":smc_long_ok, "smc_short_ok":smc_short_ok, "smc":smc}
+        return {"long":long, "short":short, "sideway":sideway and not (long or short), "retest":retest, "ema_diff":ema_diff, "long_core":long_core, "short_core":short_core, "pull_long":pull_long, "pull_short":pull_short, "extended":extended, "smc_long_ok":smc_long_ok, "smc_short_ok":smc_short_ok, "smc":smc, "htf_trend":htf_trend}
 
     def check_reversal(self, prev, curr):
         # EMA cross + CDC flip = จุดกลับตัวแม่น
