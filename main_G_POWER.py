@@ -191,7 +191,7 @@ def make_portfolio_image(paper, unpnl, closed_pnl, win_rate, win_n, total_n, btc
     except Exception as e:
         print(f"make_image err {e}"); return None
 
-def make_chart_image(df, st, symbol_label, price, signal, cond, open_trades, timeframe="30m"):  # แค่แสดงผลกราฟ = 30m, กลยุทธ์ยัง 15m
+def make_chart_image(df, st, symbol_label, price, signal, cond, open_trades, timeframe="15m"):
     # แบบเดียวกับรูป 15/11 03:01 ที่ดูเข้าใจแล้ว - เปลี่ยนแค่ S ให้ตรงแท่ง + ตรงราคาจริง
     try:
         from PIL import Image, ImageDraw, ImageFont
@@ -206,7 +206,7 @@ def make_chart_image(df, st, symbol_label, price, signal, cond, open_trades, tim
         except: f_big=ImageFont.load_default(); f_mid=f_big; f_small=f_big; f_tiny=f_big
         sig_color="#2ED573" if signal=="LONG" else "#FF4757" if signal=="SHORT" else "#8FA3C8"
         d.rounded_rectangle([30,30,W-30,150],radius=20,fill="#1E2A4A")
-        d.text((60,50),f"{symbol_label}  {timeframe}  G_POWER V5.6.2",font=f_big,fill="white")
+        d.text((60,50),f"{symbol_label}  {timeframe}  G_POWER V6.6",font=f_big,fill="white")
         d.text((60,105),f"${price:,.2f}  -  {signal}  -  {datetime.now().strftime('%d/%m %H:%M')}",font=f_small,fill=sig_color)
         d.text((60,170),"EMA Fast",font=f_tiny,fill="#2ED573")
         d.text((220,170),"EMA Slow",font=f_tiny,fill="#FFD700")
@@ -360,17 +360,6 @@ def make_chart_image(df, st, symbol_label, price, signal, cond, open_trades, tim
     except Exception as e:
         print(f"chart err {e}"); import traceback; traceback.print_exc(); return None
 
-def send_chart_on_open(symbol, r):
-    # ส่งกราฟตอนเปิดไม้ใหม่ - ใช้กราฟ 30m แค่แสดงผล กลยุทธ์ยัง 15m
-    try:
-        kk="btc" if "BTC" in symbol else "gold"
-        st=STRATS[kk]; df=get_data(symbol, "30m")
-        if isinstance(df, tuple): return
-        df2=st.add_indicators(df)
-        img=make_chart_image(df2, st, symbol, float(r.get("price", df2.iloc[-1]["close"])), r.get("signal","WAIT"), r, [], "30m")
-        if img: send_tele_photo(img, f"OPEN {r.get('signal')} {symbol} ${r.get('price',0):,.2f} - Chart 30m")
-    except Exception as e: print(f"send_chart_on_open err {e}")
-
 def get_strat(symbol):
     s=symbol.upper()
     if 'BTC' in s: return STRATS['btc']
@@ -429,7 +418,7 @@ def execute_symbol(symbol, manage_open=True):
             if (trend['long'] and existing_sig!='LONG') or (trend['short'] and existing_sig!='SHORT'):
                 can_open=False  # ไม่เพิ่มtradesสวนทาง
         if can_open and not trend['sideway']:
-            # V6.2 PULLBACK ENTRY: ไม่ต้องWAIT cross ทุกครั้ง
+            # V6.6 PULLBACK ENTRY: ไม่ต้องWAIT cross ทุกครั้ง
             if trend['long'] and mom['long']:
                 signal="LONG"
             elif trend['short'] and mom['short']:
@@ -466,7 +455,7 @@ def execute_symbol(symbol, manage_open=True):
                 "tp":pattern_tp_price,
                 "status":"PAPER_OPEN",
                 "real":False,
-                "note":f"V6.1 SMC pullback rev:{rev['long'] or rev['short']} pattern_tp:{pattern_tp_price:.2f}"
+                "note":f"V6.6 SMC pullback rev:{rev['long'] or rev['short']} pattern_tp:{pattern_tp_price:.2f}"
             }
             trades.append(new_trade)
             save_trades(trades)
@@ -510,7 +499,7 @@ async def webhook(request: Request):
                 if key!='all' and k!=key: continue
                 results[k]=execute_symbol(SYMBOLS[k])
             trades=load_trades(); auto=get_auto_state(); bal=get_mexc_balance()
-            out=f"📊 <b>G_POWER V6.2 CHECK {key.upper()}</b> {datetime.now().strftime('%d/%m %H:%M')}\n"
+            out=f"📊 <b>G_POWER V6.6 CHECK {key.upper()}</b> {datetime.now().strftime('%d/%m %H:%M')}\n"
             for k,r in results.items():
                 if not r.get('ok'): out+=f"\n{k.upper()} ❌ {r.get('error')}\n"
                 else:
@@ -529,7 +518,7 @@ async def webhook(request: Request):
                     out+=f"{sig} {ot['symbol']} Entry ${entry:,.2f} Now ${curr_p:,.2f} UnPnL ${upnl:+.2f} ({upp:+.1f}%) SL ${sl:,.2f} {ot.get('trailing','')}\n"
             else: out+=f"\n📌 ไม่มีtradesถืออยู่ - WAIT\n"
             if bal.get('ok'): out+=f"\n🏦 MEXC {bal.get('total')} USDT | Pos {len(bal.get('positions',[]))}\n"
-            out+=f"\n✅ V6.2 VOL 0.25 + PULLBACK + BTC+GOLD FIX\n💡 1.Retest 2.Trailing 3.TP Trend"
+            out+=f"\n✅ V6.6 WR60 + PULLBACK + BTC+GOLD FIX\n💡 1.Retest 2.Trailing 3.TP Trend"
             send_tele(out, chat_id)
             # AUTO: เปิดไม้ใหม่ -> ส่งกราฟทันที
             for _k,_r in results.items():
@@ -606,9 +595,9 @@ async def webhook(request: Request):
             return {'ok':True}
         elif tl.startswith('/chart'):
             parts=tl.split(); key='btc' if len(parts)<2 else parse_sym(parts[1])[0]
-            tf='30m'  # ค่าเริ่มต้นกราฟ = 30m (แค่แสดงผล) กลยุทธ์ยัง 15m
-            if len(parts)>=3 and parts[2].lower() in ['30s','30m','15m','5m','1m','1h','4h','1d','1w']: tf=parts[2].lower()
-            elif len(parts)>=3 and parts[2].lower() in ['15','30','60','240']: tf={'15':'15m','30':'30m','60':'1h','240':'4h'}[parts[2].lower()]
+            tf='15m'
+            if len(parts)>=3 and parts[2].lower() in ['15m','1h','4h','1d','1w']: tf=parts[2].lower()
+            elif len(parts)>=3 and parts[2].lower() in ['15','60','240']: tf={'15':'15m','60':'1h','240':'4h'}[parts[2].lower()]
             if key=="unknown": send_tele(f"❓ ไม่มีเหรียญ {parts[1]} แล้ว มีแค่ BTC / GOLD", chat_id); return {"ok":True}
             keys=['btc','gold'] if key=='all' else [key]
             for kk in keys:
@@ -689,7 +678,7 @@ async def webhook(request: Request):
             parts=tl.split(); key='all' if len(parts)<2 else parse_sym(parts[1])[0]
             if key=="unknown": send_tele(f"❓ ไม่มีเหรียญ {parts[1]} แล้ว มีแค่ BTC / GOLD", chat_id); return {"ok":True}
             set_auto_state(key, True)
-            send_tele(f"🟢 Auto ON {key.upper()} {datetime.now().strftime('%d/%m %H:%M')} V6.2 PULLBACK", chat_id)
+            send_tele(f"🟢 Auto ON {key.upper()} {datetime.now().strftime('%d/%m %H:%M')} V6.6 PULLBACK", chat_id)
             return {"ok":True}
         elif tl.startswith('/off'):
             parts=tl.split(); key='all' if len(parts)<2 else parse_sym(parts[1])[0]
@@ -698,7 +687,7 @@ async def webhook(request: Request):
             send_tele(f"🔴 Auto OFF {key.upper()}", chat_id)
             return {"ok":True}
         else:
-            send_tele(f"❓ {text}\n/check [btc|gold|all]\n/chart [btc|gold|all] [30m|30s|15m|1h|4h|1d] = กราฟ 30m (default) TradingView + EMA200 + ADX/DI\n/on [btc|gold|all]\n/off [btc|gold|all]\n/portfolio = รูปสรุปพอร์ต\n/info = รูปอย่างเดียว\n/live [btc|gold]", chat_id)
+            send_tele(f"❓ {text}\n/check [btc|gold|all]\n/chart [btc|gold|all] [15m|1h|4h|1d] = กราฟ TradingView + EMA200 + ADX/DI\n/on [btc|gold|all]\n/off [btc|gold|all]\n/portfolio = รูปสรุปพอร์ต\n/info = รูปอย่างเดียว\n/live [btc|gold]", chat_id)
             return {"ok":True}
     except Exception as e:
         print(f"ERR {e}"); return {"ok":True}
@@ -742,4 +731,4 @@ def ping():
 @app.get("/", response_class=HTMLResponse)
 def home():
     auto=get_auto_state()
-    return f"<html><body style='background:#0a0e1a;color:#fff;font-family:Arial;padding:20px'><h1>G_POWER V5.2.3 BTC+GOLD 2COINS</h1><p>BTC {'🟢' if auto.get('btc') else '🔴'} GOLD {'🟢' if auto.get('gold') else '🔴'}</p><p>✅ VOL 0.25 | PULLBACK ENTRY | BTC+GOLD FIX</p><a href='/ping'>Ping</a></body></html>"
+    return f"<html><body style='background:#0a0e1a;color:#fff;font-family:Arial;padding:20px'><h1>G_POWER V6.6 BTC+GOLD</h1><p>BTC {'🟢' if auto.get('btc') else '🔴'} GOLD {'🟢' if auto.get('gold') else '🔴'}</p><p>✅ VOL 0.25 | PULLBACK ENTRY | BTC+GOLD FIX</p><a href='/ping'>Ping</a></body></html>"
