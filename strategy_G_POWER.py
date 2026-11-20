@@ -11,7 +11,7 @@ import numpy as np
 class Strategy_G_Power:
     def __init__(self, symbol_key="btc"):
         self.symbol_key = symbol_key
-        self.name = f"G_POWER V7.4 1H-PATTERN WINDOW {symbol_key.upper()}"
+        self.name = f"G_POWER V7.5 1H-PATTERN WINDOW {symbol_key.upper()}"
         base = {
             "btc": {
                 # BTC นิสัย: เร็ว + เหวี่ยงแรง + หลอกบ่อย (15m ATR% ~0.8-1.2% vs GOLD ~0.3-0.5%)
@@ -248,7 +248,7 @@ class Strategy_G_Power:
                 return bool(engulf or pin)
         except: return False
 
-    def check_trend(self, curr, prev=None, prev2=None, smc=None, htf_trend=None, htf_pattern_long=None, htf_pattern_short=None, touch_long=None, touch_short=None):
+    def check_trend(self, curr, prev=None, prev2=None, smc=None, htf_trend=None, htf_pattern_long=None, htf_pattern_short=None, touch_long=None, touch_short=None, htf4h_trend=None):
         # V6.8 HTF: htf_trend = 'long' / 'short' / None มาจาก 1h ถ้าไม่มี = ใช้ 15m เดิม
         c=self.config
         ema_diff=abs(curr['ema_fast']-curr['ema_slow'])/curr['close']*100
@@ -258,9 +258,11 @@ class Strategy_G_Power:
         extended=abs(ext)>c.get("max_extension_pct",2.0)
         # เทรนด์หลัก (ADX + DI ล้วน ไม่ใช้ RSI/Volume) - Turbo ไม่ Bypass เทรนด์แล้ว
         htf_long_ok = True if htf_trend is None else (htf_trend=='long')
+        htf4h_long_ok = True if htf4h_trend is None else (htf4h_trend=='long')
+        htf4h_short_ok = True if htf4h_trend is None else (htf4h_trend=='short')
         htf_short_ok = True if htf_trend is None else (htf_trend=='short')
-        long_core=float(curr.get('adx_slope',0))>=-0.5 and curr['plus_di']>curr['minus_di'] and curr['plus_di']>c["di_min"] and curr['adx']>c["adx_min"] and curr['close']>curr['ema_trend'] and htf_long_ok and float(curr['ema_fast'])>float(curr['ema_slow'])  # V7.1: ไม่ต้องรอ CDC - CDC ไว้ใช้ตอนออก
-        short_core=float(curr.get('adx_slope',0))>=-0.5 and curr['minus_di']>curr['plus_di'] and curr['minus_di']>c["di_min"] and curr['adx']>c["adx_min"] and curr['close']<curr['ema_trend'] and htf_short_ok and float(curr['ema_fast'])<float(curr['ema_slow'])  # V7.1: ไม่ต้องรอ CDC
+        long_core=float(curr.get('adx_slope',0))>=-0.5 and curr['plus_di']>curr['minus_di'] and curr['plus_di']>c["di_min"] and curr['adx']>c["adx_min"] and curr['close']>curr['ema_trend'] and htf_long_ok and htf4h_long_ok and float(curr['ema_fast'])>float(curr['ema_slow'])  # V7.1: ไม่ต้องรอ CDC - CDC ไว้ใช้ตอนออก
+        short_core=float(curr.get('adx_slope',0))>=-0.5 and curr['minus_di']>curr['plus_di'] and curr['minus_di']>c["di_min"] and curr['adx']>c["adx_min"] and curr['close']<curr['ema_trend'] and htf_short_ok and htf4h_short_ok and float(curr['ema_fast'])<float(curr['ema_slow'])  # V7.1: ไม่ต้องรอ CDC
         # V6.8 PULLBACK TO TREND: แตะเส้น Trend (ema_trend) แล้วกลับตัวตามแพทเทิร์นถึงเปิด
         # แพทเทิร์นกลับตัวที่ยอมรับ (อย่างใดอย่างหนึ่ง): Engulfing / Pin Bar (ไส้ยาว) / ปิดทะลุ High/Low แท่งก่อน
         def _rev_pat(prev_c, curr_c, is_long):
@@ -298,7 +300,7 @@ class Strategy_G_Power:
         smc_short_ok = True  # V7.1: SMC ไม่กรองตอนเข้าแล้ว
         long=long_core and pull_long and retest and not extended and smc_long_ok
         short=short_core and pull_short and retest and not extended and smc_short_ok
-        return {"long":long, "short":short, "sideway":sideway and not (long or short), "retest":retest, "ema_diff":ema_diff, "long_core":long_core, "short_core":short_core, "pull_long":pull_long, "pull_short":pull_short, "extended":extended, "smc_long_ok":smc_long_ok, "smc_short_ok":smc_short_ok, "smc":smc, "htf_trend":htf_trend}
+        return {"long":long, "short":short, "sideway":sideway and not (long or short), "retest":retest, "ema_diff":ema_diff, "long_core":long_core, "short_core":short_core, "pull_long":pull_long, "pull_short":pull_short, "extended":extended, "smc_long_ok":smc_long_ok, "smc_short_ok":smc_short_ok, "smc":smc, "htf_trend":htf_trend, "htf4h_trend":htf4h_trend}
 
     def check_reversal(self, prev, curr):
         # EMA cross + CDC flip = จุดกลับตัวแม่น
