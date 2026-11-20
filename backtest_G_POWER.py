@@ -152,7 +152,7 @@ def send_tele_bt(msg):
     except Exception as e: print("send tele err", e)
 
 def format_bt_msg(out):
-    lines=["📊 BT V7.3 1H Pattern + 15m EMA Fast/Slow (MEXC Perp)"]
+    lines=["📊 BT V7.4 GOLD 12/36 1H Pattern + 15m EMA Fast/Slow (MEXC Perp)"]
     for sym in ["btc","gold"]:
         r=out[sym]
         lines.append(f"\n{'BTC' if sym=='btc' else 'GOLD'} {r['days']} วัน: {r['trades']} ไม้ Win {r['winrate_pct']}%")
