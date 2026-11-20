@@ -1,5 +1,5 @@
 """
-G_POWER V6.8 HTF 1H TREND + 15M PULLBACK - ADX + DI ล้วน (ไม่มี RSI / Volume แล้ว)
+G_POWER V6.9 1H PATTERN + 15M EMA FAST/SLOW + PYRAMID ON PULLBACK - ADX + DI ล้วน (ไม่มี RSI / Volume แล้ว)
 1. จุดเข้าแม่น - Retest + ADX + DI + CDC + EMA
 2. ยังอยู่ในเทรน -> Trailing SL กันทุน/กำไร (BE -> Lock -> CDC Trail)
 3. TP เมื่อเปลี่ยนเทรน - CDC Flip / EMA Cross / DI Cross
@@ -11,7 +11,7 @@ import numpy as np
 class Strategy_G_Power:
     def __init__(self, symbol_key="btc"):
         self.symbol_key = symbol_key
-        self.name = f"G_POWER V6.8 HTF 1H {symbol_key.upper()}"
+        self.name = f"G_POWER V6.9 1H-PATTERN {symbol_key.upper()}"
         base = {
             "btc": {
                 # BTC นิสัย: เร็ว + เหวี่ยงแรง + หลอกบ่อย (15m ATR% ~0.8-1.2% vs GOLD ~0.3-0.5%)
@@ -229,7 +229,26 @@ class Strategy_G_Power:
 
     # 1. จุดเข้าแม่น - Pullback แบบในรูป: เทรนด์ลง + ดีดกลับหา EMA Fast/CDC + Rejection กลับลง = S
     # S1/S2/S3 ในรูปคือจุดนี้ ไม่ใช่ S ตรงก้น
-    def check_trend(self, curr, prev=None, prev2=None, smc=None, htf_trend=None):
+
+    def check_pattern_1h(self, prev, curr, is_long):
+        """V6.9: แพทเทิร์นกลับตัวดู 1h - Pin Bar 1 แท่ง / Engulfing 2 แท่ง ต้องรอแท่งปิด"""
+        try:
+            if prev is None or curr is None: return False
+            po=float(prev.get('open',0)); pc=float(prev.get('close',0))
+            co=float(curr.get('open',0)); cc=float(curr.get('close',0))
+            hi=float(curr.get('high',0)); lo=float(curr.get('low',0))
+            body=abs(cc-co)
+            if is_long:
+                engulf=(cc>po and co<pc)
+                pin=((min(co,cc)-lo) > max(body*1.2, 0.0001) and cc>pc)
+                return bool(engulf or pin)
+            else:
+                engulf=(cc<po and co>pc)
+                pin=((hi-max(co,cc)) > max(body*1.2, 0.0001) and cc<pc)
+                return bool(engulf or pin)
+        except: return False
+
+    def check_trend(self, curr, prev=None, prev2=None, smc=None, htf_trend=None, htf_pattern_long=None, htf_pattern_short=None):
         # V6.8 HTF: htf_trend = 'long' / 'short' / None มาจาก 1h ถ้าไม่มี = ใช้ 15m เดิม
         c=self.config
         ema_diff=abs(curr['ema_fast']-curr['ema_slow'])/curr['close']*100
@@ -240,8 +259,8 @@ class Strategy_G_Power:
         # เทรนด์หลัก (ADX + DI ล้วน ไม่ใช้ RSI/Volume) - Turbo ไม่ Bypass เทรนด์แล้ว
         htf_long_ok = True if htf_trend is None else (htf_trend=='long')
         htf_short_ok = True if htf_trend is None else (htf_trend=='short')
-        long_core=curr['cdc_up'] and curr['plus_di']>curr['minus_di'] and curr['plus_di']>c["di_min"] and curr['adx']>c["adx_min"] and curr['close']>curr['ema_trend'] and htf_long_ok
-        short_core=not curr['cdc_up'] and curr['minus_di']>curr['plus_di'] and curr['minus_di']>c["di_min"] and curr['adx']>c["adx_min"] and curr['close']<curr['ema_trend'] and htf_short_ok
+        long_core=curr['cdc_up'] and curr['plus_di']>curr['minus_di'] and curr['plus_di']>c["di_min"] and curr['adx']>c["adx_min"] and curr['close']>curr['ema_trend'] and htf_long_ok and float(curr['ema_fast'])>float(curr['ema_slow'])  # V6.9 rule2: 15m EMA Fast>Slow
+        short_core=not curr['cdc_up'] and curr['minus_di']>curr['plus_di'] and curr['minus_di']>c["di_min"] and curr['adx']>c["adx_min"] and curr['close']<curr['ema_trend'] and htf_short_ok and float(curr['ema_fast'])<float(curr['ema_slow'])  # V6.9 rule2 mirror: 15m EMA Fast<Slow
         # V6.8 PULLBACK TO TREND: แตะเส้น Trend (ema_trend) แล้วกลับตัวตามแพทเทิร์นถึงเปิด
         # แพทเทิร์นกลับตัวที่ยอมรับ (อย่างใดอย่างหนึ่ง): Engulfing / Pin Bar (ไส้ยาว) / ปิดทะลุ High/Low แท่งก่อน
         def _rev_pat(prev_c, curr_c, is_long):
@@ -266,10 +285,12 @@ class Strategy_G_Power:
             try:
                 # LONG: แท่งก่อน Low แตะ/หลุดเส้น Trend แล้วแท่งนี้ปิดกลับเหนือ Trend + กลับตัวตามแพทเทิร์น
                 _touched_trend_l=min(float(prev.get('low',0)), float(prev.get('close',0)))<=float(prev.get('ema_trend',0)) or float(curr.get('low',0))<=float(curr.get('ema_trend',0))
-                pull_long=_touched_trend_l and float(curr['close'])>float(curr['ema_trend']) and float(curr['close'])>float(prev.get('close',0)) and _rev_pat(prev, curr, True)
+                _pat_l = htf_pattern_long if htf_pattern_long is not None else _rev_pat(prev, curr, True)
+                pull_long=_touched_trend_l and float(curr['close'])>float(curr['ema_trend']) and float(curr['close'])>float(prev.get('close',0)) and _pat_l
                 # SHORT: แท่งก่อน High แตะ/หลุดเส้น Trend แล้วแท่งนี้ปิดกลับใต้ Trend + กลับตัวตามแพทเทิร์น
                 _touched_trend_s=max(float(prev.get('high',0)), float(prev.get('close',0)))>=float(prev.get('ema_trend',0)) or float(curr.get('high',0))>=float(curr.get('ema_trend',0))
-                pull_short=_touched_trend_s and float(curr['close'])<float(curr['ema_trend']) and float(curr['close'])<float(prev.get('close',0)) and _rev_pat(prev, curr, False)
+                _pat_s = htf_pattern_short if htf_pattern_short is not None else _rev_pat(prev, curr, False)
+                pull_short=_touched_trend_s and float(curr['close'])<float(curr['ema_trend']) and float(curr['close'])<float(prev.get('close',0)) and _pat_s
             except: pass
         retest=curr['dist_ema_trend'] <= c["retest_pct"]*2  # V6.8: วัดห่างจากเส้น Trend เพราะจุดเข้าคือเส้น Trend
         # SMC Checklist 6 ข้อ: ถ้ามี smc ส่งมา ต้องผ่าน >=4/6 ถึงเข้า (ถ้าไม่ส่งมา = ใช้ Pullback เดิม ไม่กรอง SMC)
