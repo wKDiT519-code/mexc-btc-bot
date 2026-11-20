@@ -1,22 +1,22 @@
-"""G_POWER Backtest - ใช้ Disk /data เก็บแท่งเทียน + ผล BT ไม่หายตอน Deploy
+"""G_POWER Backtest V6.8 HTF 1h + 15m - ใช้ Disk /data เก็บแท่งเทียน + ผล BT ไม่หายตอน Deploy
 รันใน Render Shell: python backtest_G_POWER.py
 หรือรันในเครื่อง: python backtest_G_POWER.py --days 30
 """
 import ccxt, pandas as pd, json, sys
 from pathlib import Path
 from datetime import datetime
-from strategy_G_POWER import Strategy_G_Power
+from strategy_G_POWER_V69_1H_PATTERN import Strategy_G_Power
 
 DATA_DIR = Path("/data") if Path("/data").exists() else Path("/tmp")
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 SYMBOLS = {"btc": "BTC/USDT:USDT", "gold": "PAXG/USDT:USDT"}
 
-def fetch_klines(symbol, days=30):
+def fetch_klines(symbol, days=30, timeframe="15m"):
     # ดึงแท่ง 15m จาก MEXC Perp ตัวเดียวกับที่เทรดจริง + Cache ลง Disk
-    cache = DATA_DIR / f"klines_{symbol}_15m.json"
+    cache = DATA_DIR / f"klines_{symbol}_{timeframe}.json"
     ex = ccxt.mexc({"enableRateLimit": True})
     limit = 1000
-    need = days * 96  # 15m วันละ 96 แท่ง
+    need = days * 96 if timeframe=="15m" else days * 24  # 15m วันละ 96 / 1h วันละ 24
     all_rows = []
     since = None
     # ถ้ามี Cache เก่า โหลดมาก่อน แล้วดึงต่อจากแท่งสุดท้าย (ประหยัด API)
@@ -26,7 +26,7 @@ def fetch_klines(symbol, days=30):
             if all_rows: since = all_rows[-1][0] + 1
         except: all_rows = []
     while len(all_rows) < need:
-        ohlcv = ex.fetch_ohlcv(SYMBOLS[symbol], "15m", limit=limit, since=since)
+        ohlcv = ex.fetch_ohlcv(SYMBOLS[symbol], timeframe, limit=limit, since=since)
         if not ohlcv: break
         # กันวนลูปซ้ำแท่งเดิม
         if all_rows and ohlcv[0][0] <= all_rows[-1][0]:
@@ -54,8 +54,34 @@ def run_bt(symbol, days=30, capital=40.0):
         else:
             st.config = {"ema_fast": 15, "ema_slow": 40, "ema_trend": 80, "ema50": 50, "ema100": 100, "ema200": 200, "smc_min_score": 3, "adx_min": 15, "adx_sideway": 15, "adx_turbo": 30, "di_min": 12, "di_turbo": 22, "sl_pct": 0.034, "tp_pct": 0.18, "cdc_atr_fast": 7, "cdc_mult_fast": 0.8, "cdc_atr_slow": 14, "cdc_mult_slow": 2.0, "sideway_pct": 1.5, "retest_pct": 0.009, "max_extension_pct": 3.0, "be_trigger": 0.01, "lock_trigger": 0.02, "lock_pct": 0.005}
     c = st.config
-    df = fetch_klines(symbol, days)
+    df = fetch_klines(symbol, days, "15m")
     df = st.add_indicators(df)
+    # V6.8 HTF: ดึง 1h มาหาเทรนหลัก - แท่ง 15m แต่ละแท่งใช้ 1h แท่งล่าสุดที่ปิดไปแล้ว
+    try:
+        df_1h = fetch_klines(symbol, days, "1h")
+        df_1h["ema_trend_1h"] = df_1h["close"].ewm(span=int(c["ema_trend"]), adjust=False).mean()
+        _times_1h = df_1h["ts"].values; _trend_1h = df_1h["ema_trend_1h"].values; _close_1h = df_1h["close"].values
+        import bisect
+        def _htf_at(ts):
+            j = bisect.bisect_right(_times_1h, ts) - 1
+            if j < 0: return None
+            return 'long' if float(_close_1h[j]) > float(_trend_1h[j]) else 'short'
+    except Exception as _e:
+        print(f"HTF 1h fail {symbol}: {_e}"); _htf_at = lambda ts: None
+    # V6.9: แพทเทิร์น 1h - คำนวณจากแท่ง 1h ที่ปิดแล้ว 2 แท่งล่าสุด
+    try:
+        _pat_map = {}
+        for _j in range(1, len(df_1h)):
+            _p = df_1h.iloc[_j-1]; _c = df_1h.iloc[_j]
+            _pat_map[int(_c["ts"])] = (st.check_pattern_1h(_p, _c, True), st.check_pattern_1h(_p, _c, False))
+        import bisect as _bis
+        _ts1h_sorted = sorted(_pat_map.keys())
+        def _htf_pat_at(ts):
+            _k = _bis.bisect_right(_ts1h_sorted, ts) - 1
+            if _k < 0: return (None, None)
+            return _pat_map[_ts1h_sorted[_k]]
+    except Exception as _e:
+        print(f"1h pattern fail: {_e}"); _htf_pat_at = lambda ts: (None, None)
     bal = capital
     trades = []
     pos = None  # {side, entry, sl, tp, entry_idx}
@@ -91,9 +117,16 @@ def run_bt(symbol, days=30, capital=40.0):
             smc = st.check_smc(df.iloc[:i+1]) if hasattr(st, 'check_smc') else None
             # รองรับทั้ง strategy ใหม่ (รับ smc) และเก่า (ไม่รับ smc) - ถ้าเก่าจะได้ไม่พัง
             try:
-                trend = st.check_trend(curr, prev, smc=smc)
+                _pl,_ps = _htf_pat_at(int(curr["ts"])); trend = st.check_trend(curr, prev, smc=smc, htf_trend=_htf_at(int(curr["ts"])), htf_pattern_long=_pl, htf_pattern_short=_ps)
             except TypeError:
-                trend = st.check_trend(curr, prev)
+                try: trend = st.check_trend(curr, prev, smc=smc)
+                except TypeError: trend = st.check_trend(curr, prev)
+            # V6.8 live ต้องผ่าน momentum ด้วย - BT ต้องเช็คเหมือนกันไม่งั้นไม้เกินจริง
+            try:
+                _mom = st.check_momentum(curr)
+                if trend.get("long") and not _mom.get("long"): trend["long"]=False
+                if trend.get("short") and not _mom.get("short"): trend["short"]=False
+            except: pass
             side = "LONG" if trend["long"] else "SHORT" if trend["short"] else None
             if side:
                 sl = price*(1-c["sl_pct"]) if side=="LONG" else price*(1+c["sl_pct"])
@@ -115,7 +148,7 @@ def send_tele_bt(msg):
     except Exception as e: print("send tele err", e)
 
 def format_bt_msg(out):
-    lines=["📊 BT ผล Backtest Pullback (15m MEXC Perp)"]
+    lines=["📊 BT V6.9 1H Pattern + 15m EMA Fast/Slow (MEXC Perp)"]
     for sym in ["btc","gold"]:
         r=out[sym]
         lines.append(f"\n{'BTC' if sym=='btc' else 'GOLD'} {r['days']} วัน: {r['trades']} ไม้ Win {r['winrate_pct']}%")
