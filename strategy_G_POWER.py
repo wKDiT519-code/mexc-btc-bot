@@ -11,7 +11,7 @@ import numpy as np
 class Strategy_G_Power:
     def __init__(self, symbol_key="btc"):
         self.symbol_key = symbol_key
-        self.name = f"G_POWER V7.2 1H-PATTERN WINDOW {symbol_key.upper()}"
+        self.name = f"G_POWER V7.3 1H-PATTERN WINDOW {symbol_key.upper()}"
         base = {
             "btc": {
                 # BTC นิสัย: เร็ว + เหวี่ยงแรง + หลอกบ่อย (15m ATR% ~0.8-1.2% vs GOLD ~0.3-0.5%)
@@ -23,7 +23,7 @@ class Strategy_G_Power:
                 "cdc_atr_fast": 7, "cdc_mult_fast": 0.8,
                 "cdc_atr_slow": 14, "cdc_mult_slow": 2.0,
                 "sideway_pct": 1.5,
-                "retest_pct": 0.009, "max_extension_pct": 0.8,  # V7.2: ห้ามห่าง Trend เกิน 0.8%  # V6.8: ห้ามไล่เกิน 1.5% (เดิม 3.0% ไล่ยอดดอย)
+                "retest_pct": 0.009, "max_extension_pct": 1.0,  # V7.2: ห้ามห่าง Trend เกิน 0.8%  # V6.8: ห้ามไล่เกิน 1.5% (เดิม 3.0% ไล่ยอดดอย)
                 "be_trigger": 0.004,  # V6.8: กำไร 0.4% ย้าย SL ไปทุนเลย กันแพ้เล็กๆ กลายเป็น BE
                 "lock_trigger": 0.008,
                 "lock_pct": 0.003,
@@ -38,7 +38,7 @@ class Strategy_G_Power:
                 "cdc_atr_fast": 10, "cdc_mult_fast": 1.0,
                 "cdc_atr_slow": 20, "cdc_mult_slow": 2.5,
                 "sideway_pct": 1.2,
-                "retest_pct": 0.006, "max_extension_pct": 0.6,  # V7.2: ห้ามห่าง Trend เกิน 0.6%  # V6.8: ห้ามไล่เกิน 1.0%
+                "retest_pct": 0.006, "max_extension_pct": 1.0,  # V7.2: ห้ามห่าง Trend เกิน 0.6%  # V6.8: ห้ามไล่เกิน 1.0%
                 "be_trigger": 0.003, "lock_trigger": 0.006, "lock_pct": 0.002,  # V6.8: BE เร็ว
             },
         }
@@ -259,8 +259,8 @@ class Strategy_G_Power:
         # เทรนด์หลัก (ADX + DI ล้วน ไม่ใช้ RSI/Volume) - Turbo ไม่ Bypass เทรนด์แล้ว
         htf_long_ok = True if htf_trend is None else (htf_trend=='long')
         htf_short_ok = True if htf_trend is None else (htf_trend=='short')
-        long_core=float(curr.get('adx_slope',0))>=0 and curr['plus_di']>curr['minus_di'] and curr['plus_di']>c["di_min"] and curr['adx']>c["adx_min"] and curr['close']>curr['ema_trend'] and htf_long_ok and float(curr['ema_fast'])>float(curr['ema_slow'])  # V7.1: ไม่ต้องรอ CDC - CDC ไว้ใช้ตอนออก
-        short_core=float(curr.get('adx_slope',0))>=0 and curr['minus_di']>curr['plus_di'] and curr['minus_di']>c["di_min"] and curr['adx']>c["adx_min"] and curr['close']<curr['ema_trend'] and htf_short_ok and float(curr['ema_fast'])<float(curr['ema_slow'])  # V7.1: ไม่ต้องรอ CDC
+        long_core=float(curr.get('adx_slope',0))>=-0.5 and curr['plus_di']>curr['minus_di'] and curr['plus_di']>c["di_min"] and curr['adx']>c["adx_min"] and curr['close']>curr['ema_trend'] and htf_long_ok and float(curr['ema_fast'])>float(curr['ema_slow'])  # V7.1: ไม่ต้องรอ CDC - CDC ไว้ใช้ตอนออก
+        short_core=float(curr.get('adx_slope',0))>=-0.5 and curr['minus_di']>curr['plus_di'] and curr['minus_di']>c["di_min"] and curr['adx']>c["adx_min"] and curr['close']<curr['ema_trend'] and htf_short_ok and float(curr['ema_fast'])<float(curr['ema_slow'])  # V7.1: ไม่ต้องรอ CDC
         # V6.8 PULLBACK TO TREND: แตะเส้น Trend (ema_trend) แล้วกลับตัวตามแพทเทิร์นถึงเปิด
         # แพทเทิร์นกลับตัวที่ยอมรับ (อย่างใดอย่างหนึ่ง): Engulfing / Pin Bar (ไส้ยาว) / ปิดทะลุ High/Low แท่งก่อน
         def _rev_pat(prev_c, curr_c, is_long):
