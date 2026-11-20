@@ -11,7 +11,7 @@ import numpy as np
 class Strategy_G_Power:
     def __init__(self, symbol_key="btc"):
         self.symbol_key = symbol_key
-        self.name = f"G_POWER V7.3 1H-PATTERN WINDOW {symbol_key.upper()}"
+        self.name = f"G_POWER V7.4 1H-PATTERN WINDOW {symbol_key.upper()}"
         base = {
             "btc": {
                 # BTC นิสัย: เร็ว + เหวี่ยงแรง + หลอกบ่อย (15m ATR% ~0.8-1.2% vs GOLD ~0.3-0.5%)
@@ -31,7 +31,7 @@ class Strategy_G_Power:
             "gold": {
                 # GOLD นิสัย: ช้า + เทรนด์เนียน + เคารพ EMA/CDC (15m ATR% ~0.3-0.5%)
                 # เลย: EMA ช้า / ADX ต่ำกว่า / Retest แคบ / ห้ามไล่แคบ
-                "ema_fast": 21, "ema_slow": 55, "ema_trend": 100, "ema50": 50, "ema100": 100, "ema200": 200, "smc_min_score": 3,
+                "ema_fast": 12, "ema_slow": 36, "ema_trend": 100,  # V7.4: ทอง 12/36 ไวขึ้น (เดิม 21/55 ช้าไป ได้แค่ 3 ไม้) "ema50": 50, "ema100": 100, "ema200": 200, "smc_min_score": 3,
                 "adx_min": 15, "adx_sideway": 12, "adx_turbo": 26,
                 "di_min": 12, "di_turbo": 20,
                 "sl_pct": 0.006, "tp_pct": 0.006,  # V7.2: TP=SL RR 1:1  # V6.8: TP 1.2% / SL 0.6% R:R 2.0 (เดิม TP 12% ไม่มีทางถึง)
