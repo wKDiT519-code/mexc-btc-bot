@@ -11,7 +11,7 @@ import numpy as np
 class Strategy_G_Power:
     def __init__(self, symbol_key="btc"):
         self.symbol_key = symbol_key
-        self.name = f"G_POWER V6.9 1H-PATTERN {symbol_key.upper()}"
+        self.name = f"G_POWER V7.0 1H-PATTERN WINDOW {symbol_key.upper()}"
         base = {
             "btc": {
                 # BTC นิสัย: เร็ว + เหวี่ยงแรง + หลอกบ่อย (15m ATR% ~0.8-1.2% vs GOLD ~0.3-0.5%)
@@ -248,7 +248,7 @@ class Strategy_G_Power:
                 return bool(engulf or pin)
         except: return False
 
-    def check_trend(self, curr, prev=None, prev2=None, smc=None, htf_trend=None, htf_pattern_long=None, htf_pattern_short=None):
+    def check_trend(self, curr, prev=None, prev2=None, smc=None, htf_trend=None, htf_pattern_long=None, htf_pattern_short=None, touch_long=None, touch_short=None):
         # V6.8 HTF: htf_trend = 'long' / 'short' / None มาจาก 1h ถ้าไม่มี = ใช้ 15m เดิม
         c=self.config
         ema_diff=abs(curr['ema_fast']-curr['ema_slow'])/curr['close']*100
@@ -284,15 +284,15 @@ class Strategy_G_Power:
         if prev is not None:
             try:
                 # LONG: แท่งก่อน Low แตะ/หลุดเส้น Trend แล้วแท่งนี้ปิดกลับเหนือ Trend + กลับตัวตามแพทเทิร์น
-                _touched_trend_l=min(float(prev.get('low',0)), float(prev.get('close',0)))<=float(prev.get('ema_trend',0)) or float(curr.get('low',0))<=float(curr.get('ema_trend',0))
+                _touched_trend_l=(touch_long if touch_long is not None else (min(float(prev.get('low',0)), float(prev.get('close',0)))<=float(prev.get('ema_trend',0)) or float(curr.get('low',0))<=float(curr.get('ema_trend',0))))
                 _pat_l = htf_pattern_long if htf_pattern_long is not None else _rev_pat(prev, curr, True)
                 pull_long=_touched_trend_l and float(curr['close'])>float(curr['ema_trend']) and float(curr['close'])>float(prev.get('close',0)) and _pat_l
                 # SHORT: แท่งก่อน High แตะ/หลุดเส้น Trend แล้วแท่งนี้ปิดกลับใต้ Trend + กลับตัวตามแพทเทิร์น
-                _touched_trend_s=max(float(prev.get('high',0)), float(prev.get('close',0)))>=float(prev.get('ema_trend',0)) or float(curr.get('high',0))>=float(curr.get('ema_trend',0))
+                _touched_trend_s=(touch_short if touch_short is not None else (max(float(prev.get('high',0)), float(prev.get('close',0)))>=float(prev.get('ema_trend',0)) or float(curr.get('high',0))>=float(curr.get('ema_trend',0))))
                 _pat_s = htf_pattern_short if htf_pattern_short is not None else _rev_pat(prev, curr, False)
                 pull_short=_touched_trend_s and float(curr['close'])<float(curr['ema_trend']) and float(curr['close'])<float(prev.get('close',0)) and _pat_s
             except: pass
-        retest=curr['dist_ema_trend'] <= c["retest_pct"]*2  # V6.8: วัดห่างจากเส้น Trend เพราะจุดเข้าคือเส้น Trend
+        retest=curr['dist_ema_trend'] <= c["retest_pct"]*3  # V7.0: หลวมขึ้น *3 ไม่งั้น 0 ไม้  # V6.8: วัดห่างจากเส้น Trend เพราะจุดเข้าคือเส้น Trend
         # SMC Checklist 6 ข้อ: ถ้ามี smc ส่งมา ต้องผ่าน >=4/6 ถึงเข้า (ถ้าไม่ส่งมา = ใช้ Pullback เดิม ไม่กรอง SMC)
         smc_long_ok = True if smc is None else bool(smc.get("long_pass"))
         smc_short_ok = True if smc is None else bool(smc.get("short_pass"))
