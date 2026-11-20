@@ -68,6 +68,18 @@ def run_bt(symbol, days=30, capital=40.0):
             return 'long' if float(_close_1h[j]) > float(_trend_1h[j]) else 'short'
     except Exception as _e:
         print(f"HTF 1h fail {symbol}: {_e}"); _htf_at = lambda ts: None
+    # V7.5: 4h เทรนใหญ่สุด - LONG ต้อง 4h ขึ้น / SHORT ต้อง 4h ลง
+    try:
+        df_4h = fetch_klines(symbol, days, "4h")
+        df_4h["ema_trend_4h"] = df_4h["close"].ewm(span=int(c["ema_trend"]), adjust=False).mean()
+        _times_4h = df_4h["ts"].values; _trend_4h = df_4h["ema_trend_4h"].values; _close_4h = df_4h["close"].values
+        import bisect as _bis4
+        def _htf4h_at(ts):
+            j = _bis4.bisect_right(_times_4h, ts) - 1
+            if j < 0: return None
+            return 'long' if float(_close_4h[j]) > float(_trend_4h[j]) else 'short'
+    except Exception as _e:
+        print(f"HTF 4h fail {symbol}: {_e}"); _htf4h_at = lambda ts: None
     # V6.9: แพทเทิร์น 1h - คำนวณจากแท่ง 1h ที่ปิดแล้ว 2 แท่งล่าสุด
     try:
         _pat_map = {}
@@ -125,7 +137,7 @@ def run_bt(symbol, days=30, capital=40.0):
                 _win = df.iloc[max(0,i-5):i+1]  # V7.3: แตะ Trend ใน 1.5 ชม.ล่าสุด
                 _touch_l = bool((_win["low"] <= _win["ema_trend"]).any())
                 _touch_s = bool((_win["high"] >= _win["ema_trend"]).any())
-                trend = st.check_trend(curr, prev, smc=smc, htf_trend=_htf_at(int(curr["ts"])), htf_pattern_long=_pl, htf_pattern_short=_ps, touch_long=_touch_l, touch_short=_touch_s)
+                trend = st.check_trend(curr, prev, smc=smc, htf_trend=_htf_at(int(curr["ts"])), htf_pattern_long=_pl, htf_pattern_short=_ps, touch_long=_touch_l, touch_short=_touch_s, htf4h_trend=_htf4h_at(int(curr["ts"])))
             except TypeError:
                 try: trend = st.check_trend(curr, prev, smc=smc)
                 except TypeError: trend = st.check_trend(curr, prev)
@@ -152,7 +164,7 @@ def send_tele_bt(msg):
     except Exception as e: print("send tele err", e)
 
 def format_bt_msg(out):
-    lines=["📊 BT V7.4 GOLD 12/36 1H Pattern + 15m EMA Fast/Slow (MEXC Perp)"]
+    lines=["📊 BT V7.5 4H FILTER 1H Pattern + 15m EMA Fast/Slow (MEXC Perp)"]
     for sym in ["btc","gold"]:
         r=out[sym]
         lines.append(f"\n{'BTC' if sym=='btc' else 'GOLD'} {r['days']} วัน: {r['trades']} ไม้ Win {r['winrate_pct']}%")
