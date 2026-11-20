@@ -81,7 +81,7 @@ def run_bt(symbol, days=30, capital=40.0):
             _k = _bis.bisect_right(_ts1h_sorted, ts) - 1
             if _k < 0: return (None, None)
             _pl=_ps=False
-            for _j in range(max(0,_k-3), _k+1):
+            for _j in range(max(0,_k-7), _k+1):
                 _a,_b=_pat_map[_ts1h_sorted[_j]]; _pl=_pl or _a; _ps=_ps or _b
             return (_pl, _ps)
     except Exception as _e:
@@ -118,11 +118,11 @@ def run_bt(symbol, days=30, capital=40.0):
                 pos = None
         # --- ว่าง: เช็คเข้า Pullback ---
         if not pos:
-            smc = st.check_smc(df.iloc[:i+1]) if hasattr(st, 'check_smc') else None
+            smc = None  # V7.1: SMC ไม่กรองตอนเข้า
             # รองรับทั้ง strategy ใหม่ (รับ smc) และเก่า (ไม่รับ smc) - ถ้าเก่าจะได้ไม่พัง
             try:
                 _pl,_ps = _htf_pat_at(int(curr["ts"]))
-                _win = df.iloc[max(0,i-3):i+1]
+                _win = df.iloc[max(0,i-7):i+1]
                 _touch_l = bool((_win["low"] <= _win["ema_trend"]).any())
                 _touch_s = bool((_win["high"] >= _win["ema_trend"]).any())
                 trend = st.check_trend(curr, prev, smc=smc, htf_trend=_htf_at(int(curr["ts"])), htf_pattern_long=_pl, htf_pattern_short=_ps, touch_long=_touch_l, touch_short=_touch_s)
@@ -130,11 +130,7 @@ def run_bt(symbol, days=30, capital=40.0):
                 try: trend = st.check_trend(curr, prev, smc=smc)
                 except TypeError: trend = st.check_trend(curr, prev)
             # V6.8 live ต้องผ่าน momentum ด้วย - BT ต้องเช็คเหมือนกันไม่งั้นไม้เกินจริง
-            try:
-                _mom = st.check_momentum(curr)
-                if trend.get("long") and not _mom.get("long"): trend["long"]=False
-                if trend.get("short") and not _mom.get("short"): trend["short"]=False
-            except: pass
+            pass  # V7.1: momentum = ADX+DI อยู่ใน check_trend แล้ว ไม่เช็คซ้ำ
             side = "LONG" if trend["long"] else "SHORT" if trend["short"] else None
             if side:
                 sl = price*(1-c["sl_pct"]) if side=="LONG" else price*(1+c["sl_pct"])
@@ -156,7 +152,7 @@ def send_tele_bt(msg):
     except Exception as e: print("send tele err", e)
 
 def format_bt_msg(out):
-    lines=["📊 BT V7.0 1H Pattern + 15m EMA Fast/Slow (MEXC Perp)"]
+    lines=["📊 BT V7.1 1H Pattern + 15m EMA Fast/Slow (MEXC Perp)"]
     for sym in ["btc","gold"]:
         r=out[sym]
         lines.append(f"\n{'BTC' if sym=='btc' else 'GOLD'} {r['days']} วัน: {r['trades']} ไม้ Win {r['winrate_pct']}%")
