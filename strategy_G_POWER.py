@@ -11,14 +11,14 @@ import numpy as np
 class Strategy_G_Power:
     def __init__(self, symbol_key="btc"):
         self.symbol_key = symbol_key
-        self.name = f"G_POWER V7.0 1H-PATTERN WINDOW {symbol_key.upper()}"
+        self.name = f"G_POWER V7.1 1H-PATTERN WINDOW {symbol_key.upper()}"
         base = {
             "btc": {
                 # BTC นิสัย: เร็ว + เหวี่ยงแรง + หลอกบ่อย (15m ATR% ~0.8-1.2% vs GOLD ~0.3-0.5%)
                 # เลยต้อง: EMA เร็วกว่า GOLD นิดนึง / ADX สูงกว่า (กรองหลอก) / Retest กว้างกว่า (noise ใหญ่) / ห้ามไล่กว้างกว่า (BTC ยืดได้ 3%)
                 "ema_fast": 15, "ema_slow": 40, "ema_trend": 80, "ema50": 50, "ema100": 100, "ema200": 200, "smc_min_score": 3,
-                "adx_min": 18, "adx_sideway": 15, "adx_turbo": 30,
-                "di_min": 14, "di_turbo": 22,
+                "adx_min": 12, "adx_sideway": 12, "adx_turbo": 30,
+                "di_min": 10, "di_turbo": 22,
                 "sl_pct": 0.008, "tp_pct": 0.016,  # V6.8: TP 1.6% / SL 0.8% R:R 2.0 (เดิม TP 18% ไม่มีทางถึง)
                 "cdc_atr_fast": 7, "cdc_mult_fast": 0.8,
                 "cdc_atr_slow": 14, "cdc_mult_slow": 2.0,
@@ -32,8 +32,8 @@ class Strategy_G_Power:
                 # GOLD นิสัย: ช้า + เทรนด์เนียน + เคารพ EMA/CDC (15m ATR% ~0.3-0.5%)
                 # เลย: EMA ช้า / ADX ต่ำกว่า / Retest แคบ / ห้ามไล่แคบ
                 "ema_fast": 21, "ema_slow": 55, "ema_trend": 100, "ema50": 50, "ema100": 100, "ema200": 200, "smc_min_score": 3,
-                "adx_min": 15, "adx_sideway": 12, "adx_turbo": 26,
-                "di_min": 12, "di_turbo": 20,
+                "adx_min": 12, "adx_sideway": 12, "adx_turbo": 26,
+                "di_min": 10, "di_turbo": 20,
                 "sl_pct": 0.006, "tp_pct": 0.012,  # V6.8: TP 1.2% / SL 0.6% R:R 2.0 (เดิม TP 12% ไม่มีทางถึง)
                 "cdc_atr_fast": 10, "cdc_mult_fast": 1.0,
                 "cdc_atr_slow": 20, "cdc_mult_slow": 2.5,
@@ -259,8 +259,8 @@ class Strategy_G_Power:
         # เทรนด์หลัก (ADX + DI ล้วน ไม่ใช้ RSI/Volume) - Turbo ไม่ Bypass เทรนด์แล้ว
         htf_long_ok = True if htf_trend is None else (htf_trend=='long')
         htf_short_ok = True if htf_trend is None else (htf_trend=='short')
-        long_core=curr['cdc_up'] and curr['plus_di']>curr['minus_di'] and curr['plus_di']>c["di_min"] and curr['adx']>c["adx_min"] and curr['close']>curr['ema_trend'] and htf_long_ok and float(curr['ema_fast'])>float(curr['ema_slow'])  # V6.9 rule2: 15m EMA Fast>Slow
-        short_core=not curr['cdc_up'] and curr['minus_di']>curr['plus_di'] and curr['minus_di']>c["di_min"] and curr['adx']>c["adx_min"] and curr['close']<curr['ema_trend'] and htf_short_ok and float(curr['ema_fast'])<float(curr['ema_slow'])  # V6.9 rule2 mirror: 15m EMA Fast<Slow
+        long_core=curr['plus_di']>curr['minus_di'] and curr['plus_di']>c["di_min"] and curr['adx']>c["adx_min"] and curr['close']>curr['ema_trend'] and htf_long_ok and float(curr['ema_fast'])>float(curr['ema_slow'])  # V7.1: ไม่ต้องรอ CDC - CDC ไว้ใช้ตอนออก
+        short_core=curr['minus_di']>curr['plus_di'] and curr['minus_di']>c["di_min"] and curr['adx']>c["adx_min"] and curr['close']<curr['ema_trend'] and htf_short_ok and float(curr['ema_fast'])<float(curr['ema_slow'])  # V7.1: ไม่ต้องรอ CDC
         # V6.8 PULLBACK TO TREND: แตะเส้น Trend (ema_trend) แล้วกลับตัวตามแพทเทิร์นถึงเปิด
         # แพทเทิร์นกลับตัวที่ยอมรับ (อย่างใดอย่างหนึ่ง): Engulfing / Pin Bar (ไส้ยาว) / ปิดทะลุ High/Low แท่งก่อน
         def _rev_pat(prev_c, curr_c, is_long):
@@ -294,8 +294,8 @@ class Strategy_G_Power:
             except: pass
         retest=curr['dist_ema_trend'] <= c["retest_pct"]*3  # V7.0: หลวมขึ้น *3 ไม่งั้น 0 ไม้  # V6.8: วัดห่างจากเส้น Trend เพราะจุดเข้าคือเส้น Trend
         # SMC Checklist 6 ข้อ: ถ้ามี smc ส่งมา ต้องผ่าน >=4/6 ถึงเข้า (ถ้าไม่ส่งมา = ใช้ Pullback เดิม ไม่กรอง SMC)
-        smc_long_ok = True if smc is None else bool(smc.get("long_pass"))
-        smc_short_ok = True if smc is None else bool(smc.get("short_pass"))
+        smc_long_ok = True  # V7.1: SMC ไม่กรองตอนเข้าแล้ว เก็บไว้ดูเฉยๆ
+        smc_short_ok = True  # V7.1: SMC ไม่กรองตอนเข้าแล้ว
         long=long_core and pull_long and retest and not extended and smc_long_ok
         short=short_core and pull_short and retest and not extended and smc_short_ok
         return {"long":long, "short":short, "sideway":sideway and not (long or short), "retest":retest, "ema_diff":ema_diff, "long_core":long_core, "short_core":short_core, "pull_long":pull_long, "pull_short":pull_short, "extended":extended, "smc_long_ok":smc_long_ok, "smc_short_ok":smc_short_ok, "smc":smc, "htf_trend":htf_trend}
