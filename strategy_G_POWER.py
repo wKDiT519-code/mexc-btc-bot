@@ -1,8 +1,7 @@
-"""G_POWER V7.6 - Fast x Slow เป็นตัวสั่ง / อย่างอื่นเป็นตัวคอนเฟิร์ม
-- ข้อ 4: Pattern ดูบน 15m (Pin Bar 1 แท่ง / Engulfing 2 แท่ง รอแท่งปิด)
-- ข้อ 5: TP ทอง 0.6% / BTC 0.8% - ถึง TP แล้วถ้า Fast/Slow ยังอยู่ถือต่อ ออกเมื่อ Fast x Slow ตัดกลับ
-- SL ขยับตาม: ถึง TP -> SL = จุดเข้า (BE) หลังจากนั้น Trail ห่าง SL% จากจุดสูงสุด/ต่ำสุด
-- 1h = เทรนใหญ่ / 15m = จุดเข้า / LONG เฉพาะขาขึ้น SHORT เฉพาะขาลง
+"""G_POWER V7.7 - SL ทอง = เส้น Slow (Dynamic) / BTC ยัง Fixed 0.8%
+- ทอง: SL = เส้น Slow (EMA Slow 15m) ตอนเข้า, TP = ระยะเท่า SL (RR 1:1), หลังจากนั้น SL ขยับตามเส้น Slow ขึ้นไป
+- BTC: SL/TP Fixed 0.8% เหมือนเดิม ล็อก 12/36
+- Pattern 15m + TP ถือต่อถ้า Fast/Slow ยังอยู่ + ออกเมื่อ Fast x Slow ตัดกลับ
 """
 import pandas as pd
 import numpy as np
@@ -14,15 +13,17 @@ class Strategy_G_Power:
             self.config = {
                 "ema_fast": 12, "ema_slow": 36, "ema_trend": 100,
                 "adx_min": 15, "di_min": 10,
-                "sl_pct": 0.006, "tp_pct": 0.006,
+                "sl_pct": 0.006, "tp_pct": 0.006,  # ใช้เป็นขั้นต่ำกัน SL แคบเกิน
+                "sl_mode": "slow",  # ทอง: SL = เส้น Slow
                 "retest_pct": 0.006, "max_ext_pct": 0.01,
                 "pattern_tf": "15m", "cross_window": 10,
             }
         else:
             self.config = {
-                "ema_fast": 15, "ema_slow": 40, "ema_trend": 80,
+                "ema_fast": 12, "ema_slow": 36, "ema_trend": 80,  # BTC ล็อก 12/36 จาก V7.6
                 "adx_min": 15, "di_min": 10,
                 "sl_pct": 0.008, "tp_pct": 0.008,
+                "sl_mode": "fixed",
                 "retest_pct": 0.009, "max_ext_pct": 0.01,
                 "pattern_tf": "15m", "cross_window": 10,
             }
@@ -112,27 +113,47 @@ class Strategy_G_Power:
             return "SHORT", "FastDown+1hDown+ADX+Pullback+Pat15m"
         return None, ""
 
-    def initial_sl_tp(self, entry, side):
+    def initial_sl_tp(self, entry, side, slow=None):
         c = self.config
+        # ทอง: SL = เส้น Slow, TP = ระยะเท่า SL (RR 1:1)
+        if c.get("sl_mode") == "slow" and slow is not None and slow > 0:
+            dist = abs(entry - slow)
+            # กัน SL แคบเกิน: อย่างน้อย 0.3%
+            min_dist = entry * 0.003
+            dist = max(dist, min_dist)
+            if side == "LONG":
+                sl = entry - dist
+                tp = entry + dist
+            else:
+                sl = entry + dist
+                tp = entry - dist
+            return sl, tp, dist / entry
         if side == "LONG":
-            return entry * (1 - c["sl_pct"]), entry * (1 + c["tp_pct"])
-        return entry * (1 + c["sl_pct"]), entry * (1 - c["tp_pct"])
+            return entry * (1 - c["sl_pct"]), entry * (1 + c["tp_pct"]), c["sl_pct"]
+        return entry * (1 + c["sl_pct"]), entry * (1 - c["tp_pct"]), c["sl_pct"]
 
-    def update_trailing_sl(self, pos, price):
+    def update_trailing_sl(self, pos, price, slow=None):
         c = self.config
         entry = pos["entry"]
         side = pos["side"]
+        # ทอง: SL ขยับตามเส้น Slow ด้วย
+        if c.get("sl_mode") == "slow" and slow is not None:
+            if side == "LONG":
+                pos["sl"] = max(pos["sl"], slow)
+            else:
+                pos["sl"] = min(pos["sl"], slow)
+        # หลังถึง TP: SL อย่างน้อย = จุดเข้า + Trail ห่าง sl_pct จากจุดสูงสุด/ต่ำสุด
         if side == "LONG":
             pos["highest"] = max(pos.get("highest", entry), price)
             gain = (price - entry) / entry
-            if gain >= c["tp_pct"]:
+            if gain >= pos.get("sl_pct_init", c["sl_pct"]):
                 trail = pos["highest"] * (1 - c["sl_pct"])
                 pos["sl"] = max(pos["sl"], entry, trail)
                 pos["be_done"] = True
         else:
             pos["lowest"] = min(pos.get("lowest", entry), price)
             gain = (entry - price) / entry
-            if gain >= c["tp_pct"]:
+            if gain >= pos.get("sl_pct_init", c["sl_pct"]):
                 trail = pos["lowest"] * (1 + c["sl_pct"])
                 pos["sl"] = min(pos["sl"], entry, trail)
                 pos["be_done"] = True
@@ -143,9 +164,9 @@ class Strategy_G_Power:
         price = float(row["close"])
         side = pos["side"]
         if side == "LONG" and price <= pos["sl"]:
-            return "SL_TRAIL" if pos.get("be_done") else "SL"
+            return "SL_SLOW" if self.config.get("sl_mode") == "slow" and not pos.get("be_done") else ("SL_TRAIL" if pos.get("be_done") else "SL")
         if side == "SHORT" and price >= pos["sl"]:
-            return "SL_TRAIL" if pos.get("be_done") else "SL"
+            return "SL_SLOW" if self.config.get("sl_mode") == "slow" and not pos.get("be_done") else ("SL_TRAIL" if pos.get("be_done") else "SL")
         if side == "LONG" and row["ema_fast"] < row["ema_slow"]:
             return "FAST_FLIP"
         if side == "SHORT" and row["ema_fast"] > row["ema_slow"]:
