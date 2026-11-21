@@ -1,10 +1,13 @@
-"""Backtest V8.1 - จบแท่ง ตรวจทันที ไม่ใช้ 10 แท่ง
-รัน: python backtest_G_POWER_V81.py --days 30
+"""Backtest V8.2 - Cross Window 3 แท่ง
+รัน: python backtest_G_POWER.py --days 30 (หลังเปลี่ยนชื่อทับไฟล์เก่า)
+หมายเหตุ: ตอนอัปโหลด ให้เปลี่ยนชื่อไฟล์นี้เป็น backtest_G_POWER.py
+และ strategy_G_POWER_V82.py เป็น strategy_G_POWER.py แล้วแก้ import ข้างล่างเป็น from strategy_G_POWER import ...
 """
 import ccxt, pandas as pd, json, sys
 from pathlib import Path
 from datetime import datetime
-from strategy_G_POWER import Strategy_G_Power
+# ถ้าใช้ชื่อไฟล์เก่า ให้แก้บรรทัดนี้เป็น: from strategy_G_POWER import Strategy_G_Power
+from strategy_G_POWER_V82 import Strategy_G_Power
 
 DATA_DIR = Path("/data") if Path("/data").exists() else Path("/tmp")
 DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -48,16 +51,10 @@ def run_bt(symbol, days=30, capital=40.0):
     for i in range(2, len(df)):
         curr = df.iloc[i]
         price = float(curr["close"])
-        # ถืออยู่: เช็คออก - ใช้ค่า EMA แท่งปิดแล้ว
         if pos:
             hit_sl = (price <= pos["sl"] if pos["side"]=="LONG" else price >= pos["sl"])
             hit_tp = (price >= pos["tp"] if pos["side"]=="LONG" else price <= pos["tp"])
-            # Trailing ตาม Slow / BE
-            if pos["side"]=="LONG":
-                # update trailing
-                st.update_trailing_sl(pos, price, float(curr["ema_slow"]))
-            else:
-                st.update_trailing_sl(pos, price, float(curr["ema_slow"]))
+            st.update_trailing_sl(pos, price, float(curr["ema_slow"]))
             ex = st.check_exit(df, i, pos)
             exit_reason = None
             if hit_sl: exit_reason = "SL"
@@ -69,7 +66,6 @@ def run_bt(symbol, days=30, capital=40.0):
                 bal += pnl
                 trades.append({"symbol": symbol, "side": pos["side"], "entry": pos["entry"], "exit": price, "exit_reason": exit_reason, "pnl_pct": round(pnl_pct*100,2), "pnl_usd": round(pnl,2), "bal": round(bal,2), "time": str(curr["time"])})
                 pos = None
-        # ว่าง: เช็คเข้า - จบแท่ง ตรวจทันที
         if not pos:
             side, reason = st.check_entry(df, i)
             if side:
@@ -81,15 +77,15 @@ def run_bt(symbol, days=30, capital=40.0):
     winrate = len(wins)/len(trades)*100 if trades else 0
     avg_win = sum(t["pnl_usd"] for t in wins)/len(wins) if wins else 0
     avg_loss = sum(t["pnl_usd"] for t in losses)/len(losses) if losses else 0
-    return {"symbol": symbol, "days": days, "capital_start": capital, "capital_end": round(bal,2), "total_pnl": round(total_pnl,2), "trades": len(trades), "wins": len(wins), "losses": len(losses), "winrate_pct": round(winrate,1), "avg_win": round(avg_win,2), "avg_loss": round(avg_loss,2), "profit_factor": round(abs(sum(t["pnl_usd"] for t in wins)/sum(t["pnl_usd"] for t in losses)) if losses and sum(t["pnl_usd"] for t in losses)!=0 else 0,2), "config": {"ema": f"{c['ema_fast']}/{c['ema_slow']}", "adx_min": c["adx_min"], "note": "V8.1 CrossNow - จบแท่งตรวจทันที"}, "trade_list": trades}
+    return {"symbol": symbol, "days": days, "capital_start": capital, "capital_end": round(bal,2), "total_pnl": round(total_pnl,2), "trades": len(trades), "wins": len(wins), "losses": len(losses), "winrate_pct": round(winrate,1), "avg_win": round(avg_win,2), "avg_loss": round(avg_loss,2), "profit_factor": round(abs(sum(t["pnl_usd"] for t in wins)/sum(t["pnl_usd"] for t in losses)) if losses and sum(t["pnl_usd"] for t in losses)!=0 else 0,2), "config": {"ema": f"{c['ema_fast']}/{c['ema_slow']}", "adx_min": c["adx_min"], "note": "V8.2 CrossWindow 3"}, "trade_list": trades}
 
 if __name__ == "__main__":
     days = int(sys.argv[sys.argv.index("--days")+1]) if "--days" in sys.argv else 30
     out = {}
     for sym in ["btc","gold"]:
-        print(f"BT V8.1 {sym} {days} วัน...")
+        print(f"BT V8.2 {sym} {days} วัน...")
         out[sym] = run_bt(sym, days)
         r = out[sym]
         print(f"  {sym}: {r['trades']} ไม้ Win {r['winrate_pct']}% PnL ${r['total_pnl']:+.2f} ทุน ${r['capital_start']} -> ${r['capital_end']} PF {r['profit_factor']}")
-    (DATA_DIR / "bt_results_V81.json").write_text(json.dumps(out, indent=2, ensure_ascii=False))
-    print(f"บันทึกแล้วที่ {DATA_DIR}/bt_results_V81.json")
+    (DATA_DIR / "bt_results_V82.json").write_text(json.dumps(out, indent=2, ensure_ascii=False))
+    print(f"บันทึกแล้วที่ {DATA_DIR}/bt_results_V82.json")
