@@ -1,12 +1,11 @@
-"""Backtest V8.2 - Cross Window 3 แท่ง
-รัน: python backtest_G_POWER.py --days 30 (หลังเปลี่ยนชื่อทับไฟล์เก่า)
-หมายเหตุ: ตอนอัปโหลด ให้เปลี่ยนชื่อไฟล์นี้เป็น backtest_G_POWER.py
-และ strategy_G_POWER_V82.py เป็น strategy_G_POWER.py แล้วแก้ import ข้างล่างเป็น from strategy_G_POWER import ...
+"""Backtest COMPARE Cross Window 5 vs 8 แท่ง
+รันทีเดียวรู้เลย 5 หรือ 8 ดีกว่ากัน
+วิธีใช้: เปลี่ยนชื่อไฟล์นี้เป็น backtest_G_POWER.py ตอนอัปโหลด
+แล้วแก้ import เป็น from strategy_G_POWER import Strategy_G_Power
+รัน: python backtest_G_POWER.py --days 30
 """
 import ccxt, pandas as pd, json, sys
 from pathlib import Path
-from datetime import datetime
-# ถ้าใช้ชื่อไฟล์เก่า ให้แก้บรรทัดนี้เป็น: from strategy_G_POWER import Strategy_G_Power
 from strategy_G_POWER import Strategy_G_Power
 
 DATA_DIR = Path("/data") if Path("/data").exists() else Path("/tmp")
@@ -40,8 +39,10 @@ def fetch_klines(symbol, days=30):
     df["time"] = pd.to_datetime(df["ts"], unit="ms")
     return df
 
-def run_bt(symbol, days=30, capital=40.0):
+def run_bt(symbol, days, capital, cross_window):
     st = Strategy_G_Power(symbol)
+    # เปลี่ยนแค่หน้าต่างจุดตัด ที่เหลือล็อก V8.2 ไว้หมด
+    st.config["cross_window"] = cross_window
     c = st.config
     df = fetch_klines(symbol, days)
     df = st.add_indicators(df)
@@ -77,15 +78,15 @@ def run_bt(symbol, days=30, capital=40.0):
     winrate = len(wins)/len(trades)*100 if trades else 0
     avg_win = sum(t["pnl_usd"] for t in wins)/len(wins) if wins else 0
     avg_loss = sum(t["pnl_usd"] for t in losses)/len(losses) if losses else 0
-    return {"symbol": symbol, "days": days, "capital_start": capital, "capital_end": round(bal,2), "total_pnl": round(total_pnl,2), "trades": len(trades), "wins": len(wins), "losses": len(losses), "winrate_pct": round(winrate,1), "avg_win": round(avg_win,2), "avg_loss": round(avg_loss,2), "profit_factor": round(abs(sum(t["pnl_usd"] for t in wins)/sum(t["pnl_usd"] for t in losses)) if losses and sum(t["pnl_usd"] for t in losses)!=0 else 0,2), "config": {"ema": f"{c['ema_fast']}/{c['ema_slow']}", "adx_min": c["adx_min"], "note": "V8.2 CrossWindow 3"}, "trade_list": trades}
+    pf = abs(sum(t["pnl_usd"] for t in wins)/sum(t["pnl_usd"] for t in losses)) if losses and sum(t["pnl_usd"] for t in losses)!=0 else 0
+    return {"cross_window": cross_window, "symbol": symbol, "days": days, "capital_start": capital, "capital_end": round(bal,2), "total_pnl": round(total_pnl,2), "trades": len(trades), "wins": len(wins), "losses": len(losses), "winrate_pct": round(winrate,1), "avg_win": round(avg_win,2), "avg_loss": round(avg_loss,2), "profit_factor": round(pf,2), "trade_list": trades}
 
 if __name__ == "__main__":
     days = int(sys.argv[sys.argv.index("--days")+1]) if "--days" in sys.argv else 30
-    out = {}
-    for sym in ["btc","gold"]:
-        print(f"BT V8.2 {sym} {days} วัน...")
-        out[sym] = run_bt(sym, days)
-        r = out[sym]
-        print(f"  {sym}: {r['trades']} ไม้ Win {r['winrate_pct']}% PnL ${r['total_pnl']:+.2f} ทุน ${r['capital_start']} -> ${r['capital_end']} PF {r['profit_factor']}")
-    (DATA_DIR / "bt_results_V82.json").write_text(json.dumps(out, indent=2, ensure_ascii=False))
-    print(f"บันทึกแล้วที่ {DATA_DIR}/bt_results_V82.json")
+    print(f"COMPARE Cross Window 5 vs 8 - {days} วัน")
+    for window in [5, 8]:
+        print(f"\n=== Cross Window {window} แท่ง ===")
+        for sym in ["btc", "gold"]:
+            r = run_bt(sym, days, 40.0, window)
+            print(f"  {sym.upper()}: {r['trades']} ไม้ Win {r['winrate_pct']}% PnL ${r['total_pnl']:+.2f} ทุน $40 -> ${r['capital_end']} PF {r['profit_factor']}")
+    print("\nเสร็จแล้ว - ดูว่า 5 หรือ 8 ดีกว่ากัน")
