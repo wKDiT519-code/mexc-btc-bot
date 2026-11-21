@@ -1,7 +1,6 @@
-"""G_POWER Backtest V7.9 - เทียบ ADX ทีเดียว
-- ล็อก Fast/Slow 12/36 ทั้ง BTC+GOLD
-- เทียบ ADX 12 / 15 / 20 / 25 ในรันเดียว
-- BTC SL Fixed 0.8% / GOLD SL = เส้น Slow
+"""G_POWER Backtest V8.1 - เทียบ DI ทีเดียว
+- ล็อก Fast/Slow 12/36 / BTC ADX>12 / GOLD ADX>15
+- เทียบ DI Min 10 / 15 / 20 ในรันเดียว
 รัน: python backtest_G_POWER.py --days 30
 """
 import ccxt, pandas as pd, json, sys
@@ -39,9 +38,9 @@ def fetch_klines(symbol, tf, days=30):
     df["time"] = pd.to_datetime(df["ts"], unit="ms")
     return df
 
-def run_bt(symbol, days=30, capital=40.0, adx_min=None):
+def run_bt(symbol, days=30, capital=40.0, di_min=None):
     st = Strategy_G_Power(symbol)
-    if adx_min is not None: st.config["adx_min"] = adx_min
+    if di_min is not None: st.config["di_min"] = di_min
     c = st.config
     df = fetch_klines(symbol, "15m", days)
     df1h = fetch_klines(symbol, "1h", days)
@@ -76,7 +75,7 @@ def run_bt(symbol, days=30, capital=40.0, adx_min=None):
     avg_win = sum(t["pnl_usd"] for t in wins)/len(wins) if wins else 0
     avg_loss = sum(t["pnl_usd"] for t in losses)/len(losses) if losses else 0
     avg_sl_pct = sum(sl_pcts)/len(sl_pcts)*100 if sl_pcts else 0
-    return {"symbol": symbol, "days": days, "capital_start": capital, "capital_end": round(bal,2), "total_pnl": round(total_pnl,2), "trades": len(trades), "wins": len(wins), "losses": len(losses), "winrate_pct": round(winrate,1), "avg_win": round(avg_win,2), "avg_loss": round(avg_loss,2), "avg_sl_pct": round(avg_sl_pct,2), "profit_factor": round(abs(sum(t["pnl_usd"] for t in wins)/sum(t["pnl_usd"] for t in losses)) if losses and sum(t["pnl_usd"] for t in losses)!=0 else 0,2), "config": {"ema": f"{c['ema_fast']}/{c['ema_slow']}/{c['ema_trend']}", "adx_min": c["adx_min"]}, "trade_list": trades}
+    return {"symbol": symbol, "days": days, "capital_start": capital, "capital_end": round(bal,2), "total_pnl": round(total_pnl,2), "trades": len(trades), "wins": len(wins), "losses": len(losses), "winrate_pct": round(winrate,1), "avg_win": round(avg_win,2), "avg_loss": round(avg_loss,2), "avg_sl_pct": round(avg_sl_pct,2), "profit_factor": round(abs(sum(t["pnl_usd"] for t in wins)/sum(t["pnl_usd"] for t in losses)) if losses and sum(t["pnl_usd"] for t in losses)!=0 else 0,2), "config": {"ema": f"{c['ema_fast']}/{c['ema_slow']}/{c['ema_trend']}", "di_min": c["di_min"]}, "trade_list": trades}
 
 def send_tele_bt(msg):
     import os, requests
@@ -88,18 +87,18 @@ def send_tele_bt(msg):
 
 if __name__ == "__main__":
     days = int(sys.argv[sys.argv.index("--days")+1]) if "--days" in sys.argv else 30
-    adx_list = [12, 15, 20, 25]
+    di_list = [10, 15, 20]
     out = {}
-    print(f"=== BT V7.9 เทียบ ADX {days} วัน ล็อก 12/36 ===")
+    print(f"=== BT V8.1 เทียบ DI {days} วัน ล็อก 12/36 ===")
     for sym in ["btc","gold"]:
         out[sym] = {}
-        for adx in adx_list:
-            print(f"BT {sym} ADX>{adx} {days} วัน...")
-            r = run_bt(sym, days, adx_min=adx)
-            out[sym][f"ADX{adx}"] = r
-            print(f"  {sym} ADX>{adx}: {r['trades']} ไม้ Win {r['winrate_pct']}% PnL ${r['total_pnl']:+.2f} PF {r['profit_factor']} AvgSL {r['avg_sl_pct']}%")
+        for di in di_list:
+            print(f"BT {sym} DI>{di} {days} วัน...")
+            r = run_bt(sym, days, di_min=di)
+            out[sym][f"DI{di}"] = r
+            print(f"  {sym} DI>{di}: {r['trades']} ไม้ Win {r['winrate_pct']}% PnL ${r['total_pnl']:+.2f} PF {r['profit_factor']}")
     (DATA_DIR / "bt_compare.json").write_text(json.dumps(out, indent=2, ensure_ascii=False))
-    lines = ["📊 BT V7.9 เทียบ ADX (ล็อก 12/36)"]
+    lines = ["📊 BT V8.1 เทียบ DI (ล็อก 12/36)"]
     for sym in ["btc","gold"]:
         lines.append(f"\n{'BTC' if sym=='btc' else 'GOLD'} {days} วัน:")
         ranked = sorted(out[sym].items(), key=lambda kv: kv[1]['total_pnl'], reverse=True)
