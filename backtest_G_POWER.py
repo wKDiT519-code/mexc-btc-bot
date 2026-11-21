@@ -1,5 +1,7 @@
-"""G_POWER Backtest V7.6 FIX - แก้ import ให้ตรงกับชื่อไฟล์ที่อัป
+"""G_POWER Backtest V7.7 - SL ทอง = เส้น Slow / BTC Fixed 0.8% ล็อก 12/36
 รัน: python backtest_G_POWER.py --days 30
+- รันทีเดียว: BTC 12/36 (ล็อก) + ทอง 12/36,14/26,21/55,12/55 (SL Slow ทุกคู่)
+- แถมวัดให้ว่า SL Slow ทองเฉลี่ยกี่ %
 """
 import ccxt, pandas as pd, json, sys
 from pathlib import Path
@@ -46,30 +48,36 @@ def run_bt(symbol, days=30, capital=40.0, ema_fast=None, ema_slow=None):
     df = st.add_indicators(df, df1h)
     bal = capital
     trades = []
+    sl_pcts = []
     pos = None
     for i in range(2, len(df)):
         price = float(df.iloc[i]["close"])
+        slow = float(df.iloc[i]["ema_slow"])
         if pos:
-            st.update_trailing_sl(pos, price)
+            st.update_trailing_sl(pos, price, slow=slow)
             ex = st.check_exit(df, i, pos)
             if ex:
                 pnl_pct = (price - pos["entry"]) / pos["entry"] if pos["side"] == "LONG" else (pos["entry"] - price) / pos["entry"]
-                pnl = bal * 0.02 * (pnl_pct / c["sl_pct"]) if pnl_pct != 0 else 0
+                # PnL คิดตาม SL จริงของไม้นั้น (Dynamic สำหรับทอง)
+                risk_pct = pos.get("sl_pct_init", c["sl_pct"])
+                pnl = bal * 0.02 * (pnl_pct / risk_pct) if pnl_pct != 0 and risk_pct > 0 else 0
                 bal += pnl
-                trades.append({"symbol": symbol, "side": pos["side"], "entry": pos["entry"], "exit": price, "exit_reason": ex, "pnl_pct": round(pnl_pct*100,2), "pnl_usd": round(pnl,2), "bal": round(bal,2), "time": str(df.iloc[i]["time"])})
+                trades.append({"symbol": symbol, "side": pos["side"], "entry": pos["entry"], "exit": price, "exit_reason": ex, "sl_pct_init": round(pos.get("sl_pct_init", 0)*100, 2), "pnl_pct": round(pnl_pct*100,2), "pnl_usd": round(pnl,2), "bal": round(bal,2), "time": str(df.iloc[i]["time"])})
                 pos = None
         if not pos:
             side, reason = st.check_entry(df, i)
             if side:
-                sl, tp = st.initial_sl_tp(price, side)
-                pos = {"side": side, "entry": price, "sl": sl, "tp": tp, "highest": price, "lowest": price, "be_done": False, "reason": reason}
+                sl, tp, sl_pct_init = st.initial_sl_tp(price, side, slow=slow)
+                sl_pcts.append(sl_pct_init)
+                pos = {"side": side, "entry": price, "sl": sl, "tp": tp, "highest": price, "lowest": price, "be_done": False, "reason": reason, "sl_pct_init": sl_pct_init}
     wins = [t for t in trades if t["pnl_usd"] > 0]
     losses = [t for t in trades if t["pnl_usd"] <= 0]
     total_pnl = sum(t["pnl_usd"] for t in trades)
     winrate = len(wins)/len(trades)*100 if trades else 0
     avg_win = sum(t["pnl_usd"] for t in wins)/len(wins) if wins else 0
     avg_loss = sum(t["pnl_usd"] for t in losses)/len(losses) if losses else 0
-    return {"symbol": symbol, "days": days, "capital_start": capital, "capital_end": round(bal,2), "total_pnl": round(total_pnl,2), "trades": len(trades), "wins": len(wins), "losses": len(losses), "winrate_pct": round(winrate,1), "avg_win": round(avg_win,2), "avg_loss": round(avg_loss,2), "profit_factor": round(abs(sum(t["pnl_usd"] for t in wins)/sum(t["pnl_usd"] for t in losses)) if losses and sum(t["pnl_usd"] for t in losses)!=0 else 0,2), "config": {"ema": f"{c['ema_fast']}/{c['ema_slow']}/{c['ema_trend']}", "sl_pct": c["sl_pct"], "tp_pct": c["tp_pct"]}, "trade_list": trades}
+    avg_sl_pct = sum(sl_pcts)/len(sl_pcts)*100 if sl_pcts else 0
+    return {"symbol": symbol, "days": days, "capital_start": capital, "capital_end": round(bal,2), "total_pnl": round(total_pnl,2), "trades": len(trades), "wins": len(wins), "losses": len(losses), "winrate_pct": round(winrate,1), "avg_win": round(avg_win,2), "avg_loss": round(avg_loss,2), "avg_sl_pct": round(avg_sl_pct,2), "profit_factor": round(abs(sum(t["pnl_usd"] for t in wins)/sum(t["pnl_usd"] for t in losses)) if losses and sum(t["pnl_usd"] for t in losses)!=0 else 0,2), "config": {"ema": f"{c['ema_fast']}/{c['ema_slow']}/{c['ema_trend']}", "sl_mode": c.get("sl_mode", "fixed")}, "trade_list": trades}
 
 def send_tele_bt(msg):
     import os, requests
@@ -81,24 +89,24 @@ def send_tele_bt(msg):
 
 if __name__ == "__main__":
     days = int(sys.argv[sys.argv.index("--days")+1]) if "--days" in sys.argv else 30
-    combos = {"btc": [(15,40),(14,26),(12,36)], "gold": [(12,36),(14,26),(21,55),(12,55)]}
+    combos = {"btc": [(12,36)], "gold": [(12,36),(14,26),(21,55),(12,55)]}
     out = {}
-    print(f"=== BT V7.6 Pattern 15m + TP ถือต่อ + Trailing SL {days} วัน ===")
+    print(f"=== BT V7.7 SL ทอง = เส้น Slow {days} วัน ===")
     for sym in ["btc","gold"]:
         out[sym] = {}
         for (ef, es) in combos[sym]:
             print(f"BT {sym} EMA {ef}/{es} {days} วัน...")
             r = run_bt(sym, days, ema_fast=ef, ema_slow=es)
             out[sym][f"{ef}/{es}"] = r
-            print(f"  {sym} EMA {ef}/{es}: {r['trades']} ไม้ Win {r['winrate_pct']}% PnL ${r['total_pnl']:+.2f} PF {r['profit_factor']} AvgWin ${r['avg_win']:+.2f} AvgLoss ${r['avg_loss']:+.2f}")
+            print(f"  {sym} EMA {ef}/{es}: {r['trades']} ไม้ Win {r['winrate_pct']}% PnL ${r['total_pnl']:+.2f} PF {r['profit_factor']} AvgSL {r['avg_sl_pct']}% AvgWin ${r['avg_win']:+.2f} AvgLoss ${r['avg_loss']:+.2f}")
     (DATA_DIR / "bt_compare.json").write_text(json.dumps(out, indent=2, ensure_ascii=False))
-    lines = ["📊 BT V7.6 Pattern 15m + TP ถือต่อ + Trailing SL"]
+    lines = ["📊 BT V7.7 SL ทอง = เส้น Slow"]
     for sym in ["btc","gold"]:
-        lines.append(f"\n{'BTC' if sym=='btc' else 'GOLD'} {days} วัน:")
+        lines.append(f"\n{'BTC (ล็อก 12/36)' if sym=='btc' else 'GOLD (SL Slow)'} {days} วัน:")
         ranked = sorted(out[sym].items(), key=lambda kv: kv[1]['total_pnl'], reverse=True)
         for k, r in ranked:
             flag = " ⭐ ดีสุด" if r is ranked[0][1] else ""
-            lines.append(f"  EMA {k}: {r['trades']} ไม้ Win {r['winrate_pct']}% PnL ${r['total_pnl']:+.2f} PF {r['profit_factor']}{flag}")
+            lines.append(f"  EMA {k}: {r['trades']} ไม้ Win {r['winrate_pct']}% PnL ${r['total_pnl']:+.2f} PF {r['profit_factor']} AvgSL {r['avg_sl_pct']}%{flag}")
     msg = "\n".join(lines)
     print(msg)
     print(f"บันทึกแล้วที่ {DATA_DIR}/bt_compare.json")
