@@ -1,11 +1,10 @@
-"""G_POWER V8.1 - แก้ตามที่พี่สอน
-- จบแท่ง ตรวจ Fast/Slow ทันที - ไม่ใช้ cross_window 10 แท่งแล้ว
-- 1 แท่งปิด = EMA 1 จุด - ใช้ค่า EMA หลังแท่งปิด ไม่ใช้ราคา
-- จุดตัด = เตรียมเข้า - ต้องเกิดแท่งเดียวกับแท่งที่จะเข้าเท่านั้น
+"""G_POWER V8.2 - ลอง 3 แท่ง
+- V8.0: 10 แท่ง = หลวมไป เอาจุดตัดเก่ามาเข้า
+- V8.1: 0 แท่ง (แท่งเดียวกัน) = ตึงไป ไม้แทบไม่เกิด
+- V8.2: 3 แท่ง = ตรงกลาง - จบแท่งตรวจทันที จำจุดตัดไว้แค่ 3 แท่ง รอ Pullback+Pattern ตามหลัง
 - BTC + GOLD: Fast/Slow 12/36
 - BTC: ADX > 12 / SL Fixed 0.8%
 - GOLD: ADX > 15 / SL = เส้น Slow
-- Pattern 15m + TP ถือต่อ + Trailing SL + ออกเมื่อ Fast x Slow ตัดกลับ
 """
 import pandas as pd
 import numpy as np
@@ -21,7 +20,7 @@ class Strategy_G_Power:
                 "sl_mode": "slow",
                 "retest_pct": 0.006, "max_ext_pct": 0.01,
                 "pattern_tf": "15m",
-                # V8.1: ไม่มี cross_window แล้ว - จบแท่ง ตรวจทันที
+                "cross_window": 3,
             }
         else:
             self.config = {
@@ -31,6 +30,7 @@ class Strategy_G_Power:
                 "sl_mode": "fixed",
                 "retest_pct": 0.009, "max_ext_pct": 0.01,
                 "pattern_tf": "15m",
+                "cross_window": 3,
             }
 
     def _ema(self, s, p):
@@ -52,14 +52,10 @@ class Strategy_G_Power:
     def add_indicators(self, df, df_1h=None):
         df = df.copy()
         c = self.config
-        # EMA เกิดหลังแท่งปิด - คำนวณจาก close ของแท่งที่ปิดแล้วเท่านั้น
         df["ema_fast"] = self._ema(df["close"], c["ema_fast"])
         df["ema_slow"] = self._ema(df["close"], c["ema_slow"])
         df["ema_trend"] = self._ema(df["close"], c["ema_trend"])
-        # จุดตัด: เทียบค่า EMA แท่งก่อน vs แท่งนี้ - ไม่ใช้ราคา
-        # LONG cross: แท่งก่อน Fast <= Slow, แท่งนี้ Fast > Slow
         df["cross_up"] = (df["ema_fast"].shift(1) <= df["ema_slow"].shift(1)) & (df["ema_fast"] > df["ema_slow"])
-        # SHORT cross: แท่งก่อน Fast >= Slow, แท่งนี้ Fast < Slow
         df["cross_down"] = (df["ema_fast"].shift(1) >= df["ema_slow"].shift(1)) & (df["ema_fast"] < df["ema_slow"])
         pdi, mdi, adx = self._adx_di(df["high"], df["low"], df["close"], 14)
         df["plus_di"] = pdi
@@ -99,9 +95,10 @@ class Strategy_G_Power:
             return None, ""
         c = self.config
         row = df.iloc[i]
-        # V8.1 FIX: จบแท่ง ตรวจทันที - จุดตัดต้องเกิดแท่งนี้เท่านั้น ไม่ย้อนหลัง 10 แท่ง
-        cross_up_now = bool(row["cross_up"])
-        cross_down_now = bool(row["cross_down"])
+        # V8.2: จบแท่งตรวจทันที แต่จำจุดตัดไว้แค่ 3 แท่ง (แท่งนี้ + 2 แท่งก่อน)
+        win = df.iloc[max(0, i - (c["cross_window"]-1)):i+1]
+        cross_up_recent = bool(win["cross_up"].any())
+        cross_down_recent = bool(win["cross_down"].any())
         fast_up = row["ema_fast"] > row["ema_slow"]
         fast_down = row["ema_fast"] < row["ema_slow"]
         trend_up = bool(row["trend_1h_up"])
@@ -116,12 +113,10 @@ class Strategy_G_Power:
         pullback_short = bool(((highs - trend).abs() / trend <= c["max_ext_pct"]).any() or (lows.min() <= trend <= highs.max()))
         pat_bull = bool(row["pat_bull"])
         pat_bear = bool(row["pat_bear"])
-        # LONG: ตัดขึ้นแท่งนี้ + Fast ยังเหนือ Slow + 1h ขึ้น + ADX + DI + Pullback + Pattern แท่งนี้
-        if fast_up and cross_up_now and trend_up and adx_ok and di_bull and pullback_long and pat_bull:
-            return "LONG", "CrossNow+FastUp+1hUp+ADX+Pullback+Pat15m"
-        # SHORT: ตัดลงแท่งนี้ + Fast ยังใต้ Slow + 1h ลง + ADX + DI + Pullback + Pattern แท่งนี้
-        if fast_down and cross_down_now and trend_down and adx_ok and di_bear and pullback_short and pat_bear:
-            return "SHORT", "CrossNow+FastDown+1hDown+ADX+Pullback+Pat15m"
+        if fast_up and cross_up_recent and trend_up and adx_ok and di_bull and pullback_long and pat_bull:
+            return "LONG", "Cross3+FastUp+1hUp+ADX+Pullback+Pat15m"
+        if fast_down and cross_down_recent and trend_down and adx_ok and di_bear and pullback_short and pat_bear:
+            return "SHORT", "Cross3+FastDown+1hDown+ADX+Pullback+Pat15m"
         return None, ""
 
     def initial_sl_tp(self, entry, side, slow=None):
@@ -174,7 +169,6 @@ class Strategy_G_Power:
             return "SL_SLOW" if self.config.get("sl_mode") == "slow" and not pos.get("be_done") else ("SL_TRAIL" if pos.get("be_done") else "SL")
         if side == "SHORT" and price >= pos["sl"]:
             return "SL_SLOW" if self.config.get("sl_mode") == "slow" and not pos.get("be_done") else ("SL_TRAIL" if pos.get("be_done") else "SL")
-        # ออกเมื่อ Fast ตัดกลับ Slow - เช็คค่า EMA แท่งที่ปิดแล้ว
         if side == "LONG" and row["ema_fast"] < row["ema_slow"]:
             return "FAST_FLIP"
         if side == "SHORT" and row["ema_fast"] > row["ema_slow"]:
