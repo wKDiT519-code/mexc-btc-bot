@@ -1,10 +1,8 @@
-"""G_POWER V8.2 - ลอง 3 แท่ง
-- V8.0: 10 แท่ง = หลวมไป เอาจุดตัดเก่ามาเข้า
-- V8.1: 0 แท่ง (แท่งเดียวกัน) = ตึงไป ไม้แทบไม่เกิด
-- V8.2: 3 แท่ง = ตรงกลาง - จบแท่งตรวจทันที จำจุดตัดไว้แค่ 3 แท่ง รอ Pullback+Pattern ตามหลัง
+"""G_POWER V8.0 LOCKED - ล็อกแล้วทุกค่า
 - BTC + GOLD: Fast/Slow 12/36
 - BTC: ADX > 12 / SL Fixed 0.8%
-- GOLD: ADX > 15 / SL = เส้น Slow
+- GOLD: ADX > 15 / SL = เส้น Slow (เฉลี่ย ~0.37%)
+- Pattern 15m + TP ถือต่อ + Trailing SL + ออกเมื่อ Fast x Slow ตัดกลับ
 """
 import pandas as pd
 import numpy as np
@@ -19,8 +17,7 @@ class Strategy_G_Power:
                 "sl_pct": 0.006, "tp_pct": 0.006,
                 "sl_mode": "slow",
                 "retest_pct": 0.006, "max_ext_pct": 0.01,
-                "pattern_tf": "15m",
-                "cross_window": 3,
+                "pattern_tf": "15m", "cross_window": 10,
             }
         else:
             self.config = {
@@ -29,8 +26,7 @@ class Strategy_G_Power:
                 "sl_pct": 0.008, "tp_pct": 0.008,
                 "sl_mode": "fixed",
                 "retest_pct": 0.009, "max_ext_pct": 0.01,
-                "pattern_tf": "15m",
-                "cross_window": 3,
+                "pattern_tf": "15m", "cross_window": 10,
             }
 
     def _ema(self, s, p):
@@ -95,8 +91,7 @@ class Strategy_G_Power:
             return None, ""
         c = self.config
         row = df.iloc[i]
-        # V8.2: จบแท่งตรวจทันที แต่จำจุดตัดไว้แค่ 3 แท่ง (แท่งนี้ + 2 แท่งก่อน)
-        win = df.iloc[max(0, i - (c["cross_window"]-1)):i+1]
+        win = df.iloc[max(0, i - c["cross_window"]):i+1]
         cross_up_recent = bool(win["cross_up"].any())
         cross_down_recent = bool(win["cross_down"].any())
         fast_up = row["ema_fast"] > row["ema_slow"]
@@ -114,9 +109,9 @@ class Strategy_G_Power:
         pat_bull = bool(row["pat_bull"])
         pat_bear = bool(row["pat_bear"])
         if fast_up and cross_up_recent and trend_up and adx_ok and di_bull and pullback_long and pat_bull:
-            return "LONG", "Cross3+FastUp+1hUp+ADX+Pullback+Pat15m"
+            return "LONG", "FastUp+1hUp+ADX+Pullback+Pat15m"
         if fast_down and cross_down_recent and trend_down and adx_ok and di_bear and pullback_short and pat_bear:
-            return "SHORT", "Cross3+FastDown+1hDown+ADX+Pullback+Pat15m"
+            return "SHORT", "FastDown+1hDown+ADX+Pullback+Pat15m"
         return None, ""
 
     def initial_sl_tp(self, entry, side, slow=None):
