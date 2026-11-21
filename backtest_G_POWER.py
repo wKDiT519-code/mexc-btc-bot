@@ -1,7 +1,9 @@
-"""Backtest COMPARE Cross Window 5 vs 8 แท่ง
-รันทีเดียวรู้เลย 5 หรือ 8 ดีกว่ากัน
-วิธีใช้: เปลี่ยนชื่อไฟล์นี้เป็น backtest_G_POWER.py ตอนอัปโหลด
-แล้วแก้ import เป็น from strategy_G_POWER import Strategy_G_Power
+"""Backtest COMPARE Exit - FAST_FLIP vs ไม่ใช้ FAST_FLIP
+Cross Window ล็อกที่ 5 แท่ง (ดีสุดจากรอบก่อน)
+- โหมด A: ออกด้วย FAST_FLIP (แบบปัจจุบัน) + SL/TP
+- โหมด B: ออกด้วย SL/TP อย่างเดียว ไม่สน FAST_FLIP
+รันทีเดียวรู้เลยว่า FAST_FLIP มันตัดกำไรทิ้งไหม
+วิธีอัป: เปลี่ยนชื่อเป็น backtest_G_POWER.py, import เป็น from strategy_G_POWER import Strategy_G_Power
 รัน: python backtest_G_POWER.py --days 30
 """
 import ccxt, pandas as pd, json, sys
@@ -39,9 +41,8 @@ def fetch_klines(symbol, days=30):
     df["time"] = pd.to_datetime(df["ts"], unit="ms")
     return df
 
-def run_bt(symbol, days, capital, cross_window):
+def run_bt(symbol, days, capital, cross_window, use_fast_flip):
     st = Strategy_G_Power(symbol)
-    # เปลี่ยนแค่หน้าต่างจุดตัด ที่เหลือล็อก V8.2 ไว้หมด
     st.config["cross_window"] = cross_window
     c = st.config
     df = fetch_klines(symbol, days)
@@ -49,6 +50,7 @@ def run_bt(symbol, days, capital, cross_window):
     bal = capital
     trades = []
     pos = None
+    flip_count = 0
     for i in range(2, len(df)):
         curr = df.iloc[i]
         price = float(curr["close"])
@@ -60,7 +62,14 @@ def run_bt(symbol, days, capital, cross_window):
             exit_reason = None
             if hit_sl: exit_reason = "SL"
             elif hit_tp: exit_reason = "TP"
-            elif ex: exit_reason = ex
+            elif ex == "FAST_FLIP":
+                if use_fast_flip:
+                    exit_reason = "FAST_FLIP"
+                    flip_count += 1
+                else:
+                    exit_reason = None  # โหมด B: ไม่สน FAST_FLIP ถือต่อ
+            elif ex:
+                exit_reason = ex
             if exit_reason:
                 pnl_pct = (price-pos["entry"])/pos["entry"] if pos["side"]=="LONG" else (pos["entry"]-price)/pos["entry"]
                 pnl = bal * 0.02 * (pnl_pct / c["sl_pct"]) if pnl_pct!=0 else 0
@@ -76,17 +85,17 @@ def run_bt(symbol, days, capital, cross_window):
     losses = [t for t in trades if t["pnl_usd"]<=0]
     total_pnl = sum(t["pnl_usd"] for t in trades)
     winrate = len(wins)/len(trades)*100 if trades else 0
-    avg_win = sum(t["pnl_usd"] for t in wins)/len(wins) if wins else 0
-    avg_loss = sum(t["pnl_usd"] for t in losses)/len(losses) if losses else 0
     pf = abs(sum(t["pnl_usd"] for t in wins)/sum(t["pnl_usd"] for t in losses)) if losses and sum(t["pnl_usd"] for t in losses)!=0 else 0
-    return {"cross_window": cross_window, "symbol": symbol, "days": days, "capital_start": capital, "capital_end": round(bal,2), "total_pnl": round(total_pnl,2), "trades": len(trades), "wins": len(wins), "losses": len(losses), "winrate_pct": round(winrate,1), "avg_win": round(avg_win,2), "avg_loss": round(avg_loss,2), "profit_factor": round(pf,2), "trade_list": trades}
+    flip_trades = [t for t in trades if t["exit_reason"]=="FAST_FLIP"]
+    flip_pnl = sum(t["pnl_usd"] for t in flip_trades)
+    return {"mode": "WITH_FLIP" if use_fast_flip else "NO_FLIP", "symbol": symbol, "trades": len(trades), "wins": len(wins), "winrate_pct": round(winrate,1), "total_pnl": round(total_pnl,2), "capital_end": round(bal,2), "profit_factor": round(pf,2), "flip_trades": len(flip_trades), "flip_pnl": round(flip_pnl,2), "trade_list": trades}
 
 if __name__ == "__main__":
     days = int(sys.argv[sys.argv.index("--days")+1]) if "--days" in sys.argv else 30
-    print(f"COMPARE Cross Window 5 vs 8 - {days} วัน")
-    for window in [5, 8]:
-        print(f"\n=== Cross Window {window} แท่ง ===")
+    print(f"COMPARE Exit FAST_FLIP vs NO_FLIP - Cross 5 แท่ง - {days} วัน")
+    for use_flip, label in [(True, "A: มี FAST_FLIP (ปัจจุบัน)"), (False, "B: ไม่มี FAST_FLIP (ถือจน SL/TP)")]:
+        print(f"\n=== {label} ===")
         for sym in ["btc", "gold"]:
-            r = run_bt(sym, days, 40.0, window)
-            print(f"  {sym.upper()}: {r['trades']} ไม้ Win {r['winrate_pct']}% PnL ${r['total_pnl']:+.2f} ทุน $40 -> ${r['capital_end']} PF {r['profit_factor']}")
-    print("\nเสร็จแล้ว - ดูว่า 5 หรือ 8 ดีกว่ากัน")
+            r = run_bt(sym, days, 40.0, 5, use_flip)
+            print(f"  {sym.upper()}: {r['trades']} ไม้ Win {r['winrate_pct']}% PnL ${r['total_pnl']:+.2f} PF {r['profit_factor']} | ออกด้วย FLIP {r['flip_trades']} ไม้ PnL ${r['flip_pnl']:+.2f}")
+    print("\nเสร็จแล้ว - ดูว่า FLIP มันช่วยหรือมันตัดกำไรทิ้ง")
