@@ -1,11 +1,9 @@
-"""G_POWER Backtest V7.6 - Pattern 15m + TP ถือต่อ + Trailing SL
+"""G_POWER Backtest V7.6 FIX - แก้ import ให้ตรงกับชื่อไฟล์ที่อัป
 รัน: python backtest_G_POWER.py --days 30
-- รันทีเดียวเทียบ Fast/Slow ทุกคู่: BTC 15/40,14/26,12/36 / GOLD 12/36,14/26,21/55,12/55
-- Exit: SL / Trailing SL / Fast x Slow ตัดกลับ (TP ไม่ใช่จุดออกถ้า Fast/Slow ยังอยู่)
 """
 import ccxt, pandas as pd, json, sys
 from pathlib import Path
-from strategy_G_POWER_V76 import Strategy_G_Power
+from strategy_G_POWER import Strategy_G_Power
 
 DATA_DIR = Path("/data") if Path("/data").exists() else Path("/tmp")
 DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -52,7 +50,6 @@ def run_bt(symbol, days=30, capital=40.0, ema_fast=None, ema_slow=None):
     for i in range(2, len(df)):
         price = float(df.iloc[i]["close"])
         if pos:
-            # ขยับ SL ตามก่อนเช็คออก
             st.update_trailing_sl(pos, price)
             ex = st.check_exit(df, i, pos)
             if ex:
