@@ -4,7 +4,7 @@
 import ccxt, pandas as pd, json, sys
 from pathlib import Path
 from datetime import datetime
-from strategy_G_POWER_V81 import Strategy_G_Power
+from strategy_G_POWER import Strategy_G_Power
 
 DATA_DIR = Path("/data") if Path("/data").exists() else Path("/tmp")
 DATA_DIR.mkdir(parents=True, exist_ok=True)
