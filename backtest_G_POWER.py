@@ -41,7 +41,7 @@ def fetch_klines(symbol, days=30, timeframe="15m"):
     df["time"] = pd.to_datetime(df["ts"], unit="ms")
     return df
 
-def run_bt(symbol, days=30, capital=40.0):
+def run_bt(symbol, days=30, capital=40.0, ema_fast=None, ema_slow=None):
     try:
         st = Strategy_G_Power(symbol)
     except TypeError:
@@ -54,6 +54,8 @@ def run_bt(symbol, days=30, capital=40.0):
         else:
             st.config = {"ema_fast": 15, "ema_slow": 40, "ema_trend": 80, "ema50": 50, "ema100": 100, "ema200": 200, "smc_min_score": 3, "adx_min": 15, "adx_sideway": 15, "adx_turbo": 30, "di_min": 12, "di_turbo": 22, "sl_pct": 0.034, "tp_pct": 0.18, "cdc_atr_fast": 7, "cdc_mult_fast": 0.8, "cdc_atr_slow": 14, "cdc_mult_slow": 2.0, "sideway_pct": 1.5, "retest_pct": 0.009, "max_extension_pct": 3.0, "be_trigger": 0.01, "lock_trigger": 0.02, "lock_pct": 0.005}
     c = st.config
+    if ema_fast is not None: c['ema_fast']=ema_fast
+    if ema_slow is not None: c['ema_slow']=ema_slow
     df = fetch_klines(symbol, days, "15m")
     df = st.add_indicators(df)
     # V6.8 HTF: ดึง 1h มาหาเทรนหลัก - แท่ง 15m แต่ละแท่งใช้ 1h แท่งล่าสุดที่ปิดไปแล้ว
@@ -178,14 +180,26 @@ def format_bt_msg(out):
 
 if __name__ == "__main__":
     days = int(sys.argv[sys.argv.index("--days")+1]) if "--days" in sys.argv else 30
+    combos = {"btc": [(15,40),(14,26),(12,36)], "gold": [(12,36),(14,26),(21,55),(12,55)]}
     out = {}
+    print(f"=== BT เทียบ Fast/Slow {days} วัน รันทีเดียวรู้เลย ===")
     for sym in ["btc","gold"]:
-        print(f"BT {sym} {days} วัน...")
-        out[sym] = run_bt(sym, days)
-        r = out[sym]
-        print(f"  {sym}: {r['trades']} ไม้ Win {r['winrate_pct']}% PnL ${r['total_pnl']:+.2f} ทุน ${r['capital_start']} -> ${r['capital_end']} PF {r['profit_factor']}")
-    (DATA_DIR / "bt_results.json").write_text(json.dumps(out, indent=2, ensure_ascii=False))
-    msg=format_bt_msg(out)
+        out[sym] = {}
+        for (ef, es) in combos[sym]:
+            print(f"BT {sym} EMA {ef}/{es} {days} วัน...")
+            r = run_bt(sym, days, ema_fast=ef, ema_slow=es)
+            out[sym][f"{ef}/{es}"] = r
+            print(f"  {sym} EMA {ef}/{es}: {r['trades']} ไม้ Win {r['winrate_pct']}% PnL ${r['total_pnl']:+.2f} PF {r['profit_factor']} AvgWin ${r['avg_win']:+.2f} AvgLoss ${r['avg_loss']:+.2f}")
+    (DATA_DIR / "bt_compare.json").write_text(json.dumps(out, indent=2, ensure_ascii=False))
+    # สรุปหาคู่ดีสุดตาม Win Rate (ต้องมีไม้ >=5 ถึงนับ)
+    lines=["📊 BT เทียบ Fast/Slow (รันทีเดียว)"]
+    for sym in ["btc","gold"]:
+        lines.append(f"\n{'BTC' if sym=='btc' else 'GOLD'} {days} วัน:")
+        ranked=sorted(out[sym].items(), key=lambda kv: kv[1]['winrate_pct'] if kv[1]['trades']>=3 else -1, reverse=True)
+        for k,r in ranked:
+            flag=" ⭐ ดีสุด" if r is ranked[0][1] else ""
+            lines.append(f"  EMA {k}: {r['trades']} ไม้ Win {r['winrate_pct']}% PnL ${r['total_pnl']:+.2f} PF {r['profit_factor']}{flag}")
+    msg="\n".join(lines)
     print(msg)
-    print(f"บันทึกแล้วที่ {DATA_DIR}/bt_results.json (อยู่บน Disk ไม่หายตอน Deploy)")
+    print(f"บันทึกแล้วที่ {DATA_DIR}/bt_compare.json")
     send_tele_bt(msg)
