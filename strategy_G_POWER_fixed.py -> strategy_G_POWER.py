@@ -1,145 +1,197 @@
-"""G_POWER V9 - EMA + Dow Theory - สำหรับอัปโหลดเป็น strategy_G_POWER.py
-TF: 1h นับคลื่น / 15m เข้า / 4h คอนเฟิร์ม
-- Dow นับ 1-5 + ABC
-- รอราคาแตะ EMA 36 บน 1h
-- TP วัดตามคลื่น: Wave3 = 1.618 x Wave1 / Wave5 = 1.0 x Wave1 / ABC = 1.0 x WaveA
-- ไม้: Wave1=3, Wave2=1, Wave3=3, Wave4=1, Wave5=3, A=1, B=3, C=1
-- SL ตามโครงสร้าง ใต้ HL / เหนือ LH คุมไม่เกิน BTC 0.8% / GOLD 0.6%
+"""G_POWER V9 Backtest - EMA + Dow - ใช้ชื่อไฟล์มาตรฐาน
+รัน: python backtest_G_POWER.py --days 30
+- import จาก strategy_G_POWER (ชื่อมาตรฐาน) ไม่ใช่ V9
 """
-import pandas as pd
-import numpy as np
-class Strategy_G_Power:
-    def __init__(self, symbol_key="btc"):
-        self.symbol_key = symbol_key
-        if symbol_key == "gold":
-            self.config = {"ema_fast": 12, "ema_slow": 36, "adx_min": 15, "di_min": 10, "sl_pct_max": 0.006, "tp_cap": 0.03, "touch_tol": 0.001}
-        else:
-            self.config = {"ema_fast": 12, "ema_slow": 36, "adx_min": 12, "di_min": 10, "sl_pct_max": 0.008, "tp_cap": 0.04, "touch_tol": 0.001}
-        self.WAVE_QUOTA = {"1": 3, "2": 1, "3": 3, "4": 1, "5": 3, "A": 1, "B": 3, "C": 1}
-    def add_indicators(self, df):
-        df = df.copy()
-        df["ema_fast"] = df["close"].ewm(span=self.config["ema_fast"], adjust=False).mean()
-        df["ema_slow"] = df["close"].ewm(span=self.config["ema_slow"], adjust=False).mean()
-        df["adx"], df["di_plus"], df["di_minus"] = self._adx_di(df)
-        df["vol_avg"] = df["volume"].rolling(20).mean()
-        return df
-    def _adx_di(self, df, period=14):
-        high = df["high"].values; low = df["low"].values; close = df["close"].values; n = len(df)
-        tr = np.zeros(n); plus_dm = np.zeros(n); minus_dm = np.zeros(n)
-        for i in range(1, n):
-            tr[i] = max(high[i]-low[i], abs(high[i]-close[i-1]), abs(low[i]-close[i-1]))
-            up = high[i]-high[i-1]; dn = low[i-1]-low[i]
-            plus_dm[i] = up if (up > dn and up > 0) else 0
-            minus_dm[i] = dn if (dn > up and dn > 0) else 0
-        tr_s = pd.Series(tr).ewm(alpha=1/period, adjust=False).mean().values
-        plus_s = pd.Series(plus_dm).ewm(alpha=1/period, adjust=False).mean().values
-        minus_s = pd.Series(minus_dm).ewm(alpha=1/period, adjust=False).mean().values
-        di_plus = np.where(tr_s != 0, 100*plus_s/np.maximum(tr_s, 1e-9), 0)
-        di_minus = np.where(tr_s != 0, 100*minus_s/np.maximum(tr_s, 1e-9), 0)
-        dx = np.where((di_plus+di_minus) != 0, 100*np.abs(di_plus-di_minus)/np.maximum(di_plus+di_minus, 1e-9), 0)
-        adx = pd.Series(dx).ewm(alpha=1/period, adjust=False).mean().values
-        return adx, di_plus, di_minus
-    def detect_swings(self, df_1h, lookback=2):
-        swings = []
-        highs = df_1h["high"].values; lows = df_1h["low"].values
-        for i in range(lookback, len(df_1h)-lookback):
-            if highs[i] == max(highs[i-lookback:i+lookback+1]):
-                swings.append({"idx": i, "type": "H", "price": float(highs[i])})
-            if lows[i] == min(lows[i-lookback:i+lookback+1]):
-                swings.append({"idx": i, "type": "L", "price": float(lows[i])})
-        swings = sorted(swings, key=lambda x: x["idx"])
-        cleaned = []
-        for s in swings:
-            if cleaned and cleaned[-1]["type"] == s["type"]:
-                if s["type"] == "H" and s["price"] > cleaned[-1]["price"]:
-                    cleaned[-1] = s
-                elif s["type"] == "L" and s["price"] < cleaned[-1]["price"]:
-                    cleaned[-1] = s
+import ccxt, pandas as pd, json, sys
+from pathlib import Path
+from strategy_G_POWER import Strategy_G_Power
+
+DATA_DIR = Path("/data") if Path("/data").exists() else Path("/tmp")
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+SYMBOLS = {"btc": "BTC/USDT:USDT", "gold": "PAXG/USDT:USDT"}
+
+def fetch_klines(symbol, days=30):
+    cache = DATA_DIR / f"klines_{symbol}_15m.json"
+    ex = ccxt.mexc({"enableRateLimit": True})
+    limit = 1000
+    need = days * 96
+    all_rows = []
+    since = None
+    if cache.exists():
+        try:
+            all_rows = json.loads(cache.read_text())
+            if all_rows:
+                since = all_rows[-1][0] + 1
+        except:
+            all_rows = []
+    while len(all_rows) < need:
+        ohlcv = ex.fetch_ohlcv(SYMBOLS[symbol], "15m", limit=limit, since=since)
+        if not ohlcv:
+            break
+        if all_rows and ohlcv[0][0] <= all_rows[-1][0]:
+            ohlcv = [r for r in ohlcv if r[0] > all_rows[-1][0]]
+            if not ohlcv:
+                break
+        all_rows.extend(ohlcv)
+        since = all_rows[-1][0] + 1
+        if len(ohlcv) < limit:
+            break
+    all_rows = all_rows[-need:]
+    cache.write_text(json.dumps(all_rows))
+    df = pd.DataFrame(all_rows, columns=["ts", "open", "high", "low", "close", "volume"])
+    df["time"] = pd.to_datetime(df["ts"], unit="ms")
+    return df
+
+def resample_1h(df_15m):
+    df = df_15m.copy()
+    df = df.set_index("time")
+    df_1h = df.resample("1h").agg({"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"}).dropna().reset_index()
+    return df_1h
+
+def run_bt(symbol, days=30, capital=40.0):
+    st = Strategy_G_Power(symbol)
+    c = st.config
+    df15 = fetch_klines(symbol, days)
+    df15 = st.add_indicators(df15)
+    df1h = resample_1h(df15)
+    df1h = st.add_indicators(df1h)
+    bal = capital
+    trades = []
+    positions = []
+    wave_counts = {}
+    last_pullback_key = {}
+    df1h_times = list(df1h["time"])
+    for i in range(2, len(df15)):
+        curr = df15.iloc[i]
+        price = float(curr["close"])
+        h1_idx = -1
+        for j, t in enumerate(df1h_times):
+            if t <= curr["time"]:
+                h1_idx = j
             else:
-                cleaned.append(s)
-        return cleaned
-    def count_waves(self, swings):
-        if len(swings) < 4:
-            return {"current_wave": None, "trend": "UNKNOWN", "cycle_id": 0, "wave1_len": 0, "waveA_len": 0, "wave5_high": 0, "wave1_low": 0, "swings": swings}
-        highs = [s["price"] for s in swings if s["type"] == "H"]; lows = [s["price"] for s in swings if s["type"] == "L"]
-        if len(highs) >= 2 and len(lows) >= 2:
-            if highs[-1] > highs[0] and lows[-1] > lows[0]:
-                trend = "UP"
-            elif highs[-1] < highs[0] and lows[-1] < lows[0]:
-                trend = "DOWN"
+                break
+        if h1_idx < 5:
+            continue
+        df1h_up_to = df1h.iloc[:h1_idx+1]
+        swings = st.detect_swings(df1h_up_to)
+        wave_info = st.count_waves(swings)
+        wave = wave_info["current_wave"]
+        trend = wave_info["trend"]
+        cycle_id = wave_info["cycle_id"]
+        wave1_len = wave_info["wave1_len"]
+        waveA_len = wave_info["waveA_len"]
+        h1_row = df1h.iloc[h1_idx]
+        ema36_1h = float(h1_row["ema_slow"])
+        ema_fast_1h = float(h1_row["ema_fast"])
+        adx_1h = float(h1_row["adx"])
+        di_plus_1h = float(h1_row["di_plus"])
+        di_minus_1h = float(h1_row["di_minus"])
+        new_positions = []
+        for pos in positions:
+            hit_sl = (price <= pos["sl"] if pos["side"] == "LONG" else price >= pos["sl"])
+            hit_tp = (price >= pos["tp"] if pos["side"] == "LONG" else price <= pos["tp"])
+            if pos["side"] == "LONG" and price > pos["entry"]:
+                tsl = max(pos["sl"], ema36_1h * 0.999)
+                if price >= pos["entry"] + (pos["tp"] - pos["entry"]) * 0.5:
+                    tsl = max(tsl, pos["entry"])
+                pos["sl"] = tsl
+            elif pos["side"] == "SHORT" and price < pos["entry"]:
+                tsl = min(pos["sl"], ema36_1h * 1.001)
+                if price <= pos["entry"] - (pos["entry"] - pos["tp"]) * 0.5:
+                    tsl = min(tsl, pos["entry"])
+                pos["sl"] = tsl
+            exit_reason = None
+            if hit_sl:
+                exit_reason = "SL"
+            elif hit_tp:
+                exit_reason = "TP"
+            if exit_reason:
+                pnl_pct = (price - pos["entry"]) / pos["entry"] if pos["side"] == "LONG" else (pos["entry"] - price) / pos["entry"]
+                risk_amt = bal * 0.02
+                sl_pct = abs(pos["entry"] - pos["sl_orig"]) / pos["entry"] if pos["sl_orig"] != pos["entry"] else c["sl_pct_max"]
+                sl_pct = max(sl_pct, 0.001)
+                pnl = risk_amt * (pnl_pct / sl_pct)
+                bal += pnl
+                trades.append({"symbol": symbol, "side": pos["side"], "wave": pos["wave"], "entry": round(pos["entry"], 2), "exit": round(price, 2), "exit_reason": exit_reason, "pnl_pct": round(pnl_pct*100, 2), "pnl_usd": round(pnl, 2), "bal": round(bal, 2), "time": str(curr["time"])})
             else:
-                trend = "UP" if swings[-1]["price"] > swings[0]["price"] else "DOWN"
+                new_positions.append(pos)
+        positions = new_positions
+        if wave is None or trend == "UNKNOWN":
+            continue
+        if adx_1h < c["adx_min"]:
+            continue
+        key = (cycle_id, wave)
+        cnt = wave_counts.get(key, 0)
+        quota = st.WAVE_QUOTA.get(wave, 1)
+        if cnt >= quota:
+            continue
+        side = None
+        if trend == "UP":
+            if wave in ("1", "3", "5", "B"):
+                side = "LONG"
+            elif wave in ("2", "4", "A", "C"):
+                side = "SHORT"
         else:
-            trend = "UNKNOWN"
-        pos = len(swings) % 8
-        mapping = {0: "1", 1: "2", 2: "3", 3: "4", 4: "5", 5: "A", 6: "B", 7: "C"}
-        current_wave = mapping.get(pos, "1")
-        wave1_len = 0; waveA_len = 0; wave5_high = 0; wave1_low = 0
-        if len(swings) >= 2:
-            base = swings[-8:] if len(swings) >= 8 else swings
-            if len(base) >= 2:
-                wave1_len = abs(base[1]["price"] - base[0]["price"]); wave1_low = base[0]["price"]
-            if len(base) >= 7:
-                waveA_len = abs(base[5]["price"] - base[6]["price"]); wave5_high = base[5]["price"]
-        cycle_id = len(swings) // 8
-        return {"current_wave": current_wave, "trend": trend, "cycle_id": cycle_id, "wave1_len": wave1_len, "waveA_len": waveA_len, "wave5_high": wave5_high, "wave1_low": wave1_low, "swings": swings}
-    def check_pattern_15m(self, df_15m, i):
-        if i < 1:
-            return None
-        curr = df_15m.iloc[i]; prev = df_15m.iloc[i-1]
-        o, h, l, c = float(curr["open"]), float(curr["high"]), float(curr["low"]), float(curr["close"])
-        po, pc = float(prev["open"]), float(prev["close"])
-        body = abs(c - o); upper = h - max(o, c); lower = min(o, c) - l
-        if lower > 2 * max(body, 1e-9) and c > o:
-            return "PIN_BULL"
-        if upper > 2 * max(body, 1e-9) and c < o:
-            return "PIN_BEAR"
-        if c > o and pc < po and c >= po and o <= pc:
-            return "ENG_BULL"
-        if c < o and pc > po and c <= po and o >= pc:
-            return "ENG_BEAR"
-        return None
-    def is_touch_ema36(self, low, high, ema36):
-        if ema36 is None or ema36 == 0:
-            return False
-        tol = self.config["touch_tol"]
-        if low <= ema36 <= high:
-            return True
-        if abs(low - ema36) / ema36 <= tol:
-            return True
-        if abs(high - ema36) / ema36 <= tol:
-            return True
-        return False
-    def get_tp_by_wave(self, wave, side, entry, wave1_len, waveA_len):
-        if wave == "3":
-            mult = 1.618; base_len = wave1_len if wave1_len > 0 else entry * 0.01
-            tp = entry + mult * base_len if side == "LONG" else entry - mult * base_len
-        elif wave == "5":
-            mult = 1.0; base_len = wave1_len if wave1_len > 0 else entry * 0.01
-            tp = entry + mult * base_len if side == "LONG" else entry - mult * base_len
-        elif wave in ("A", "C"):
-            mult = 1.0; base_len = waveA_len if waveA_len > 0 else (wave1_len if wave1_len > 0 else entry * 0.01)
-            tp = entry - mult * base_len if side == "SHORT" else entry + mult * base_len
-        elif wave == "B":
-            mult = 1.0; base_len = waveA_len if waveA_len > 0 else entry * 0.01
-            tp = entry + mult * base_len if side == "LONG" else entry - mult * base_len
-        else:
-            mult = 1.0; base_len = wave1_len if wave1_len > 0 else entry * 0.01
-            tp = entry + mult * base_len if side == "LONG" else entry - mult * base_len
-        cap = self.config["tp_cap"]
-        if side == "LONG":
-            tp = min(tp, entry * (1 + cap))
-        else:
-            tp = max(tp, entry * (1 - cap))
-        return float(tp)
-    def get_sl_by_structure(self, side, entry, hl_price):
-        max_sl = self.config["sl_pct_max"]
-        if side == "LONG":
-            sl = hl_price if hl_price < entry else entry * (1 - max_sl)
-            if (entry - sl) / entry > max_sl:
-                sl = entry * (1 - max_sl)
-        else:
-            sl = hl_price if hl_price > entry else entry * (1 + max_sl)
-            if (sl - entry) / entry > max_sl:
-                sl = entry * (1 + max_sl)
-        return float(sl)
+            if wave in ("1", "3", "5", "B"):
+                side = "SHORT"
+            elif wave in ("2", "4", "A", "C"):
+                side = "LONG"
+        if side is None:
+            continue
+        low15 = float(curr["low"])
+        high15 = float(curr["high"])
+        touched = st.is_touch_ema36(low15, high15, ema36_1h)
+        if not touched:
+            continue
+        hl_key = round(ema36_1h, 2)
+        if last_pullback_key.get(key) == hl_key:
+            continue
+        pat = st.check_pattern_15m(df15, i)
+        if pat is None:
+            continue
+        if side == "LONG" and pat not in ("PIN_BULL", "ENG_BULL"):
+            continue
+        if side == "SHORT" and pat not in ("PIN_BEAR", "ENG_BEAR"):
+            continue
+        vol = float(curr["volume"])
+        vol_avg = float(curr["vol_avg"]) if not pd.isna(curr["vol_avg"]) else vol
+        if vol < vol_avg * 0.7:
+            continue
+        if side == "LONG" and di_plus_1h < c["di_min"]:
+            continue
+        if side == "SHORT" and di_minus_1h < c["di_min"]:
+            continue
+        if side == "LONG" and ema_fast_1h < ema36_1h:
+            if wave != "B":
+                continue
+        if side == "SHORT" and ema_fast_1h > ema36_1h:
+            if wave != "B":
+                continue
+        hl_price = float(curr["low"]) if side == "LONG" else float(curr["high"])
+        sl = st.get_sl_by_structure(side, price, hl_price)
+        tp = st.get_tp_by_wave(wave, side, price, wave1_len, waveA_len)
+        risk = abs(price - sl)
+        reward = abs(tp - price)
+        if reward < risk * 0.9:
+            continue
+        positions.append({"side": side, "wave": wave, "entry": price, "sl": sl, "tp": tp, "sl_orig": sl, "entry_idx": i})
+        wave_counts[key] = cnt + 1
+        last_pullback_key[key] = hl_key
+    wins = [t for t in trades if t["pnl_usd"] > 0]
+    losses = [t for t in trades if t["pnl_usd"] <= 0]
+    total_pnl = sum(t["pnl_usd"] for t in trades)
+    winrate = len(wins) / len(trades) * 100 if trades else 0
+    avg_win = sum(t["pnl_usd"] for t in wins) / len(wins) if wins else 0
+    avg_loss = sum(t["pnl_usd"] for t in losses) / len(losses) if losses else 0
+    return {"symbol": symbol, "days": days, "capital_start": capital, "capital_end": round(bal, 2), "total_pnl": round(total_pnl, 2), "trades": len(trades), "wins": len(wins), "losses": len(losses), "winrate_pct": round(winrate, 1), "avg_win": round(avg_win, 2), "avg_loss": round(avg_loss, 2), "profit_factor": round(abs(sum(t["pnl_usd"] for t in wins) / sum(t["pnl_usd"] for t in losses)) if losses and sum(t["pnl_usd"] for t in losses) != 0 else 0, 2), "config": {"ema": "12/36", "adx_min": c["adx_min"], "di_min": c["di_min"]}, "trade_list": trades}
+
+if __name__ == "__main__":
+    days = int(sys.argv[sys.argv.index("--days") + 1]) if "--days" in sys.argv else 30
+    out = {}
+    for sym in ["btc", "gold"]:
+        print(f"BT V9 {sym} {days} วัน...")
+        out[sym] = run_bt(sym, days)
+        r = out[sym]
+        print(f"  {sym}: {r['trades']} ไม้ Win {r['winrate_pct']}% PnL ${r['total_pnl']:+.2f} ทุน ${r['capital_start']} -> ${r['capital_end']} PF {r['profit_factor']}")
+    (DATA_DIR / "bt_results_V9.json").write_text(json.dumps(out, indent=2, ensure_ascii=False))
+    print(f"บันทึกแล้วที่ {DATA_DIR}/bt_results_V9.json")
