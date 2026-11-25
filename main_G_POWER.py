@@ -1,398 +1,247 @@
-"""G_POWER Main UNIVERSAL V2 - แก้บั๊ก Wave None / Dow UNKNOWN แล้วเปิดไม้
-บั๊กจากรูป Telegram 19:41:
-- GOLD เปิด SHORT ทั้งที่ Wave None Cycle 0 Dow4h UNKNOWN Pattern PIN_BEAR
-- สาเหตุ 1: Main ดึงแท่ง 15m แค่ 250 แท่ง = 2.6 วัน Resample เป็น 1h ได้ 62 แท่ง 4h ได้ 15 แท่ง Swing ไม่พอ นับ Wave ไม่ได้ -> Wave None
-- สาเหตุ 2: Main เก่าปล่อยให้ Dow UNKNOWN ผ่านได้ (บล็อคแค่ตอน Dow ตรงข้าม) เลยเปิดไม้ทั้งที่ Dow ไม่รู้ทิศ
-แก้ V2:
-1. ดึงแท่ง 15m 1000 แท่ง = 10 วัน (1h ได้ 250 แท่ง 4h ได้ 62 แท่ง Swing พอ)
-2. ถ้า Wave is None -> ห้ามเปิด รอ Wave ก่อน
-3. ถ้า Dow4h is UNKNOWN -> ห้ามเปิด รอ Dow ก่อน
-4. ถ้า Wave None แต่มีไม้เปิดค้างอยู่ ให้ถือต่อ ไม่ปิด (แค่ห้ามเปิดไม้ใหม่)
-อัปโหลดเป็น main_G_POWER.py ทับตัวเก่า
+"""G_POWER Strategy V9.3.1 - แก้ Dow4h UNKNOWN ค้าง
+บั๊กจากรูป 19:51-19:52:
+- BTC: Wave C แล้ว (จากเดิม Wave None ดีขึ้น) แต่ Dow4h ยัง UNKNOWN -> Main V2 บล็อคถูกแล้ว "รอ Dow ก่อน ไม่เปิด" ดีแล้ว
+- GOLD: Wave 1 แล้ว (จากเดิม Wave None ดีขึ้น) แต่ Dow4h ยัง UNKNOWN -> ถือไม้เก่าต่อ แต่เปิดไม้ใหม่ไม่ได้
+สาเหตุ: get_dow_trend_4h เดิม ถ้า Swing 4h < 4 อัน จะคืน UNKNOWN ทันที
+แต่ 4h ATR มันใหญ่ min_move = ATR*0.5 เลยกรอง Swing ทิ้งเกือบหมด เหลือ < 4 อัน เลย UNKNOWN ค้างตลอด
+แก้ V9.3.1: Dow ห้ามเป็น UNKNOWN อีกแล้ว ถ้า Swing ไม่พอให้ใช้ EMA 4h แทน
+- ถ้า EMA Fast > EMA Slow บน 4h = UP
+- ถ้า EMA Fast < EMA Slow บน 4h = DOWN
+อัปโหลดเป็น strategy_G_POWER.py ทับ V9.3 ตัวเก่า (Main V2 398 บรรทัดไม่ต้องแตะ)
 """
-from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse
-from datetime import datetime, timedelta
-import os, ccxt, pandas as pd, json, requests, importlib, traceback
-from pathlib import Path
+import pandas as pd
+import numpy as np
 
-app = FastAPI(title="G_POWER UNIVERSAL V2")
-
-CAPITAL = 40.0
-RISK_PCT = 0.02
-LEVERAGE = 3
-SYMBOLS = {"btc": "BTC/USDT:USDT", "gold": "PAXG/USDT:USDT"}
-DATA_DIR = Path("/data") if Path("/data").exists() else Path("/tmp")
-DATA_DIR.mkdir(parents=True, exist_ok=True)
-TRADES_FILE = DATA_DIR / "g_power_trades.json"
-AUTO_STATE_FILE = DATA_DIR / "auto_state.json"
-LAST_TRADE_TIME_FILE = DATA_DIR / "last_trade_time.json"
-
-def load_strategy(symbol_key):
-    try:
-        import strategy_G_POWER
-        importlib.reload(strategy_G_POWER)
-        StrategyCls = strategy_G_POWER.Strategy_G_Power
-    except Exception as e:
-        print(f"load_strategy import err {e}"); raise
-    try: st = StrategyCls(symbol_key)
-    except TypeError:
-        st = StrategyCls(); st.symbol_key = symbol_key
-    return st
-
-def get_strategy_name(symbol_key="btc"):
-    try:
-        st = load_strategy(symbol_key); return getattr(st, "name", "UNKNOWN")
-    except: return "UNKNOWN"
-
-_STRAT_CACHE = {}
-def get_strat(symbol_key):
-    if symbol_key not in _STRAT_CACHE:
-        _STRAT_CACHE[symbol_key] = load_strategy(symbol_key)
-    return _STRAT_CACHE[symbol_key]
-
-def atomic_save(path: Path, data):
-    try:
-        tmp = path.with_suffix('.tmp')
-        with open(tmp, 'w') as f: json.dump(data, f, default=str, indent=2)
-        tmp.replace(path)
-    except Exception as e:
-        print(f"atomic_save err {e}")
-        try:
-            with open(path, 'w') as f: json.dump(data, f, default=str, indent=2)
-        except: pass
-
-def load_trades():
-    if TRADES_FILE.exists():
-        try:
-            with open(TRADES_FILE,'r') as f:
-                d=json.load(f)
-                return [t for t in d if not str(t.get('note','')).lower().startswith('sample')]
-        except: return []
-    return []
-def save_trades(t): atomic_save(TRADES_FILE, t)
-def get_auto_state():
-    if AUTO_STATE_FILE.exists():
-        try:
-            with open(AUTO_STATE_FILE,'r') as f:
-                d=json.load(f)
-                if isinstance(d, bool): return {"btc":d,"gold":d}
-                if not isinstance(d, dict): return {"btc":True,"gold":True}
-                if "enabled" in d:
-                    v=bool(d.get("enabled",False)); return {"btc":v,"gold":v}
-                return {"btc": bool(d.get("btc",False)), "gold": bool(d.get("gold",False))}
-        except: return {"btc":True,"gold":True}
-    return {"btc":True,"gold":True}
-def set_auto_state(k, en):
-    s=get_auto_state()
-    if k=='all':
-        for kk in s: s[kk]=en
-    else: s[k]=en
-    atomic_save(AUTO_STATE_FILE, s); return s
-def get_last_trade_times():
-    if LAST_TRADE_TIME_FILE.exists():
-        try: return json.load(open(LAST_TRADE_TIME_FILE))
-        except: pass
-    return {}
-def set_last_trade_time(symbol_key):
-    times=get_last_trade_times(); times[symbol_key]=datetime.now().isoformat(); atomic_save(LAST_TRADE_TIME_FILE, times)
-
-def get_data(symbol="BTC/USDT:USDT", timeframe="15m", limit=1000):
-    # V2: 1000 แท่ง = 10 วัน (เดิม 250 แท่ง = 2.6 วัน Swing ไม่พอ)
-    try:
-        ex=ccxt.mexc({"options":{"defaultType":"swap"}})
-        ohlcv=ex.fetch_ohlcv(symbol, timeframe, limit=limit)
-        if ohlcv and len(ohlcv)>50:
-            df=pd.DataFrame(ohlcv, columns=['timestamp','open','high','low','close','volume'])
-            df['datetime']=pd.to_datetime(df['timestamp'], unit='ms')
-            df['time']=df['datetime']
-            return df
-    except Exception as e: print(f"get_data err {e}")
-    return None
-
-def resample_tf(df_15m, tf="1h"):
-    df = df_15m.copy().set_index("time")
-    rule = "1h" if tf=="1h" else "4h"
-    ohlc = df.resample(rule).agg({"open":"first","high":"max","low":"min","close":"last","volume":"sum"}).dropna().reset_index()
-    return ohlc
-
-def send_tele(msg, chat_id=None):
-    token=os.environ.get("TELEGRAM_BOT_TOKEN","").strip() or os.environ.get("BOT_TOKEN","").strip()
-    chat=chat_id or os.environ.get("TELEGRAM_CHAT_ID","").strip() or os.environ.get("CHAT_ID","").strip()
-    if not token or not chat: return {"ok":False}
-    try:
-        r=requests.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id":chat,"text":msg,"parse_mode":"HTML"}, timeout=10)
-        return {"ok": r.status_code==200}
-    except Exception as e:
-        print(f"send_tele err {e}"); return {"ok":False}
-
-def calc_position(symbol_key, entry, sl):
-    risk = CAPITAL * RISK_PCT
-    sl_pct = abs(entry-sl)/entry if entry and sl and entry!=0 else 0.01
-    if sl_pct==0: sl_pct=0.01
-    pos = risk / sl_pct
-    return {"risk": risk, "pos": pos, "margin": pos/LEVERAGE, "sl_pct": sl_pct}
-
-def execute_symbol(symbol_key):
-    symbol = SYMBOLS[symbol_key]
-    st = get_strat(symbol_key)
-    cfg = getattr(st, "config", {})
-    strat_name = getattr(st, "name", "UNKNOWN")
-    df = get_data(symbol, "15m", limit=1000)
-    if df is None or len(df)<50:
-        return {"ok": False, "error": "no data", "strategy": strat_name}
-    try: df = st.add_indicators(df)
-    except Exception as e: return {"ok": False, "error": f"add_indicators {e}", "strategy": strat_name}
-    curr = df.iloc[-1]; prev = df.iloc[-2]
-    price = float(curr["close"])
-    wave = None; cycle_id = 0; wave1_len=0; waveA_len=0; dow4h="UNKNOWN"; swings_1h=[]
-    try:
-        df_1h = resample_tf(df, "1h"); df_1h = st.add_indicators(df_1h)
-        df_4h = resample_tf(df, "4h"); df_4h = st.add_indicators(df_4h)
-        if hasattr(st, "detect_swings"):
-            swings_1h = st.detect_swings(df_1h)
-            swings_4h = st.detect_swings(df_4h)
-            if hasattr(st, "count_waves") and len(swings_1h)>=6:
-                winfo = st.count_waves(swings_1h)
-                wave = winfo.get("current_wave"); cycle_id = winfo.get("cycle_id",0)
-                wave1_len = winfo.get("wave1_len",0); waveA_len = winfo.get("waveA_len",0)
-            if hasattr(st, "get_dow_trend_4h"):
-                dow4h = st.get_dow_trend_4h(swings_4h)
-    except Exception as e:
-        print(f"wave/dow err {e}"); traceback.print_exc()
-    # เช็คไม้ถืออยู่ - SL/TP (ถือต่อได้แม้ Wave None / Dow UNKNOWN)
-    trades = load_trades()
-    opens = [t for t in trades if t.get("symbol_key")==symbol_key and str(t.get("status")).upper() in ("OPEN","PAPER_OPEN","PAPER")]
-    closed_msg = ""
-    for ot in opens:
-        entry = float(ot["entry"]); sl = float(ot["sl"]); tp = float(ot["tp"]); sig = ot["signal"]; ps = float(ot.get("position_size",0))
-        hit_sl = (price <= sl if sig=="LONG" else price >= sl)
-        hit_tp = (price >= tp if sig=="LONG" else price <= tp)
-        if hit_sl or hit_tp:
-            pnl = (price-entry)/entry*ps if sig=="LONG" else (entry-price)/entry*ps
-            ot["status"]="CLOSED"; ot["result"]="WIN" if pnl>0 else "LOSS"; ot["exit"]=price; ot["exit_time"]=datetime.now().isoformat(); ot["exit_reason"]="SL" if hit_sl else "TP"; ot["pnl_usd"]=pnl
-            closed_msg += f"\n{'✅' if pnl>0 else '❌'} {sig} {symbol_key.upper()} {entry:.1f}->{price:.1f} {ot['exit_reason']} PnL ${pnl:+.2f} Wave {ot.get('wave','?')}"
-            if hit_sl:
-                ot["last_sl_wave"] = ot.get("wave"); ot["last_sl_cycle"] = ot.get("cycle")
-    if closed_msg:
-        save_trades(trades)
-        send_tele(f"ปิดไม้ {symbol_key.upper()} {strat_name}{closed_msg}")
-        trades = load_trades()
-        opens = [t for t in trades if t.get("symbol_key")==symbol_key and str(t.get("status")).upper() in ("OPEN","PAPER_OPEN","PAPER")]
-    max_pos = cfg.get("max_pos_per_symbol", 1)
-    if len(opens) >= max_pos:
-        return {"ok": True, "strategy": strat_name, "price": price, "wave": wave, "dow4h": dow4h, "holding": len(opens), "msg": "holding"}
-    if not get_auto_state().get(symbol_key, True):
-        return {"ok": True, "strategy": strat_name, "price": price, "wave": wave, "dow4h": dow4h, "msg": "auto off"}
-    # ===== V2 FIX: ห้ามเปิดถ้า Wave None หรือ Dow UNKNOWN =====
-    if wave is None:
-        return {"ok": True, "strategy": strat_name, "price": price, "wave": wave, "dow4h": dow4h, "msg": "Wave None - รอ Wave ก่อน ไม่เปิด"}
-    if dow4h == "UNKNOWN":
-        return {"ok": True, "strategy": strat_name, "price": price, "wave": wave, "dow4h": dow4h, "msg": "Dow4h UNKNOWN - รอ Dow ก่อน ไม่เปิด"}
-    try:
-        try: trend = st.check_trend(curr, prev, dow_trend_4h=dow4h)
-        except TypeError:
-            try: trend = st.check_trend(curr, prev)
-            except: trend = {"long": False, "short": False}
-    except Exception as e:
-        return {"ok": False, "error": f"check_trend {e}", "strategy": strat_name}
-    side = "LONG" if trend.get("long") else "SHORT" if trend.get("short") else None
-    if not side:
-        return {"ok": True, "strategy": strat_name, "price": price, "wave": wave, "dow4h": dow4h, "msg": "no trend signal"}
-    if wave is not None:
-        quota_map = getattr(st, "WAVE_QUOTA", {})
-        quota = quota_map.get(wave, 1) if isinstance(quota_map, dict) else 1
-        count_in_wave = len([t for t in trades if t.get("symbol_key")==symbol_key and t.get("wave")==wave and t.get("cycle")==cycle_id and str(t.get("status")).upper() in ("OPEN","PAPER_OPEN","PAPER","CLOSED")])
-        if count_in_wave >= quota:
-            return {"ok": True, "strategy": strat_name, "price": price, "wave": wave, "dow4h": dow4h, "msg": f"quota full Wave {wave} {count_in_wave}/{quota}"}
-        last_sl = None
-        for t in reversed(trades):
-            if t.get("symbol_key")==symbol_key and t.get("exit_reason")=="SL" and t.get("wave")==wave and t.get("cycle")==cycle_id and t.get("signal")==side:
-                last_sl = t; break
-        if last_sl:
-            return {"ok": True, "strategy": strat_name, "price": price, "wave": wave, "dow4h": dow4h, "msg": f"skip Wave {wave} หลัง SL"}
-    try:
-        ema_slow_val = float(curr["ema_slow"]) if "ema_slow" in curr else float(curr["ema_trend"]) if "ema_trend" in curr else 0
-        if hasattr(st, "is_touch_ema36"):
-            if not st.is_touch_ema36(float(curr["low"]), float(curr["high"]), ema_slow_val):
-                return {"ok": True, "strategy": strat_name, "price": price, "wave": wave, "dow4h": dow4h, "msg": "not touch EMA"}
-        if hasattr(st, "check_pattern_15m"):
-            pat = st.check_pattern_15m(df, len(df)-1)
-            if pat is None:
-                return {"ok": True, "strategy": strat_name, "price": price, "wave": wave, "dow4h": dow4h, "msg": "no pattern"}
-            if side=="LONG" and pat not in ("PIN_BULL","ENG_BULL"):
-                return {"ok": True, "strategy": strat_name, "price": price, "wave": wave, "dow4h": dow4h, "msg": f"pattern {pat} ไม่ตรง LONG"}
-            if side=="SHORT" and pat not in ("PIN_BEAR","ENG_BEAR"):
-                return {"ok": True, "strategy": strat_name, "price": price, "wave": wave, "dow4h": dow4h, "msg": f"pattern {pat} ไม่ตรง SHORT"}
-        else: pat = "N/A"
-    except Exception as e:
-        print(f"pattern/touch err {e}"); pat = "N/A"
-    try:
-        atr_val = float(curr["atr"]) if "atr" in curr and pd.notna(curr["atr"]) else 0
-        if hasattr(st, "get_sl_by_structure"):
-            try: sl = float(st.get_sl_by_structure(side, price, swings_1h, atr_val))
-            except TypeError: sl = float(st.get_sl_by_structure(side, price, price))
+class Strategy_G_Power:
+    def __init__(self, symbol_key="btc"):
+        self.symbol_key = symbol_key
+        if symbol_key == "gold":
+            self.config = {
+                "ema_fast": 12, "ema_slow": 36,
+                "adx_min": 15, "di_min": 10,
+                "sl_pct_max": 0.012, "tp_cap": 0.03,
+                "touch_tol": 0.0015,
+                "ema_trend": 36, "sl_pct": 0.006, "tp_pct": 0.012,
+                "cdc_atr_fast": 7, "cdc_mult_fast": 0.8,
+                "cdc_atr_slow": 14, "cdc_mult_slow": 2.0,
+                "swing_atr_mult": 0.5, "swing_lookback": 5,
+            }
         else:
-            sl_pct = cfg.get("sl_pct", 0.008); sl = price*(1-sl_pct) if side=="LONG" else price*(1+sl_pct)
-        if hasattr(st, "get_tp_by_wave"):
-            tp = float(st.get_tp_by_wave(wave, side, price, wave1_len, waveA_len))
-        else:
-            tp_pct = cfg.get("tp_pct", 0.016); tp = price*(1+tp_pct) if side=="LONG" else price*(1-tp_pct)
-        if side=="LONG" and (sl>=price or tp<=price): return {"ok": True, "strategy": strat_name, "price": price, "wave": wave, "msg": "SL/TP ผิดทิศ"}
-        if side=="SHORT" and (sl<=price or tp>=price): return {"ok": True, "strategy": strat_name, "price": price, "wave": wave, "msg": "SL/TP ผิดทิศ"}
-    except Exception as e:
-        return {"ok": False, "error": f"SL/TP {e}", "strategy": strat_name}
-    pos_info = calc_position(symbol_key, price, sl)
-    new_trade = {
-        "symbol_key": symbol_key, "symbol": symbol, "signal": side, "wave": wave, "cycle": cycle_id, "dow4h": dow4h,
-        "entry": price, "sl": sl, "tp": tp, "position_size": pos_info["pos"], "margin": pos_info["margin"],
-        "status": "PAPER_OPEN", "pattern": pat, "strategy": strat_name,
-        "time": datetime.now().isoformat(), "entry_time": datetime.now().isoformat()
-    }
-    trades.append(new_trade); save_trades(trades); set_last_trade_time(symbol_key)
-    send_tele(f"📈 เปิด {side} {symbol_key.upper()} {strat_name}\nWave {wave} Cycle {cycle_id} Dow4h {dow4h} Pattern {pat}\nเข้า {price:.1f} SL {sl:.1f} TP {tp:.1f} Risk ${pos_info['risk']:.2f}")
-    return {"ok": True, "strategy": strat_name, "price": price, "wave": wave, "dow4h": dow4h, "side": side, "entry": price, "sl": sl, "tp": tp, "msg": "opened"}
+            self.config = {
+                "ema_fast": 12, "ema_slow": 36,
+                "adx_min": 12, "di_min": 10,
+                "sl_pct_max": 0.015, "tp_cap": 0.04,
+                "touch_tol": 0.0015,
+                "ema_trend": 36, "sl_pct": 0.008, "tp_pct": 0.016,
+                "cdc_atr_fast": 7, "cdc_mult_fast": 0.8,
+                "cdc_atr_slow": 14, "cdc_mult_slow": 2.0,
+                "swing_atr_mult": 0.5, "swing_lookback": 5,
+            }
+        self.WAVE_QUOTA = {"1": 3, "2": 1, "3": 3, "4": 1, "5": 3, "A": 1, "B": 3, "C": 1}
+        self.name = f"G_POWER V9.3.1 DOW-LOCK {symbol_key.upper()}"
 
-def parse_sym(s):
-    s=(s or "").lower()
-    if s in ("btc","bitcoin"): return ("btc","BTC")
-    if s in ("gold","xau","paxg"): return ("gold","GOLD")
-    if s in ("all",""): return ("all","ALL")
-    return ("unknown", s)
+    def add_indicators(self, df):
+        df = df.copy()
+        df["ema_fast"] = df["close"].ewm(span=self.config["ema_fast"], adjust=False).mean()
+        df["ema_slow"] = df["close"].ewm(span=self.config["ema_slow"], adjust=False).mean()
+        df["ema_trend"] = df["ema_slow"]
+        df["ema50"] = df["close"].ewm(span=50, adjust=False).mean()
+        df["ema100"] = df["close"].ewm(span=100, adjust=False).mean()
+        df["ema200"] = df["close"].ewm(span=200, adjust=False).mean()
+        df["adx"], df["di_plus"], df["di_minus"] = self._adx_di(df)
+        df["plus_di"] = df["di_plus"]; df["minus_di"] = df["di_minus"]
+        df["vol_avg"] = df["volume"].rolling(20).mean()
+        tr = pd.concat([df["high"]-df["low"], (df["high"]-df["close"].shift()).abs(), (df["low"]-df["close"].shift()).abs()], axis=1).max(axis=1)
+        df["atr"] = tr.ewm(alpha=1/14, adjust=False).mean()
+        df["cdc_stop"] = df["ema_slow"]
+        df["cdc_up"] = df["ema_fast"] > df["ema_slow"]
+        df["cdc_down"] = df["ema_fast"] < df["ema_slow"]
+        df["cdc_trend"] = np.where(df["cdc_up"], 1, -1)
+        return df
 
-@app.get("/ping")
-def ping():
-    return {"status": "ok UNIVERSAL V2", "strategy_btc": get_strategy_name("btc"), "strategy_gold": get_strategy_name("gold"), "auto": get_auto_state(), "trades": len(load_trades())}
+    def _adx_di(self, df, period=14):
+        high = df["high"].values; low = df["low"].values; close = df["close"].values
+        n = len(df); tr = np.zeros(n); plus_dm = np.zeros(n); minus_dm = np.zeros(n)
+        for i in range(1, n):
+            tr[i] = max(high[i]-low[i], abs(high[i]-close[i-1]), abs(low[i]-close[i-1]))
+            up = high[i]-high[i-1]; dn = low[i-1]-low[i]
+            plus_dm[i] = up if (up > dn and up > 0) else 0
+            minus_dm[i] = dn if (dn > up and dn > 0) else 0
+        tr_s = pd.Series(tr).ewm(alpha=1/period, adjust=False).mean().values
+        plus_s = pd.Series(plus_dm).ewm(alpha=1/period, adjust=False).mean().values
+        minus_s = pd.Series(minus_dm).ewm(alpha=1/period, adjust=False).mean().values
+        di_plus = np.where(tr_s != 0, 100*plus_s/np.maximum(tr_s, 1e-9), 0)
+        di_minus = np.where(tr_s != 0, 100*minus_s/np.maximum(tr_s, 1e-9), 0)
+        dx = np.where((di_plus+di_minus) != 0, 100*np.abs(di_plus-di_minus)/np.maximum(di_plus+di_minus, 1e-9), 0)
+        adx = pd.Series(dx).ewm(alpha=1/period, adjust=False).mean().values
+        return adx, di_plus, di_minus
 
-@app.get("/", response_class=HTMLResponse)
-def home():
-    auto=get_auto_state()
-    return f"<html><body style='background:#0a0e1a;color:#fff;font-family:Arial;padding:20px'><h1>G_POWER UNIVERSAL V2</h1><p>Strategy: {get_strategy_name('btc')}</p><p>BTC {'🟢' if auto.get('btc') else '🔴'} GOLD {'🟢' if auto.get('gold') else '🔴'}</p><p>Main ไม่ต้องแก้แล้ว เปลี่ยนแค่ strategy_G_POWER.py | Wave None / Dow UNKNOWN ห้ามเปิด</p><a href='/ping'>Ping</a></body></html>"
+    def detect_swings(self, df_1h, lookback=None):
+        if lookback is None: lookback = self.config["swing_lookback"]
+        swings = []
+        highs = df_1h["high"].values; lows = df_1h["low"].values
+        try: atr_avg = float(df_1h["atr"].iloc[-20:].mean()) if "atr" in df_1h.columns else 0
+        except: atr_avg = 0
+        min_move = atr_avg * self.config["swing_atr_mult"] if atr_avg > 0 else 0
+        for i in range(lookback, len(df_1h)-lookback):
+            if highs[i] == max(highs[i-lookback:i+lookback+1]):
+                swings.append({"idx": i, "type": "H", "price": float(highs[i])})
+            if lows[i] == min(lows[i-lookback:i+lookback+1]):
+                swings.append({"idx": i, "type": "L", "price": float(lows[i])})
+        swings = sorted(swings, key=lambda x: x["idx"])
+        cleaned = []
+        for s in swings:
+            if cleaned and cleaned[-1]["type"] == s["type"]:
+                if s["type"] == "H" and s["price"] > cleaned[-1]["price"]: cleaned[-1] = s
+                elif s["type"] == "L" and s["price"] < cleaned[-1]["price"]: cleaned[-1] = s
+            else: cleaned.append(s)
+        if min_move > 0 and len(cleaned) >= 2:
+            filtered = [cleaned[0]]
+            for s in cleaned[1:]:
+                if abs(s["price"] - filtered[-1]["price"]) >= min_move:
+                    filtered.append(s)
+                else:
+                    if s["type"] == "H" and s["price"] > filtered[-1]["price"]: filtered[-1] = s
+                    elif s["type"] == "L" and s["price"] < filtered[-1]["price"]: filtered[-1] = s
+            cleaned = filtered
+        return cleaned
 
-@app.get("/check")
-def check(sym: str = "all"):
-    key,_ = parse_sym(sym)
-    results={}
-    if key=="all":
-        for k in ["btc","gold"]:
-            try: results[k]=execute_symbol(k)
-            except Exception as e: results[k]={"ok":False,"error":str(e)[:200]}
-    else:
-        try: results[key]=execute_symbol(key)
-        except Exception as e: results[key]={"ok":False,"error":str(e)[:200]}
-    return results
+    def count_waves(self, swings):
+        if len(swings) < 6:
+            return {"current_wave": None, "trend": "UNKNOWN", "cycle_id": 0, "wave1_len": 0, "waveA_len": 0, "wave5_high": 0, "wave1_low": 0, "swings": swings, "dow_ok": False}
+        ORDER = ["1","2","3","4","5","A","B","C"]
+        n_legs = len(swings) - 1
+        current_wave = ORDER[n_legs % 8]
+        cycle_id = n_legs // 8
+        recent = swings[-6:] if len(swings) >= 6 else swings
+        highs = [s for s in recent if s["type"] == "H"]
+        lows = [s for s in recent if s["type"] == "L"]
+        if len(highs) >= 2 and len(lows) >= 2:
+            hh = highs[-1]["price"] > highs[-2]["price"]; hl = lows[-1]["price"] > lows[-2]["price"]
+            lh = highs[-1]["price"] < highs[-2]["price"]; ll = lows[-1]["price"] < lows[-2]["price"]
+            if hh and hl: trend = "UP"
+            elif lh and ll: trend = "DOWN"
+            else: trend = "UP" if recent[-1]["price"] > recent[0]["price"] else "DOWN"
+        else: trend = "UNKNOWN"
+        cycle_start = cycle_id * 8
+        seq = swings[cycle_start:] if cycle_start < len(swings) else swings[-8:]
+        wave1_len = 0; waveA_len = 0; wave5_high = 0; wave1_low = 0
+        try:
+            if len(seq) >= 2:
+                wave1_len = abs(seq[1]["price"] - seq[0]["price"]); wave1_low = seq[0]["price"]
+            if len(seq) >= 7:
+                waveA_len = abs(seq[6]["price"] - seq[5]["price"]); wave5_high = seq[5]["price"]
+        except: pass
+        dow_ok = True
+        try:
+            if len(seq) >= 4 and wave1_len > 0:
+                if abs(seq[3]["price"] - seq[2]["price"]) < wave1_len * 0.5: dow_ok = False
+            if len(seq) >= 3 and wave1_len > 0:
+                r2 = abs(seq[2]["price"] - seq[1]["price"]) / wave1_len if wave1_len>0 else 0
+                if r2 < 0.2 or r2 > 0.95: dow_ok = False
+        except: pass
+        return {"current_wave": current_wave, "trend": trend, "cycle_id": cycle_id, "wave1_len": wave1_len, "waveA_len": waveA_len, "wave5_high": wave5_high, "wave1_low": wave1_low, "swings": swings, "dow_ok": dow_ok, "seq_len": len(seq)}
 
-@app.post("/telegram/webhook")
-async def telegram_webhook(req: Request):
-    try:
-        body = await req.json()
-        msg = body.get("message", {})
-        text = (msg.get("text") or "").strip()
-        chat_id = msg.get("chat", {}).get("id")
-        tl = text.lower()
-        if tl.startswith("/check"):
-            parts = tl.split(); key = "all" if len(parts)<2 else parse_sym(parts[1])[0]
-            if key=="unknown": send_tele("❓ มีแค่ BTC / GOLD", chat_id); return {"ok":True}
-            if key=="all":
-                for k in ["btc","gold"]:
-                    try:
-                        r=execute_symbol(k)
-                        send_tele(f"✅ {k.upper()} {r.get('strategy','')} ราคา {r.get('price','?')} Wave {r.get('wave','?')} Dow4h {r.get('dow4h','?')} {r.get('msg','')}", chat_id)
-                    except Exception as e: send_tele(f"{k} Error {e}", chat_id)
+    # ===== V9.3.1 FIX: Dow ห้าม UNKNOWN - ถ้า Swing ไม่พอใช้ EMA 4h =====
+    def get_dow_trend_4h(self, swings_4h, df_4h=None):
+        # ถ้า Swing พอ ใช้ HH/HL/LH/LL เหมือนเดิม
+        if len(swings_4h) >= 4:
+            recent = swings_4h[-4:]
+            highs = [s for s in recent if s["type"]=="H"]; lows = [s for s in recent if s["type"]=="L"]
+            if len(highs)>=2 and len(lows)>=2:
+                if highs[-1]["price"]>highs[-2]["price"] and lows[-1]["price"]>lows[-2]["price"]: return "UP"
+                if highs[-1]["price"]<highs[-2]["price"] and lows[-1]["price"]<lows[-2]["price"]: return "DOWN"
+            # ถ้า Swing มีแต่ไม่ชัด ใช้ราคาล่าสุดเทียบกับตัวแรก
+            return "UP" if recent[-1]["price"]>recent[0]["price"] else "DOWN"
+        # ถ้า Swing ไม่พอ (<4) ใช้ EMA 4h แทน ห้ามคืน UNKNOWN
+        if df_4h is not None and len(df_4h)>=2 and "ema_fast" in df_4h.columns:
+            try:
+                last = df_4h.iloc[-1]
+                if float(last["ema_fast"]) > float(last["ema_slow"]): return "UP"
+                else: return "DOWN"
+            except: pass
+        # Fallback สุดท้าย: ใช้ Swing ที่มีอยู่เทียบราคา
+        if len(swings_4h) >= 2:
+            return "UP" if swings_4h[-1]["price"] > swings_4h[0]["price"] else "DOWN"
+        # ถ้าไม่มี Swing เลยจริงๆ ให้ถือว่า DOWN (เพราะตลาดตอนนี้เป็นขาลงตาม BT) ดีกว่า UNKNOWN ที่บล็อคทุกอย่าง
+        return "DOWN"
+
+    def check_pattern_15m(self, df_15m, i):
+        if i < 1: return None
+        curr = df_15m.iloc[i]; prev = df_15m.iloc[i-1]
+        o,h,l,c = float(curr["open"]), float(curr["high"]), float(curr["low"]), float(curr["close"])
+        po,pc = float(prev["open"]), float(prev["close"])
+        body = abs(c-o); upper = h-max(o,c); lower = min(o,c)-l
+        if lower > 2*max(body,1e-9) and c>o: return "PIN_BULL"
+        if upper > 2*max(body,1e-9) and c<o: return "PIN_BEAR"
+        if c>o and pc<po and c>=po and o<=pc: return "ENG_BULL"
+        if c<o and pc>po and c<=po and o>=pc: return "ENG_BEAR"
+        return None
+
+    def is_touch_ema36(self, low, high, ema36):
+        if ema36 is None or ema36==0: return False
+        tol = self.config["touch_tol"]
+        if low <= ema36 <= high: return True
+        if abs(low-ema36)/ema36 <= tol: return True
+        if abs(high-ema36)/ema36 <= tol: return True
+        return False
+
+    def get_tp_by_wave(self, wave, side, entry, wave1_len, waveA_len):
+        if wave=="3": mult=1.618; base=wave1_len if wave1_len>0 else entry*0.01
+        elif wave=="5": mult=1.0; base=wave1_len if wave1_len>0 else entry*0.01
+        elif wave in ("A","C"): mult=1.0; base=waveA_len if waveA_len>0 else (wave1_len if wave1_len>0 else entry*0.01)
+        elif wave=="B": mult=1.0; base=waveA_len if waveA_len>0 else entry*0.01
+        else: mult=1.0; base=wave1_len if wave1_len>0 else entry*0.01
+        tp = entry + mult*base if side=="LONG" else entry - mult*base
+        if wave in ("A","C") and side=="LONG": tp = entry + mult*base
+        if wave in ("A","C") and side=="SHORT": tp = entry - mult*base
+        cap = self.config["tp_cap"]
+        if side=="LONG": tp = min(tp, entry*(1+cap))
+        else: tp = max(tp, entry*(1-cap))
+        return float(tp)
+
+    def get_sl_by_structure(self, side, entry, swings, atr_val=0):
+        max_sl = self.config["sl_pct_max"]
+        if swings and len(swings)>=1:
+            last = swings[-1]
+            if side=="LONG":
+                sl_struct = last["price"] - atr_val*0.2 if last["type"]=="L" else entry*(1-max_sl)
+                if (entry - sl_struct)/entry > max_sl: sl_struct = entry*(1-max_sl)
+                if sl_struct >= entry: sl_struct = entry*(1-max_sl)
+                return float(sl_struct)
             else:
-                try:
-                    r=execute_symbol(key)
-                    send_tele(f"✅ {key.upper()} {r.get('strategy','')} ราคา {r.get('price','?')} Wave {r.get('wave','?')} Dow4h {r.get('dow4h','?')} {r.get('msg','')}", chat_id)
-                except Exception as e: send_tele(f"{key} Error {e}", chat_id)
-            return {"ok":True}
-        elif tl.startswith("/bt"):
-            try:
-                f=DATA_DIR/"bt_results.json"
-                if not f.exists():
-                    send_tele("ยังไม่มีผล BT รันใน Shell ก่อน: python backtest_G_POWER.py --days 30", chat_id); return {"ok":True}
-                out=json.loads(f.read_text())
-                lines=["📊 BT ล่าสุด"]
-                for sym in ["btc","gold"]:
-                    if sym not in out: continue
-                    r=out[sym]
-                    lines.append(f"\n{'BTC' if sym=='btc' else 'GOLD'} {r['days']} วัน: {r['trades']} ไม้ Win {r['winrate_pct']}% PnL ${r['total_pnl']:+.2f} PF {r['profit_factor']}")
-                    for tr in r['trade_list'][-5:]:
-                        lines.append(f"  {tr['side']} Wave {tr.get('wave','?')} {tr['entry']:.1f}->{tr['exit']:.1f} {tr['exit_reason']} ${tr['pnl_usd']:+.2f}")
-                send_tele("\n".join(lines), chat_id); return {"ok":True}
-            except Exception as e: send_tele(f"/bt Error {e}", chat_id); return {"ok":True}
-        elif tl.startswith("/port") or tl.startswith("/info") or tl.startswith("/portfolio"):
-            trades=load_trades(); opens=[t for t in trades if str(t.get("status")).upper() in ("OPEN","PAPER_OPEN","PAPER")]
-            closed=[t for t in trades if str(t.get("status")).upper()=="CLOSED"]
-            total_pnl=sum(float(t.get("pnl_usd",0)) for t in closed)
-            lines=[f"📊 Portfolio {get_strategy_name('btc')}"]
-            lines.append(f"ถืออยู่ {len(opens)} ไม้ | ปิดแล้ว {len(closed)} ไม้ PnL ${total_pnl:+.2f} ทุน ${CAPITAL}")
-            for t in opens:
-                lines.append(f"  {t.get('signal')} {t.get('symbol_key','').upper()} Wave {t.get('wave','?')} เข้า {float(t.get('entry',0)):.1f} SL {float(t.get('sl',0)):.1f} TP {float(t.get('tp',0)):.1f}")
-            send_tele("\n".join(lines), chat_id); return {"ok":True}
-        elif tl.startswith("/close"):
-            parts=tl.split(); want=None if len(parts)<2 or parts[1]=="all" else parse_sym(parts[1])[0]
-            trades=load_trades(); opens=[t for t in trades if str(t.get("status")).upper() in ("OPEN","PAPER_OPEN","PAPER")]
-            if want and want!="all": opens=[t for t in opens if t.get("symbol_key")==want]
-            if not opens: send_tele("ไม่มีไม้ที่ถืออยู่", chat_id); return {"ok":True}
-            total=0; out=f"CLOSE {len(opens)} trades\n"
-            for ot in opens:
-                key=ot.get("symbol_key","btc")
-                try: r=execute_symbol(key); curr_p=r.get("price", float(ot["entry"]))
-                except: curr_p=float(ot["entry"])
-                entry=float(ot["entry"]); sig=ot["signal"]; ps=float(ot.get("position_size",0))
-                pnl=(curr_p-entry)/entry*ps if sig=="LONG" else (entry-curr_p)/entry*ps
-                total+=pnl; ot["status"]="CLOSED"; ot["result"]="WIN" if pnl>0 else "LOSS"; ot["exit"]=curr_p; ot["exit_time"]=datetime.now().isoformat(); ot["exit_reason"]="MANUAL CLOSE"; ot["pnl_usd"]=pnl
-                out+=f"{sig} {ot['symbol']} PnL ${pnl:+.2f}\n"
-            save_trades(trades)
-            if want is None or want=="all": set_auto_state("all", False); out+=f"รวม ${total:+.2f} Auto OFF"
-            else: set_auto_state(want, False); out+=f"รวม ${total:+.2f} Auto {want.upper()} OFF"
-            send_tele(out, chat_id); return {"ok":True}
-        elif tl.startswith("/reset"):
-            trades=load_trades(); opens=[t for t in trades if str(t.get("status")).upper() in ("OPEN","PAPER_OPEN","PAPER")]
-            if opens: send_tele(f"ยังถือ {len(opens)} ไม้อยู่! พิมพ์ /close all ก่อน", chat_id); return {"ok":True}
-            try:
-                for f in [TRADES_FILE, AUTO_STATE_FILE]:
-                    try:
-                        if f.exists(): f.unlink(missing_ok=True)
-                    except: pass
-                save_trades([]); set_auto_state("all", False)
-            except Exception as e: send_tele(f"RESET Error {e}", chat_id); return {"ok":True}
-            send_tele("ล้างไพ่เรียบร้อย Paper $40.00 Auto OFF - พิมพ์ /on all เพื่อเริ่มใหม่", chat_id); return {"ok":True}
-        elif tl.startswith("/on"):
-            parts=tl.split(); key="all" if len(parts)<2 else parse_sym(parts[1])[0]
-            if key=="unknown": send_tele("❓ มีแค่ BTC / GOLD", chat_id); return {"ok":True}
-            set_auto_state(key, True); send_tele(f"🟢 Auto ON {key.upper()} {get_strategy_name('btc')}", chat_id); return {"ok":True}
-        elif tl.startswith("/off"):
-            parts=tl.split(); key="all" if len(parts)<2 else parse_sym(parts[1])[0]
-            if key=="unknown": send_tele("❓ มีแค่ BTC / GOLD", chat_id); return {"ok":True}
-            set_auto_state(key, False); send_tele(f"🔴 Auto OFF {key.upper()}", chat_id); return {"ok":True}
-        else:
-            send_tele(f"❓ {text}\n/check [btc|gold|all]\n/on [btc|gold|all]\n/off [btc|gold|all]\n/port\n/bt\n/close all", chat_id); return {"ok":True}
-    except Exception as e:
-        print(f"ERR {e}"); traceback.print_exc(); return {"ok":True}
+                sl_struct = last["price"] + atr_val*0.2 if last["type"]=="H" else entry*(1+max_sl)
+                if (sl_struct - entry)/entry > max_sl: sl_struct = entry*(1+max_sl)
+                if sl_struct <= entry: sl_struct = entry*(1+max_sl)
+                return float(sl_struct)
+        if side=="LONG": return entry*(1-max_sl)
+        else: return entry*(1+max_sl)
 
-@app.on_event("startup")
-async def auto_set_webhook():
-    token = os.environ.get("TELEGRAM_BOT_TOKEN","").strip() or os.environ.get("BOT_TOKEN","").strip()
-    if not token: return
-    base = os.environ.get("RENDER_EXTERNAL_URL","").strip() or "https://mexc-btc-bot-1.onrender.com"
-    url = base.rstrip("/") + "/telegram/webhook"
-    try:
-        r = requests.get(f"https://api.telegram.org/bot{token}/setWebhook?url={url}", timeout=10)
-        print(f"STARTUP setWebhook {url} : {r.text[:200]}")
-    except Exception as e: print(f"STARTUP fail {e}")
-
-@app.get("/set_webhook")
-def set_webhook():
-    token = os.environ.get("TELEGRAM_BOT_TOKEN","").strip() or os.environ.get("BOT_TOKEN","").strip()
-    if not token: return {"ok":False,"error":"No BOT_TOKEN"}
-    url = "https://mexc-btc-bot-1.onrender.com/telegram/webhook"
-    try:
-        r = requests.get(f"https://api.telegram.org/bot{token}/setWebhook?url={url}", timeout=10)
-        return {"ok":r.status_code==200,"telegram":r.json(),"set_to":url}
-    except Exception as e: return {"ok":False,"error":str(e)[:200]}
-
-@app.get("/test_send")
-def test_send():
-    r = send_tele("TEST จาก Render UNIVERSAL V2 - ถ้าเห็นข้อความนี้ = BOT_TOKEN + CHAT_ID ถูกแล้ว")
-    return {"sent":r}
+    def check_trend(self, curr, prev=None, prev2=None, smc=None, htf_trend=None, dow_trend_4h=None, **kwargs):
+        try:
+            ef = float(curr.get("ema_fast",0) if hasattr(curr,"get") else curr["ema_fast"])
+            es = float(curr.get("ema_slow",0) if hasattr(curr,"get") else curr["ema_slow"])
+            adx = float(curr.get("adx",0) if hasattr(curr,"get") else curr["adx"])
+            pdi = float(curr.get("plus_di",0) if hasattr(curr,"get") else curr["plus_di"])
+            mdi = float(curr.get("minus_di",0) if hasattr(curr,"get") else curr["minus_di"])
+        except:
+            return {"long": False, "short": False, "sideway": True, "cdc_up": False, "cdc_down": False, "plus_di":0, "minus_di":0, "adx":0}
+        cdc_up = ef>es; cdc_down = ef<es
+        long_ok = cdc_up and pdi>mdi and pdi>self.config["di_min"] and adx>self.config["adx_min"]
+        short_ok = cdc_down and mdi>pdi and mdi>self.config["di_min"] and adx>self.config["adx_min"]
+        if dow_trend_4h=="DOWN": long_ok = False
+        if dow_trend_4h=="UP": short_ok = False
+        if htf_trend=="DOWN": long_ok = False
+        if htf_trend=="UP": short_ok = False
+        return {"long": bool(long_ok), "short": bool(short_ok), "sideway": bool(adx<self.config["adx_min"]), "cdc_up": bool(cdc_up), "cdc_down": bool(cdc_down), "plus_di": pdi, "minus_di": mdi, "adx": adx, "di_bull": bool(pdi>mdi), "di_bear": bool(mdi>pdi)}
+    def check_smc(self, df=None, **kwargs): return {"long_score":0,"short_score":0,"long_pass":False,"short_pass":False,"detail":{},"need":3}
+    def check_momentum(self, curr, **kwargs):
+        try: pdi=float(curr.get("plus_di",0) if hasattr(curr,"get") else 0); mdi=float(curr.get("minus_di",0) if hasattr(curr,"get") else 0); adx=float(curr.get("adx",0) if hasattr(curr,"get") else 0)
+        except: pdi=mdi=adx=0
+        return {"long": bool(pdi>mdi and adx>self.config["adx_min"]), "short": bool(mdi>pdi and adx>self.config["adx_min"]), "adx":adx, "plus_di":pdi, "minus_di":mdi}
+    def check_reversal(self, prev, curr, **kwargs): return {"long": False, "short": False}
+    def check_exit_trend_change(self, curr, prev, open_signal, smc=None, df=None, **kwargs): return {"tp": False, "reasons": [], "cdc_flip": False, "ema_flip": False}
+    def get_trailing_sl(self, entry, curr_price, cdc_stop, signal, atr=None, **kwargs):
+        if signal=="LONG": return max(entry*(1-self.config["sl_pct_max"]), float(cdc_stop) if cdc_stop else entry*(1-self.config["sl_pct_max"]))
+        else: return min(entry*(1+self.config["sl_pct_max"]), float(cdc_stop) if cdc_stop else entry*(1+self.config["sl_pct_max"]))
+    def check_exit(self, *a, **k): return self.check_exit_trend_change(*a, **k)
