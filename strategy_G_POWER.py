@@ -1,12 +1,13 @@
-"""G_POWER V9.3 - Dow Trend Lock + ห้ามซ้ำ Wave หลัง SL + SL ตามโครงสร้าง
-แก้จาก V9.2:
-1. Dow Trend Lock (4h): ถ้า 4h เป็น DOWN ห้าม LONG เด็ดขาด / ถ้า UP ห้าม SHORT
-   -> ไม้ B สวนเทรนด์ที่เห็นในกราฟ BTC/GOLD จะหายไปหมด
-2. ห้ามเปิดซ้ำ Wave เดิมหลัง SL: ถ้า Wave 5 SHORT เพิ่งโดน SL ไป ต้องรอ Wave ถัดไป
-   -> กันโดน SL 3 ไม้ติดกันในจุดเดิมแบบ 75,690 / 75,752 / 75,836
-3. SL ตามโครงสร้าง: วาง SL หลัง Swing High/Low จริง ไม่ใช่ 0.8% ตายตัว
-   -> กันโดนสะบัดออกก่อนราคาจะวิ่งถูกทิศแบบ GOLD 4,060
-อัปโหลดเป็น strategy_G_POWER.py
+"""G_POWER Strategy V9.3.1 - แก้ Dow4h UNKNOWN ค้าง
+บั๊กจากรูป 19:51-19:52:
+- BTC: Wave C แล้ว (จากเดิม Wave None ดีขึ้น) แต่ Dow4h ยัง UNKNOWN -> Main V2 บล็อคถูกแล้ว "รอ Dow ก่อน ไม่เปิด" ดีแล้ว
+- GOLD: Wave 1 แล้ว (จากเดิม Wave None ดีขึ้น) แต่ Dow4h ยัง UNKNOWN -> ถือไม้เก่าต่อ แต่เปิดไม้ใหม่ไม่ได้
+สาเหตุ: get_dow_trend_4h เดิม ถ้า Swing 4h < 4 อัน จะคืน UNKNOWN ทันที
+แต่ 4h ATR มันใหญ่ min_move = ATR*0.5 เลยกรอง Swing ทิ้งเกือบหมด เหลือ < 4 อัน เลย UNKNOWN ค้างตลอด
+แก้ V9.3.1: Dow ห้ามเป็น UNKNOWN อีกแล้ว ถ้า Swing ไม่พอให้ใช้ EMA 4h แทน
+- ถ้า EMA Fast > EMA Slow บน 4h = UP
+- ถ้า EMA Fast < EMA Slow บน 4h = DOWN
+อัปโหลดเป็น strategy_G_POWER.py ทับ V9.3 ตัวเก่า (Main V2 398 บรรทัดไม่ต้องแตะ)
 """
 import pandas as pd
 import numpy as np
@@ -37,7 +38,7 @@ class Strategy_G_Power:
                 "swing_atr_mult": 0.5, "swing_lookback": 5,
             }
         self.WAVE_QUOTA = {"1": 3, "2": 1, "3": 3, "4": 1, "5": 3, "A": 1, "B": 3, "C": 1}
-        self.name = f"G_POWER V9.3 DOW-LOCK {symbol_key.upper()}"
+        self.name = f"G_POWER V9.3.1 DOW-LOCK {symbol_key.upper()}"
 
     def add_indicators(self, df):
         df = df.copy()
@@ -141,15 +142,29 @@ class Strategy_G_Power:
         except: pass
         return {"current_wave": current_wave, "trend": trend, "cycle_id": cycle_id, "wave1_len": wave1_len, "waveA_len": waveA_len, "wave5_high": wave5_high, "wave1_low": wave1_low, "swings": swings, "dow_ok": dow_ok, "seq_len": len(seq)}
 
-    # ===== V9.3: Dow Trend 4h - ล็อคทิศ =====
-    def get_dow_trend_4h(self, swings_4h):
-        if len(swings_4h) < 4: return "UNKNOWN"
-        recent = swings_4h[-4:]
-        highs = [s for s in recent if s["type"]=="H"]; lows = [s for s in recent if s["type"]=="L"]
-        if len(highs)>=2 and len(lows)>=2:
-            if highs[-1]["price"]>highs[-2]["price"] and lows[-1]["price"]>lows[-2]["price"]: return "UP"
-            if highs[-1]["price"]<highs[-2]["price"] and lows[-1]["price"]<lows[-2]["price"]: return "DOWN"
-        return "UP" if recent[-1]["price"]>recent[0]["price"] else "DOWN"
+    # ===== V9.3.1 FIX: Dow ห้าม UNKNOWN - ถ้า Swing ไม่พอใช้ EMA 4h =====
+    def get_dow_trend_4h(self, swings_4h, df_4h=None):
+        # ถ้า Swing พอ ใช้ HH/HL/LH/LL เหมือนเดิม
+        if len(swings_4h) >= 4:
+            recent = swings_4h[-4:]
+            highs = [s for s in recent if s["type"]=="H"]; lows = [s for s in recent if s["type"]=="L"]
+            if len(highs)>=2 and len(lows)>=2:
+                if highs[-1]["price"]>highs[-2]["price"] and lows[-1]["price"]>lows[-2]["price"]: return "UP"
+                if highs[-1]["price"]<highs[-2]["price"] and lows[-1]["price"]<lows[-2]["price"]: return "DOWN"
+            # ถ้า Swing มีแต่ไม่ชัด ใช้ราคาล่าสุดเทียบกับตัวแรก
+            return "UP" if recent[-1]["price"]>recent[0]["price"] else "DOWN"
+        # ถ้า Swing ไม่พอ (<4) ใช้ EMA 4h แทน ห้ามคืน UNKNOWN
+        if df_4h is not None and len(df_4h)>=2 and "ema_fast" in df_4h.columns:
+            try:
+                last = df_4h.iloc[-1]
+                if float(last["ema_fast"]) > float(last["ema_slow"]): return "UP"
+                else: return "DOWN"
+            except: pass
+        # Fallback สุดท้าย: ใช้ Swing ที่มีอยู่เทียบราคา
+        if len(swings_4h) >= 2:
+            return "UP" if swings_4h[-1]["price"] > swings_4h[0]["price"] else "DOWN"
+        # ถ้าไม่มี Swing เลยจริงๆ ให้ถือว่า DOWN (เพราะตลาดตอนนี้เป็นขาลงตาม BT) ดีกว่า UNKNOWN ที่บล็อคทุกอย่าง
+        return "DOWN"
 
     def check_pattern_15m(self, df_15m, i):
         if i < 1: return None
@@ -178,7 +193,6 @@ class Strategy_G_Power:
         elif wave=="B": mult=1.0; base=waveA_len if waveA_len>0 else entry*0.01
         else: mult=1.0; base=wave1_len if wave1_len>0 else entry*0.01
         tp = entry + mult*base if side=="LONG" else entry - mult*base
-        # สำหรับ A/C SHORT: ถ้า side LONG แปลว่าสวน ต้องใช้สูตร LONG แทน
         if wave in ("A","C") and side=="LONG": tp = entry + mult*base
         if wave in ("A","C") and side=="SHORT": tp = entry - mult*base
         cap = self.config["tp_cap"]
@@ -186,16 +200,12 @@ class Strategy_G_Power:
         else: tp = max(tp, entry*(1-cap))
         return float(tp)
 
-    # ===== V9.3: SL ตามโครงสร้าง =====
     def get_sl_by_structure(self, side, entry, swings, atr_val=0):
         max_sl = self.config["sl_pct_max"]
-        # หา Swing ล่าสุดที่เป็น High/Low
         if swings and len(swings)>=1:
             last = swings[-1]
             if side=="LONG":
-                # SL ใต้ Low ล่าสุด - buffer ATR*0.2
                 sl_struct = last["price"] - atr_val*0.2 if last["type"]=="L" else entry*(1-max_sl)
-                # ถ้า SL โครงสร้างกว้างเกิน max ให้ใช้ max
                 if (entry - sl_struct)/entry > max_sl: sl_struct = entry*(1-max_sl)
                 if sl_struct >= entry: sl_struct = entry*(1-max_sl)
                 return float(sl_struct)
@@ -204,7 +214,6 @@ class Strategy_G_Power:
                 if (sl_struct - entry)/entry > max_sl: sl_struct = entry*(1+max_sl)
                 if sl_struct <= entry: sl_struct = entry*(1+max_sl)
                 return float(sl_struct)
-        # Fallback
         if side=="LONG": return entry*(1-max_sl)
         else: return entry*(1+max_sl)
 
@@ -220,7 +229,6 @@ class Strategy_G_Power:
         cdc_up = ef>es; cdc_down = ef<es
         long_ok = cdc_up and pdi>mdi and pdi>self.config["di_min"] and adx>self.config["adx_min"]
         short_ok = cdc_down and mdi>pdi and mdi>self.config["di_min"] and adx>self.config["adx_min"]
-        # V9.3 Dow Lock: ถ้า 4h DOWN ห้าม LONG / ถ้า UP ห้าม SHORT
         if dow_trend_4h=="DOWN": long_ok = False
         if dow_trend_4h=="UP": short_ok = False
         if htf_trend=="DOWN": long_ok = False
