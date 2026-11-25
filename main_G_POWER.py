@@ -1,11 +1,14 @@
-"""G_POWER Main UNIVERSAL - Main ไม่ต้องแก้แล้ว เปลี่ยน Strategy อย่างเดียวจบ
-หลักการ: Main เป็นแค่ "คนขับรถ" ไม่รู้เรื่องกลยุทธ์เลย
-- ไม่ Hardcode EMA / ADX / DI / SL / TP / Wave / Quota ไว้ใน Main อีกต่อไป
-- ทุกค่าอ่านจาก Strategy.config / Strategy.WAVE_QUOTA / Strategy.name
-- ทุกการตัดสินใจเรียกผ่าน Strategy เท่านั้น: check_trend / check_pattern_15m / is_touch_ema36 / count_waves / detect_swings / get_dow_trend_4h / get_tp_by_wave / get_sl_by_structure
-- ถ้า Strategy ตัวใหม่เพิ่ม Method ใหม่ Main จะใช้ทันที ถ้า Strategy เก่าไม่มี Method นั้น Main จะ Fallback เอง ไม่พัง
-- เปลี่ยน Strategy V9.3 -> V9.4 -> V10 แค่ทับไฟล์ strategy_G_POWER.py แล้ว Deploy Main ไฟล์นี้ไม่ต้องแตะเลย
-อัปโหลดเป็น main_G_POWER.py (ทับตัวเก่า V6.1)
+"""G_POWER Main UNIVERSAL V2 - แก้บั๊ก Wave None / Dow UNKNOWN แล้วเปิดไม้
+บั๊กจากรูป Telegram 19:41:
+- GOLD เปิด SHORT ทั้งที่ Wave None Cycle 0 Dow4h UNKNOWN Pattern PIN_BEAR
+- สาเหตุ 1: Main ดึงแท่ง 15m แค่ 250 แท่ง = 2.6 วัน Resample เป็น 1h ได้ 62 แท่ง 4h ได้ 15 แท่ง Swing ไม่พอ นับ Wave ไม่ได้ -> Wave None
+- สาเหตุ 2: Main เก่าปล่อยให้ Dow UNKNOWN ผ่านได้ (บล็อคแค่ตอน Dow ตรงข้าม) เลยเปิดไม้ทั้งที่ Dow ไม่รู้ทิศ
+แก้ V2:
+1. ดึงแท่ง 15m 1000 แท่ง = 10 วัน (1h ได้ 250 แท่ง 4h ได้ 62 แท่ง Swing พอ)
+2. ถ้า Wave is None -> ห้ามเปิด รอ Wave ก่อน
+3. ถ้า Dow4h is UNKNOWN -> ห้ามเปิด รอ Dow ก่อน
+4. ถ้า Wave None แต่มีไม้เปิดค้างอยู่ ให้ถือต่อ ไม่ปิด (แค่ห้ามเปิดไม้ใหม่)
+อัปโหลดเป็น main_G_POWER.py ทับตัวเก่า
 """
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse
@@ -13,9 +16,8 @@ from datetime import datetime, timedelta
 import os, ccxt, pandas as pd, json, requests, importlib, traceback
 from pathlib import Path
 
-app = FastAPI(title="G_POWER UNIVERSAL")
+app = FastAPI(title="G_POWER UNIVERSAL V2")
 
-# ===== Config ที่ไม่ใช่กลยุทธ์ (Main จัดการเอง) =====
 CAPITAL = 40.0
 RISK_PCT = 0.02
 LEVERAGE = 3
@@ -26,41 +28,29 @@ TRADES_FILE = DATA_DIR / "g_power_trades.json"
 AUTO_STATE_FILE = DATA_DIR / "auto_state.json"
 LAST_TRADE_TIME_FILE = DATA_DIR / "last_trade_time.json"
 
-# ===== Load Strategy แบบ Dynamic - ไม่ Hardcode =====
 def load_strategy(symbol_key):
-    """โหลด Strategy ตาม symbol_key ทุกครั้งที่เรียก - เปลี่ยน Strategy แล้วไม่ต้องแก้ Main"""
     try:
         import strategy_G_POWER
         importlib.reload(strategy_G_POWER)
         StrategyCls = strategy_G_POWER.Strategy_G_Power
     except Exception as e:
-        print(f"load_strategy import err {e}")
-        raise
-    try:
-        st = StrategyCls(symbol_key)
+        print(f"load_strategy import err {e}"); raise
+    try: st = StrategyCls(symbol_key)
     except TypeError:
-        # Strategy เก่าที่ __init__ ไม่มี symbol_key
-        st = StrategyCls()
-        st.symbol_key = symbol_key
+        st = StrategyCls(); st.symbol_key = symbol_key
     return st
 
 def get_strategy_name(symbol_key="btc"):
     try:
-        st = load_strategy(symbol_key)
-        return getattr(st, "name", "UNKNOWN")
-    except:
-        return "UNKNOWN"
+        st = load_strategy(symbol_key); return getattr(st, "name", "UNKNOWN")
+    except: return "UNKNOWN"
 
-# Cache Strategy ไว้ไม่ให้ reload บ่อยเกินไป (reload ทุกครั้งที่ /check จะช้า)
 _STRAT_CACHE = {}
 def get_strat(symbol_key):
-    # ถ้ายังไม่มีใน Cache หรือ Strategy เปลี่ยนเวอร์ชั่น ให้โหลดใหม่
-    # วิธีเช็ค: ถ้า Cache มีอยู่แล้วใช้ Cache ไปเลย Deploy ใหม่ Render จะ Restart เองอยู่แล้ว
     if symbol_key not in _STRAT_CACHE:
         _STRAT_CACHE[symbol_key] = load_strategy(symbol_key)
     return _STRAT_CACHE[symbol_key]
 
-# ===== Helpers - Persistence =====
 def atomic_save(path: Path, data):
     try:
         tmp = path.with_suffix('.tmp')
@@ -107,8 +97,8 @@ def get_last_trade_times():
 def set_last_trade_time(symbol_key):
     times=get_last_trade_times(); times[symbol_key]=datetime.now().isoformat(); atomic_save(LAST_TRADE_TIME_FILE, times)
 
-# ===== Data =====
-def get_data(symbol="BTC/USDT:USDT", timeframe="15m", limit=250):
+def get_data(symbol="BTC/USDT:USDT", timeframe="15m", limit=1000):
+    # V2: 1000 แท่ง = 10 วัน (เดิม 250 แท่ง = 2.6 วัน Swing ไม่พอ)
     try:
         ex=ccxt.mexc({"options":{"defaultType":"swap"}})
         ohlcv=ex.fetch_ohlcv(symbol, timeframe, limit=limit)
@@ -117,8 +107,7 @@ def get_data(symbol="BTC/USDT:USDT", timeframe="15m", limit=250):
             df['datetime']=pd.to_datetime(df['timestamp'], unit='ms')
             df['time']=df['datetime']
             return df
-    except Exception as e:
-        print(f"get_data err {e}")
+    except Exception as e: print(f"get_data err {e}")
     return None
 
 def resample_tf(df_15m, tf="1h"):
@@ -138,30 +127,24 @@ def send_tele(msg, chat_id=None):
         print(f"send_tele err {e}"); return {"ok":False}
 
 def calc_position(symbol_key, entry, sl):
-    """คำนวณขนาดไม้จาก Risk - SL มาจาก Strategy ไม่ใช่ Hardcode"""
     risk = CAPITAL * RISK_PCT
     sl_pct = abs(entry-sl)/entry if entry and sl and entry!=0 else 0.01
     if sl_pct==0: sl_pct=0.01
-    pos = risk / sl_pct  # Position size (USDT)
+    pos = risk / sl_pct
     return {"risk": risk, "pos": pos, "margin": pos/LEVERAGE, "sl_pct": sl_pct}
 
-# ===== Core: Execute 1 Symbol - ทุกการตัดสินใจถาม Strategy =====
 def execute_symbol(symbol_key):
-    """Main ไม่รู้กลยุทธ์เลย ถาม Strategy ทุกขั้นตอน"""
     symbol = SYMBOLS[symbol_key]
     st = get_strat(symbol_key)
     cfg = getattr(st, "config", {})
     strat_name = getattr(st, "name", "UNKNOWN")
-    # 1. ดึงข้อมูล 15m
-    df = get_data(symbol, "15m", limit=250)
+    df = get_data(symbol, "15m", limit=1000)
     if df is None or len(df)<50:
         return {"ok": False, "error": "no data", "strategy": strat_name}
-    # 2. Indicators จาก Strategy (Main ไม่คำนวณ EMA/ADX เอง)
     try: df = st.add_indicators(df)
     except Exception as e: return {"ok": False, "error": f"add_indicators {e}", "strategy": strat_name}
     curr = df.iloc[-1]; prev = df.iloc[-2]
     price = float(curr["close"])
-    # 3. Wave + Dow 4h จาก Strategy (ถ้า Strategy ไม่มี Method นี้ให้ Fallback)
     wave = None; cycle_id = 0; wave1_len=0; waveA_len=0; dow4h="UNKNOWN"; swings_1h=[]
     try:
         df_1h = resample_tf(df, "1h"); df_1h = st.add_indicators(df_1h)
@@ -177,7 +160,7 @@ def execute_symbol(symbol_key):
                 dow4h = st.get_dow_trend_4h(swings_4h)
     except Exception as e:
         print(f"wave/dow err {e}"); traceback.print_exc()
-    # 4. เช็คไม้ที่ถืออยู่ - SL/TP
+    # เช็คไม้ถืออยู่ - SL/TP (ถือต่อได้แม้ Wave None / Dow UNKNOWN)
     trades = load_trades()
     opens = [t for t in trades if t.get("symbol_key")==symbol_key and str(t.get("status")).upper() in ("OPEN","PAPER_OPEN","PAPER")]
     closed_msg = ""
@@ -189,27 +172,25 @@ def execute_symbol(symbol_key):
             pnl = (price-entry)/entry*ps if sig=="LONG" else (entry-price)/entry*ps
             ot["status"]="CLOSED"; ot["result"]="WIN" if pnl>0 else "LOSS"; ot["exit"]=price; ot["exit_time"]=datetime.now().isoformat(); ot["exit_reason"]="SL" if hit_sl else "TP"; ot["pnl_usd"]=pnl
             closed_msg += f"\n{'✅' if pnl>0 else '❌'} {sig} {symbol_key.upper()} {entry:.1f}->{price:.1f} {ot['exit_reason']} PnL ${pnl:+.2f} Wave {ot.get('wave','?')}"
-            # บันทึก Last SL Wave ไว้กันเปิดซ้ำ - Main ไม่รู้ Wave เอง อ่านจากไม้ที่ปิด
             if hit_sl:
                 ot["last_sl_wave"] = ot.get("wave"); ot["last_sl_cycle"] = ot.get("cycle")
     if closed_msg:
         save_trades(trades)
         send_tele(f"ปิดไม้ {symbol_key.upper()} {strat_name}{closed_msg}")
-        # โหลดใหม่หลังปิด
         trades = load_trades()
         opens = [t for t in trades if t.get("symbol_key")==symbol_key and str(t.get("status")).upper() in ("OPEN","PAPER_OPEN","PAPER")]
-    # ถ้ายังถืออยู่ ไม่เปิดไม้ใหม่ (1 ไม้ต่อเหรียญ - ถ้า Strategy ต้องการหลายไม้ ให้ Strategy บอกผ่าน MAX_POS ใน config)
     max_pos = cfg.get("max_pos_per_symbol", 1)
     if len(opens) >= max_pos:
         return {"ok": True, "strategy": strat_name, "price": price, "wave": wave, "dow4h": dow4h, "holding": len(opens), "msg": "holding"}
-    # 5. เช็ค Auto
     if not get_auto_state().get(symbol_key, True):
         return {"ok": True, "strategy": strat_name, "price": price, "wave": wave, "dow4h": dow4h, "msg": "auto off"}
-    # 6. ถาม Strategy ว่าเข้าได้ไหม - Main ไม่ตัดสินใจเอง
+    # ===== V2 FIX: ห้ามเปิดถ้า Wave None หรือ Dow UNKNOWN =====
+    if wave is None:
+        return {"ok": True, "strategy": strat_name, "price": price, "wave": wave, "dow4h": dow4h, "msg": "Wave None - รอ Wave ก่อน ไม่เปิด"}
+    if dow4h == "UNKNOWN":
+        return {"ok": True, "strategy": strat_name, "price": price, "wave": wave, "dow4h": dow4h, "msg": "Dow4h UNKNOWN - รอ Dow ก่อน ไม่เปิด"}
     try:
-        # ส่ง Dow 4h ไปให้ Strategy ล็อคทิศ (ถ้า Strategy เก่าไม่รับ param นี้ ให้ Fallback)
-        try:
-            trend = st.check_trend(curr, prev, dow_trend_4h=dow4h)
+        try: trend = st.check_trend(curr, prev, dow_trend_4h=dow4h)
         except TypeError:
             try: trend = st.check_trend(curr, prev)
             except: trend = {"long": False, "short": False}
@@ -218,23 +199,18 @@ def execute_symbol(symbol_key):
     side = "LONG" if trend.get("long") else "SHORT" if trend.get("short") else None
     if not side:
         return {"ok": True, "strategy": strat_name, "price": price, "wave": wave, "dow4h": dow4h, "msg": "no trend signal"}
-    # 7. Quota + ห้ามซ้ำ Wave หลัง SL - อ่านจาก Strategy.WAVE_QUOTA + ประวัติเทรด
     if wave is not None:
         quota_map = getattr(st, "WAVE_QUOTA", {})
         quota = quota_map.get(wave, 1) if isinstance(quota_map, dict) else 1
-        # นับไม้ที่เปิดแล้วใน Wave นี้ (Cycle เดียวกัน)
         count_in_wave = len([t for t in trades if t.get("symbol_key")==symbol_key and t.get("wave")==wave and t.get("cycle")==cycle_id and str(t.get("status")).upper() in ("OPEN","PAPER_OPEN","PAPER","CLOSED")])
-        # ถ้าเทรดปิดแล้วนับด้วย? นับเฉพาะไม้ที่เปิดใน Cycle นี้ทั้งหมด (รวมที่ปิดไปแล้ว) เพื่อไม่ให้เปิดเกิน Quota
         if count_in_wave >= quota:
             return {"ok": True, "strategy": strat_name, "price": price, "wave": wave, "dow4h": dow4h, "msg": f"quota full Wave {wave} {count_in_wave}/{quota}"}
-        # ห้ามซ้ำ Wave เดิมหลัง SL
         last_sl = None
         for t in reversed(trades):
             if t.get("symbol_key")==symbol_key and t.get("exit_reason")=="SL" and t.get("wave")==wave and t.get("cycle")==cycle_id and t.get("signal")==side:
                 last_sl = t; break
         if last_sl:
             return {"ok": True, "strategy": strat_name, "price": price, "wave": wave, "dow4h": dow4h, "msg": f"skip Wave {wave} หลัง SL"}
-    # 8. แตะ EMA + Pattern - ถาม Strategy
     try:
         ema_slow_val = float(curr["ema_slow"]) if "ema_slow" in curr else float(curr["ema_trend"]) if "ema_trend" in curr else 0
         if hasattr(st, "is_touch_ema36"):
@@ -248,11 +224,9 @@ def execute_symbol(symbol_key):
                 return {"ok": True, "strategy": strat_name, "price": price, "wave": wave, "dow4h": dow4h, "msg": f"pattern {pat} ไม่ตรง LONG"}
             if side=="SHORT" and pat not in ("PIN_BEAR","ENG_BEAR"):
                 return {"ok": True, "strategy": strat_name, "price": price, "wave": wave, "dow4h": dow4h, "msg": f"pattern {pat} ไม่ตรง SHORT"}
-        else:
-            pat = "N/A"
+        else: pat = "N/A"
     except Exception as e:
         print(f"pattern/touch err {e}"); pat = "N/A"
-    # 9. SL / TP - ถาม Strategy (ไม่ Hardcode %)
     try:
         atr_val = float(curr["atr"]) if "atr" in curr and pd.notna(curr["atr"]) else 0
         if hasattr(st, "get_sl_by_structure"):
@@ -268,7 +242,6 @@ def execute_symbol(symbol_key):
         if side=="SHORT" and (sl<=price or tp>=price): return {"ok": True, "strategy": strat_name, "price": price, "wave": wave, "msg": "SL/TP ผิดทิศ"}
     except Exception as e:
         return {"ok": False, "error": f"SL/TP {e}", "strategy": strat_name}
-    # 10. เปิดไม้ Paper
     pos_info = calc_position(symbol_key, price, sl)
     new_trade = {
         "symbol_key": symbol_key, "symbol": symbol, "signal": side, "wave": wave, "cycle": cycle_id, "dow4h": dow4h,
@@ -287,15 +260,14 @@ def parse_sym(s):
     if s in ("all",""): return ("all","ALL")
     return ("unknown", s)
 
-# ===== API =====
 @app.get("/ping")
 def ping():
-    return {"status": "ok UNIVERSAL", "strategy_btc": get_strategy_name("btc"), "strategy_gold": get_strategy_name("gold"), "auto": get_auto_state(), "trades": len(load_trades())}
+    return {"status": "ok UNIVERSAL V2", "strategy_btc": get_strategy_name("btc"), "strategy_gold": get_strategy_name("gold"), "auto": get_auto_state(), "trades": len(load_trades())}
 
 @app.get("/", response_class=HTMLResponse)
 def home():
     auto=get_auto_state()
-    return f"<html><body style='background:#0a0e1a;color:#fff;font-family:Arial;padding:20px'><h1>G_POWER UNIVERSAL</h1><p>Strategy: {get_strategy_name('btc')}</p><p>BTC {'🟢' if auto.get('btc') else '🔴'} GOLD {'🟢' if auto.get('gold') else '🔴'}</p><p>Main ไม่ต้องแก้แล้ว เปลี่ยนแค่ strategy_G_POWER.py</p><a href='/ping'>Ping</a></body></html>"
+    return f"<html><body style='background:#0a0e1a;color:#fff;font-family:Arial;padding:20px'><h1>G_POWER UNIVERSAL V2</h1><p>Strategy: {get_strategy_name('btc')}</p><p>BTC {'🟢' if auto.get('btc') else '🔴'} GOLD {'🟢' if auto.get('gold') else '🔴'}</p><p>Main ไม่ต้องแก้แล้ว เปลี่ยนแค่ strategy_G_POWER.py | Wave None / Dow UNKNOWN ห้ามเปิด</p><a href='/ping'>Ping</a></body></html>"
 
 @app.get("/check")
 def check(sym: str = "all"):
@@ -422,5 +394,5 @@ def set_webhook():
 
 @app.get("/test_send")
 def test_send():
-    r = send_tele("TEST จาก Render UNIVERSAL - ถ้าเห็นข้อความนี้ = BOT_TOKEN + CHAT_ID ถูกแล้ว")
+    r = send_tele("TEST จาก Render UNIVERSAL V2 - ถ้าเห็นข้อความนี้ = BOT_TOKEN + CHAT_ID ถูกแล้ว")
     return {"sent":r}
