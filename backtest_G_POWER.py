@@ -1,6 +1,7 @@
-"""G_POWER V9 Backtest - EMA + Dow - ใช้ชื่อไฟล์มาตรฐาน
+"""G_POWER V9 Backtest UNIFIED - เขียนผลทั้ง 2 ไฟล์ให้ /bt อ่านได้
 รัน: python backtest_G_POWER.py --days 30
-- import จาก strategy_G_POWER (ชื่อมาตรฐาน) ไม่ใช่ V9
+- import จาก strategy_G_POWER (ชื่อมาตรฐาน)
+- บันทึกทั้ง bt_results.json (ให้ main /bt อ่าน) และ bt_results_V9.json
 """
 import ccxt, pandas as pd, json, sys
 from pathlib import Path
@@ -193,5 +194,7 @@ if __name__ == "__main__":
         out[sym] = run_bt(sym, days)
         r = out[sym]
         print(f"  {sym}: {r['trades']} ไม้ Win {r['winrate_pct']}% PnL ${r['total_pnl']:+.2f} ทุน ${r['capital_start']} -> ${r['capital_end']} PF {r['profit_factor']}")
+    # เขียนทั้ง 2 ไฟล์ - main /bt อ่าน bt_results.json, ส่วน V9 อ่าน bt_results_V9.json
+    (DATA_DIR / "bt_results.json").write_text(json.dumps(out, indent=2, ensure_ascii=False))
     (DATA_DIR / "bt_results_V9.json").write_text(json.dumps(out, indent=2, ensure_ascii=False))
-    print(f"บันทึกแล้วที่ {DATA_DIR}/bt_results_V9.json")
+    print(f"บันทึกแล้ว {DATA_DIR}/bt_results.json + bt_results_V9.json")
