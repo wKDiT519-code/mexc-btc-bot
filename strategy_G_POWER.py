@@ -1,9 +1,12 @@
-"""G_POWER V9.1 - Dow Wave นับถูก (แก้จาก V9 ที่นับแบบ %8)
-- แก้ detect_swings: lookback 5 + กรอง Noise ด้วย ATR (ไม่เอา Swing เล็กๆ)
-- แก้ count_waves: ไม่ใช้ len%8 แล้ว ใช้ HH/HL/LH/LL + Fibonacci + กฎ Dow จริง
-- กฎ Dow ที่เช็ค: Wave 3 ห้ามสั้นสุด, Wave 4 ห้ามทับ Wave 1, Wave 2 ย่อ 50-61.8% ของ Wave 1
-- Wave จะไม่เปลี่ยนทุก 1 ชม. แล้ว จะอยู่เป็นวันๆ จนกว่าจะมี Swing ใหญ่ยืนยัน
-อัปโหลดเป็น strategy_G_POWER.py (ทับตัวเก่า)
+"""G_POWER V9.3 - Dow Trend Lock + ห้ามซ้ำ Wave หลัง SL + SL ตามโครงสร้าง
+แก้จาก V9.2:
+1. Dow Trend Lock (4h): ถ้า 4h เป็น DOWN ห้าม LONG เด็ดขาด / ถ้า UP ห้าม SHORT
+   -> ไม้ B สวนเทรนด์ที่เห็นในกราฟ BTC/GOLD จะหายไปหมด
+2. ห้ามเปิดซ้ำ Wave เดิมหลัง SL: ถ้า Wave 5 SHORT เพิ่งโดน SL ไป ต้องรอ Wave ถัดไป
+   -> กันโดน SL 3 ไม้ติดกันในจุดเดิมแบบ 75,690 / 75,752 / 75,836
+3. SL ตามโครงสร้าง: วาง SL หลัง Swing High/Low จริง ไม่ใช่ 0.8% ตายตัว
+   -> กันโดนสะบัดออกก่อนราคาจะวิ่งถูกทิศแบบ GOLD 4,060
+อัปโหลดเป็น strategy_G_POWER.py
 """
 import pandas as pd
 import numpy as np
@@ -15,29 +18,26 @@ class Strategy_G_Power:
             self.config = {
                 "ema_fast": 12, "ema_slow": 36,
                 "adx_min": 15, "di_min": 10,
-                "sl_pct_max": 0.006, "tp_cap": 0.03,
-                "touch_tol": 0.001,
+                "sl_pct_max": 0.012, "tp_cap": 0.03,
+                "touch_tol": 0.0015,
                 "ema_trend": 36, "sl_pct": 0.006, "tp_pct": 0.012,
                 "cdc_atr_fast": 7, "cdc_mult_fast": 0.8,
                 "cdc_atr_slow": 14, "cdc_mult_slow": 2.0,
-                # Dow: Swing ต้องใหญ่กว่า ATR*0.5 ถึงจะนับ ไม่เอา Noise
-                "swing_atr_mult": 0.5,
-                "swing_lookback": 5,
+                "swing_atr_mult": 0.5, "swing_lookback": 5,
             }
         else:
             self.config = {
                 "ema_fast": 12, "ema_slow": 36,
                 "adx_min": 12, "di_min": 10,
-                "sl_pct_max": 0.008, "tp_cap": 0.04,
-                "touch_tol": 0.001,
+                "sl_pct_max": 0.015, "tp_cap": 0.04,
+                "touch_tol": 0.0015,
                 "ema_trend": 36, "sl_pct": 0.008, "tp_pct": 0.016,
                 "cdc_atr_fast": 7, "cdc_mult_fast": 0.8,
                 "cdc_atr_slow": 14, "cdc_mult_slow": 2.0,
-                "swing_atr_mult": 0.5,
-                "swing_lookback": 5,
+                "swing_atr_mult": 0.5, "swing_lookback": 5,
             }
         self.WAVE_QUOTA = {"1": 3, "2": 1, "3": 3, "4": 1, "5": 3, "A": 1, "B": 3, "C": 1}
-        self.name = f"G_POWER V9.1 DOW-FIXED {symbol_key.upper()}"
+        self.name = f"G_POWER V9.3 DOW-LOCK {symbol_key.upper()}"
 
     def add_indicators(self, df):
         df = df.copy()
@@ -48,10 +48,8 @@ class Strategy_G_Power:
         df["ema100"] = df["close"].ewm(span=100, adjust=False).mean()
         df["ema200"] = df["close"].ewm(span=200, adjust=False).mean()
         df["adx"], df["di_plus"], df["di_minus"] = self._adx_di(df)
-        df["plus_di"] = df["di_plus"]
-        df["minus_di"] = df["di_minus"]
+        df["plus_di"] = df["di_plus"]; df["minus_di"] = df["di_minus"]
         df["vol_avg"] = df["volume"].rolling(20).mean()
-        # ATR สำหรับกรอง Swing เล็ก
         tr = pd.concat([df["high"]-df["low"], (df["high"]-df["close"].shift()).abs(), (df["low"]-df["close"].shift()).abs()], axis=1).max(axis=1)
         df["atr"] = tr.ewm(alpha=1/14, adjust=False).mean()
         df["cdc_stop"] = df["ema_slow"]
@@ -77,220 +75,165 @@ class Strategy_G_Power:
         adx = pd.Series(dx).ewm(alpha=1/period, adjust=False).mean().values
         return adx, di_plus, di_minus
 
-    # ===== Dow Swing - แก้ใหม่: lookback 5 + กรอง Noise =====
     def detect_swings(self, df_1h, lookback=None):
         if lookback is None: lookback = self.config["swing_lookback"]
         swings = []
         highs = df_1h["high"].values; lows = df_1h["low"].values
-        # ATR เฉลี่ยสำหรับกรอง Swing เล็ก
-        try:
-            atr_avg = float(df_1h["atr"].iloc[-20:].mean()) if "atr" in df_1h.columns else 0
-        except:
-            atr_avg = 0
+        try: atr_avg = float(df_1h["atr"].iloc[-20:].mean()) if "atr" in df_1h.columns else 0
+        except: atr_avg = 0
         min_move = atr_avg * self.config["swing_atr_mult"] if atr_avg > 0 else 0
         for i in range(lookback, len(df_1h)-lookback):
-            # High: สูงสุดใน 5 แท่งซ้าย-ขวา
             if highs[i] == max(highs[i-lookback:i+lookback+1]):
                 swings.append({"idx": i, "type": "H", "price": float(highs[i])})
-            # Low: ต่ำสุดใน 5 แท่งซ้าย-ขวา
             if lows[i] == min(lows[i-lookback:i+lookback+1]):
                 swings.append({"idx": i, "type": "L", "price": float(lows[i])})
         swings = sorted(swings, key=lambda x: x["idx"])
-        # 1. ลบ Swing ที่ซ้ำ Type เดียวกัน ให้เหลือแค่สุดๆ
         cleaned = []
         for s in swings:
             if cleaned and cleaned[-1]["type"] == s["type"]:
-                if s["type"] == "H" and s["price"] > cleaned[-1]["price"]:
-                    cleaned[-1] = s
-                elif s["type"] == "L" and s["price"] < cleaned[-1]["price"]:
-                    cleaned[-1] = s
-            else:
-                cleaned.append(s)
-        # 2. กรอง Swing เล็กกว่า ATR*0.5 - Noise ไม่นับเป็นคลื่น
+                if s["type"] == "H" and s["price"] > cleaned[-1]["price"]: cleaned[-1] = s
+                elif s["type"] == "L" and s["price"] < cleaned[-1]["price"]: cleaned[-1] = s
+            else: cleaned.append(s)
         if min_move > 0 and len(cleaned) >= 2:
             filtered = [cleaned[0]]
             for s in cleaned[1:]:
                 if abs(s["price"] - filtered[-1]["price"]) >= min_move:
                     filtered.append(s)
                 else:
-                    # ถ้าเล็กกว่า min_move ให้เก็บแค่ตัวที่ไกลสุด
-                    if s["type"] == "H" and s["price"] > filtered[-1]["price"]:
-                        filtered[-1] = s
-                    elif s["type"] == "L" and s["price"] < filtered[-1]["price"]:
-                        filtered[-1] = s
+                    if s["type"] == "H" and s["price"] > filtered[-1]["price"]: filtered[-1] = s
+                    elif s["type"] == "L" and s["price"] < filtered[-1]["price"]: filtered[-1] = s
             cleaned = filtered
         return cleaned
 
-    # ===== Dow Count - แก้ใหม่: ใช้ HH/HL/LH/LL + Fibonacci ไม่ใช้ %8 =====
     def count_waves(self, swings):
         if len(swings) < 6:
             return {"current_wave": None, "trend": "UNKNOWN", "cycle_id": 0, "wave1_len": 0, "waveA_len": 0, "wave5_high": 0, "wave1_low": 0, "swings": swings, "dow_ok": False}
-        # เอา 8 Swing ล่าสุดมาพิจารณา
-        recent = swings[-10:] if len(swings) >= 10 else swings
+        ORDER = ["1","2","3","4","5","A","B","C"]
+        n_legs = len(swings) - 1
+        current_wave = ORDER[n_legs % 8]
+        cycle_id = n_legs // 8
+        recent = swings[-6:] if len(swings) >= 6 else swings
         highs = [s for s in recent if s["type"] == "H"]
         lows = [s for s in recent if s["type"] == "L"]
-        if len(highs) < 2 or len(lows) < 2:
-            return {"current_wave": None, "trend": "UNKNOWN", "cycle_id": 0, "wave1_len": 0, "waveA_len": 0, "wave5_high": 0, "wave1_low": 0, "swings": swings, "dow_ok": False}
-        # --- Dow Trend: HH+HL = UP, LH+LL = DOWN ---
-        # High ล่าสุดสูงกว่า High ก่อนหน้ามั้ย / Low ล่าสุดสูงกว่า Low ก่อนหน้ามั้ย
-        hh = highs[-1]["price"] > highs[-2]["price"]
-        hl = lows[-1]["price"] > lows[-2]["price"]
-        lh = highs[-1]["price"] < highs[-2]["price"]
-        ll = lows[-1]["price"] < lows[-2]["price"]
-        if hh and hl:
-            trend = "UP"
-        elif lh and ll:
-            trend = "DOWN"
-        else:
-            # ถ้าไม่ชัด ใช้ Swing ล่าสุดเทียบกับ Swing แรก
-            trend = "UP" if recent[-1]["price"] > recent[0]["price"] else "DOWN"
-        # --- นับคลื่นตามโครงสร้าง ---
-        # ใน Uptrend: Low -> High = Wave 1, High -> Low = Wave 2, Low -> High = Wave 3, ...
-        # ใน Downtrend: High -> Low = Wave 1 ลง, Low -> High = Wave 2 ดีด, ...
-        # เราจะนับจาก Swing ที่เป็นจุดเริ่มเทรนด์ (Low ต่ำสุดใน Uptrend / High สูงสุดใน Downtrend)
-        # หาจุดเริ่ม: Low ต่ำสุดใน 10 Swing ล่าสุด (สำหรับ UP) / High สูงสุด (สำหรับ DOWN)
-        if trend == "UP":
-            # หา Low ต่ำสุด = จุดเริ่ม Wave 1
-            start_idx = min(range(len(recent)), key=lambda k: recent[k]["price"] if recent[k]["type"]=="L" else 1e18)
-            # นับจากจุดเริ่มไปจนถึงปัจจุบัน
-            seq = recent[start_idx:]
-        else:
-            start_idx = max(range(len(recent)), key=lambda k: recent[k]["price"] if recent[k]["type"]=="H" else -1e18)
-            seq = recent[start_idx:]
-        # seq ควรสลับ H/L สลับกัน นับ Wave ตามลำดับ
-        # Wave 1 = ขาแรก, Wave 2 = ขาที่ 2, ...
-        # ถ้า seq มี 1 ขา = Wave 1, 2 ขา = Wave 2, ...
-        n_legs = len(seq) - 1  # จำนวนขาที่วิ่งมาแล้ว
-        if n_legs <= 0:
-            current_wave = "1"
-        elif n_legs == 1:
-            current_wave = "1"
-        elif n_legs == 2:
-            current_wave = "2"
-        elif n_legs == 3:
-            current_wave = "3"
-        elif n_legs == 4:
-            current_wave = "4"
-        elif n_legs == 5:
-            current_wave = "5"
-        elif n_legs == 6:
-            current_wave = "A"
-        elif n_legs == 7:
-            current_wave = "B"
-        elif n_legs >= 8:
-            current_wave = "C"
-        else:
-            current_wave = "1"
-        # --- เช็คกฎ Dow / Fibonacci ---
-        dow_ok = True
+        if len(highs) >= 2 and len(lows) >= 2:
+            hh = highs[-1]["price"] > highs[-2]["price"]; hl = lows[-1]["price"] > lows[-2]["price"]
+            lh = highs[-1]["price"] < highs[-2]["price"]; ll = lows[-1]["price"] < lows[-2]["price"]
+            if hh and hl: trend = "UP"
+            elif lh and ll: trend = "DOWN"
+            else: trend = "UP" if recent[-1]["price"] > recent[0]["price"] else "DOWN"
+        else: trend = "UNKNOWN"
+        cycle_start = cycle_id * 8
+        seq = swings[cycle_start:] if cycle_start < len(swings) else swings[-8:]
         wave1_len = 0; waveA_len = 0; wave5_high = 0; wave1_low = 0
-        # หาความยาว Wave 1 (ขาแรก) และ Wave A (ขาที่ 6)
         try:
             if len(seq) >= 2:
-                wave1_len = abs(seq[1]["price"] - seq[0]["price"])
-                wave1_low = seq[0]["price"]
+                wave1_len = abs(seq[1]["price"] - seq[0]["price"]); wave1_low = seq[0]["price"]
             if len(seq) >= 7:
-                waveA_len = abs(seq[6]["price"] - seq[5]["price"])
-                wave5_high = seq[5]["price"]
-            # กฎ 1: Wave 2 ต้องย่อ 38.2-78.6% ของ Wave 1 (ถ้าไม่ใช่ ให้สงสัยว่านับผิด)
-            if len(seq) >= 3 and wave1_len > 0:
-                wave2_len = abs(seq[2]["price"] - seq[1]["price"])
-                ratio2 = wave2_len / wave1_len if wave1_len > 0 else 0
-                # ถ้า Wave 2 ย่อน้อยกว่า 20% หรือมากกว่า 90% แปลว่านับผิด ให้ถือว่าไม่ชัวร์
-                if ratio2 < 0.2 or ratio2 > 0.95:
-                    dow_ok = False
-            # กฎ 2: Wave 4 ห้ามทับ Wave 1 (ใน Uptrend: Low ของ Wave 4 ห้ามต่ำกว่า High ของ Wave 1)
-            if trend == "UP" and len(seq) >= 5:
-                # Wave 1 High = seq[1], Wave 4 Low = seq[4] ถ้า seq[4] เป็น Low
-                if seq[1]["type"] == "H" and seq[4]["type"] == "L":
-                    if seq[4]["price"] < seq[1]["price"] * 0.999:
-                        # ทับกันเล็กน้อยยังพอรับได้ ถ้าทับเยอะคือผิด
-                        pass
-            # กฎ 3: Wave 3 ห้ามสั้นสุด - ถ้า Wave 3 สั้นกว่า Wave 1 และ Wave 5 มากๆ ให้สงสัย
+                waveA_len = abs(seq[6]["price"] - seq[5]["price"]); wave5_high = seq[5]["price"]
+        except: pass
+        dow_ok = True
+        try:
             if len(seq) >= 4 and wave1_len > 0:
-                wave3_len = abs(seq[3]["price"] - seq[2]["price"]) if len(seq) >= 4 else 0
-                if wave3_len < wave1_len * 0.5:
-                    dow_ok = False
-        except:
-            pass
-        cycle_id = len(swings) // 8
+                if abs(seq[3]["price"] - seq[2]["price"]) < wave1_len * 0.5: dow_ok = False
+            if len(seq) >= 3 and wave1_len > 0:
+                r2 = abs(seq[2]["price"] - seq[1]["price"]) / wave1_len if wave1_len>0 else 0
+                if r2 < 0.2 or r2 > 0.95: dow_ok = False
+        except: pass
         return {"current_wave": current_wave, "trend": trend, "cycle_id": cycle_id, "wave1_len": wave1_len, "waveA_len": waveA_len, "wave5_high": wave5_high, "wave1_low": wave1_low, "swings": swings, "dow_ok": dow_ok, "seq_len": len(seq)}
+
+    # ===== V9.3: Dow Trend 4h - ล็อคทิศ =====
+    def get_dow_trend_4h(self, swings_4h):
+        if len(swings_4h) < 4: return "UNKNOWN"
+        recent = swings_4h[-4:]
+        highs = [s for s in recent if s["type"]=="H"]; lows = [s for s in recent if s["type"]=="L"]
+        if len(highs)>=2 and len(lows)>=2:
+            if highs[-1]["price"]>highs[-2]["price"] and lows[-1]["price"]>lows[-2]["price"]: return "UP"
+            if highs[-1]["price"]<highs[-2]["price"] and lows[-1]["price"]<lows[-2]["price"]: return "DOWN"
+        return "UP" if recent[-1]["price"]>recent[0]["price"] else "DOWN"
 
     def check_pattern_15m(self, df_15m, i):
         if i < 1: return None
         curr = df_15m.iloc[i]; prev = df_15m.iloc[i-1]
-        o, h, l, c = float(curr["open"]), float(curr["high"]), float(curr["low"]), float(curr["close"])
-        po, pc = float(prev["open"]), float(prev["close"])
-        body = abs(c - o); upper = h - max(o, c); lower = min(o, c) - l
-        if lower > 2 * max(body, 1e-9) and c > o: return "PIN_BULL"
-        if upper > 2 * max(body, 1e-9) and c < o: return "PIN_BEAR"
-        if c > o and pc < po and c >= po and o <= pc: return "ENG_BULL"
-        if c < o and pc > po and c <= po and o >= pc: return "ENG_BEAR"
+        o,h,l,c = float(curr["open"]), float(curr["high"]), float(curr["low"]), float(curr["close"])
+        po,pc = float(prev["open"]), float(prev["close"])
+        body = abs(c-o); upper = h-max(o,c); lower = min(o,c)-l
+        if lower > 2*max(body,1e-9) and c>o: return "PIN_BULL"
+        if upper > 2*max(body,1e-9) and c<o: return "PIN_BEAR"
+        if c>o and pc<po and c>=po and o<=pc: return "ENG_BULL"
+        if c<o and pc>po and c<=po and o>=pc: return "ENG_BEAR"
         return None
 
     def is_touch_ema36(self, low, high, ema36):
-        if ema36 is None or ema36 == 0: return False
+        if ema36 is None or ema36==0: return False
         tol = self.config["touch_tol"]
         if low <= ema36 <= high: return True
-        if abs(low - ema36) / ema36 <= tol: return True
-        if abs(high - ema36) / ema36 <= tol: return True
+        if abs(low-ema36)/ema36 <= tol: return True
+        if abs(high-ema36)/ema36 <= tol: return True
         return False
 
     def get_tp_by_wave(self, wave, side, entry, wave1_len, waveA_len):
-        if wave == "3":
-            mult = 1.618; base_len = wave1_len if wave1_len > 0 else entry * 0.01
-            tp = entry + mult * base_len if side == "LONG" else entry - mult * base_len
-        elif wave == "5":
-            mult = 1.0; base_len = wave1_len if wave1_len > 0 else entry * 0.01
-            tp = entry + mult * base_len if side == "LONG" else entry - mult * base_len
-        elif wave in ("A", "C"):
-            mult = 1.0; base_len = waveA_len if waveA_len > 0 else (wave1_len if wave1_len > 0 else entry * 0.01)
-            tp = entry - mult * base_len if side == "SHORT" else entry + mult * base_len
-        elif wave == "B":
-            mult = 1.0; base_len = waveA_len if waveA_len > 0 else entry * 0.01
-            tp = entry + mult * base_len if side == "LONG" else entry - mult * base_len
-        else:
-            mult = 1.0; base_len = wave1_len if wave1_len > 0 else entry * 0.01
-            tp = entry + mult * base_len if side == "LONG" else entry - mult * base_len
+        if wave=="3": mult=1.618; base=wave1_len if wave1_len>0 else entry*0.01
+        elif wave=="5": mult=1.0; base=wave1_len if wave1_len>0 else entry*0.01
+        elif wave in ("A","C"): mult=1.0; base=waveA_len if waveA_len>0 else (wave1_len if wave1_len>0 else entry*0.01)
+        elif wave=="B": mult=1.0; base=waveA_len if waveA_len>0 else entry*0.01
+        else: mult=1.0; base=wave1_len if wave1_len>0 else entry*0.01
+        tp = entry + mult*base if side=="LONG" else entry - mult*base
+        # สำหรับ A/C SHORT: ถ้า side LONG แปลว่าสวน ต้องใช้สูตร LONG แทน
+        if wave in ("A","C") and side=="LONG": tp = entry + mult*base
+        if wave in ("A","C") and side=="SHORT": tp = entry - mult*base
         cap = self.config["tp_cap"]
-        if side == "LONG": tp = min(tp, entry * (1 + cap))
-        else: tp = max(tp, entry * (1 - cap))
+        if side=="LONG": tp = min(tp, entry*(1+cap))
+        else: tp = max(tp, entry*(1-cap))
         return float(tp)
 
-    def get_sl_by_structure(self, side, entry, hl_price):
+    # ===== V9.3: SL ตามโครงสร้าง =====
+    def get_sl_by_structure(self, side, entry, swings, atr_val=0):
         max_sl = self.config["sl_pct_max"]
-        if side == "LONG":
-            sl = hl_price if hl_price < entry else entry * (1 - max_sl)
-            if (entry - sl) / entry > max_sl: sl = entry * (1 - max_sl)
-        else:
-            sl = hl_price if hl_price > entry else entry * (1 + max_sl)
-            if (sl - entry) / entry > max_sl: sl = entry * (1 + max_sl)
-        return float(sl)
+        # หา Swing ล่าสุดที่เป็น High/Low
+        if swings and len(swings)>=1:
+            last = swings[-1]
+            if side=="LONG":
+                # SL ใต้ Low ล่าสุด - buffer ATR*0.2
+                sl_struct = last["price"] - atr_val*0.2 if last["type"]=="L" else entry*(1-max_sl)
+                # ถ้า SL โครงสร้างกว้างเกิน max ให้ใช้ max
+                if (entry - sl_struct)/entry > max_sl: sl_struct = entry*(1-max_sl)
+                if sl_struct >= entry: sl_struct = entry*(1-max_sl)
+                return float(sl_struct)
+            else:
+                sl_struct = last["price"] + atr_val*0.2 if last["type"]=="H" else entry*(1+max_sl)
+                if (sl_struct - entry)/entry > max_sl: sl_struct = entry*(1+max_sl)
+                if sl_struct <= entry: sl_struct = entry*(1+max_sl)
+                return float(sl_struct)
+        # Fallback
+        if side=="LONG": return entry*(1-max_sl)
+        else: return entry*(1+max_sl)
 
-    # COMPAT กับ Main เก่า
-    def check_trend(self, curr, prev=None, prev2=None, smc=None, htf_trend=None, **kwargs):
+    def check_trend(self, curr, prev=None, prev2=None, smc=None, htf_trend=None, dow_trend_4h=None, **kwargs):
         try:
-            ef = float(curr.get("ema_fast", 0) if hasattr(curr, "get") else curr["ema_fast"])
-            es = float(curr.get("ema_slow", 0) if hasattr(curr, "get") else curr["ema_slow"])
-            adx = float(curr.get("adx", 0) if hasattr(curr, "get") else curr["adx"])
-            pdi = float(curr.get("plus_di", 0) if hasattr(curr, "get") else curr["plus_di"])
-            mdi = float(curr.get("minus_di", 0) if hasattr(curr, "get") else curr["minus_di"])
+            ef = float(curr.get("ema_fast",0) if hasattr(curr,"get") else curr["ema_fast"])
+            es = float(curr.get("ema_slow",0) if hasattr(curr,"get") else curr["ema_slow"])
+            adx = float(curr.get("adx",0) if hasattr(curr,"get") else curr["adx"])
+            pdi = float(curr.get("plus_di",0) if hasattr(curr,"get") else curr["plus_di"])
+            mdi = float(curr.get("minus_di",0) if hasattr(curr,"get") else curr["minus_di"])
         except:
-            return {"long": False, "short": False, "sideway": True, "cdc_up": False, "cdc_down": False, "plus_di": 0, "minus_di": 0, "adx": 0}
-        cdc_up = ef > es; cdc_down = ef < es
-        long_ok = cdc_up and pdi > mdi and pdi > self.config["di_min"] and adx > self.config["adx_min"]
-        short_ok = cdc_down and mdi > pdi and mdi > self.config["di_min"] and adx > self.config["adx_min"]
-        return {"long": bool(long_ok), "short": bool(short_ok), "sideway": bool(adx < self.config["adx_min"]), "cdc_up": bool(cdc_up), "cdc_down": bool(cdc_down), "plus_di": pdi, "minus_di": mdi, "adx": adx, "di_bull": bool(pdi > mdi), "di_bear": bool(mdi > pdi)}
-    def check_smc(self, df=None, **kwargs):
-        return {"long_score": 0, "short_score": 0, "long_pass": False, "short_pass": False, "detail": {}, "need": 3}
+            return {"long": False, "short": False, "sideway": True, "cdc_up": False, "cdc_down": False, "plus_di":0, "minus_di":0, "adx":0}
+        cdc_up = ef>es; cdc_down = ef<es
+        long_ok = cdc_up and pdi>mdi and pdi>self.config["di_min"] and adx>self.config["adx_min"]
+        short_ok = cdc_down and mdi>pdi and mdi>self.config["di_min"] and adx>self.config["adx_min"]
+        # V9.3 Dow Lock: ถ้า 4h DOWN ห้าม LONG / ถ้า UP ห้าม SHORT
+        if dow_trend_4h=="DOWN": long_ok = False
+        if dow_trend_4h=="UP": short_ok = False
+        if htf_trend=="DOWN": long_ok = False
+        if htf_trend=="UP": short_ok = False
+        return {"long": bool(long_ok), "short": bool(short_ok), "sideway": bool(adx<self.config["adx_min"]), "cdc_up": bool(cdc_up), "cdc_down": bool(cdc_down), "plus_di": pdi, "minus_di": mdi, "adx": adx, "di_bull": bool(pdi>mdi), "di_bear": bool(mdi>pdi)}
+    def check_smc(self, df=None, **kwargs): return {"long_score":0,"short_score":0,"long_pass":False,"short_pass":False,"detail":{},"need":3}
     def check_momentum(self, curr, **kwargs):
-        try:
-            pdi = float(curr.get("plus_di", 0) if hasattr(curr, "get") else 0); mdi = float(curr.get("minus_di", 0) if hasattr(curr, "get") else 0); adx = float(curr.get("adx", 0) if hasattr(curr, "get") else 0)
-        except: pdi = mdi = adx = 0
-        return {"long": bool(pdi > mdi and adx > self.config["adx_min"]), "short": bool(mdi > pdi and adx > self.config["adx_min"]), "adx": adx, "plus_di": pdi, "minus_di": mdi}
+        try: pdi=float(curr.get("plus_di",0) if hasattr(curr,"get") else 0); mdi=float(curr.get("minus_di",0) if hasattr(curr,"get") else 0); adx=float(curr.get("adx",0) if hasattr(curr,"get") else 0)
+        except: pdi=mdi=adx=0
+        return {"long": bool(pdi>mdi and adx>self.config["adx_min"]), "short": bool(mdi>pdi and adx>self.config["adx_min"]), "adx":adx, "plus_di":pdi, "minus_di":mdi}
     def check_reversal(self, prev, curr, **kwargs): return {"long": False, "short": False}
     def check_exit_trend_change(self, curr, prev, open_signal, smc=None, df=None, **kwargs): return {"tp": False, "reasons": [], "cdc_flip": False, "ema_flip": False}
     def get_trailing_sl(self, entry, curr_price, cdc_stop, signal, atr=None, **kwargs):
-        if signal == "LONG": return max(entry * (1 - self.config["sl_pct_max"]), float(cdc_stop) if cdc_stop else entry * (1 - self.config["sl_pct_max"]))
-        else: return min(entry * (1 + self.config["sl_pct_max"]), float(cdc_stop) if cdc_stop else entry * (1 + self.config["sl_pct_max"]))
+        if signal=="LONG": return max(entry*(1-self.config["sl_pct_max"]), float(cdc_stop) if cdc_stop else entry*(1-self.config["sl_pct_max"]))
+        else: return min(entry*(1+self.config["sl_pct_max"]), float(cdc_stop) if cdc_stop else entry*(1+self.config["sl_pct_max"]))
     def check_exit(self, *a, **k): return self.check_exit_trend_change(*a, **k)
