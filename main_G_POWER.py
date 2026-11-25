@@ -1,23 +1,22 @@
-"""G_POWER V9 FULL - EMA + Dow - Live Paper - 716+ lines เท่าตัวเก่า
-อัปโหลดเป็น main_G_POWER.py
-- มีรูปกราฟ + รูปพอร์ต เหมือนตัวเก่า V6.1 ครบ (make_chart_image + make_portfolio_image)
-- Logic เทรดเป็น V9 เต็ม: 1h นับคลื่น / 15m เข้า / แตะ EMA36 / TP ตามคลื่น
-- คำสั่ง Telegram ครบ: /check /chart /bt /on /off /close /reset /portfolio /info /live
+"""G_POWER Main UNIVERSAL - Main ไม่ต้องแก้แล้ว เปลี่ยน Strategy อย่างเดียวจบ
+หลักการ: Main เป็นแค่ "คนขับรถ" ไม่รู้เรื่องกลยุทธ์เลย
+- ไม่ Hardcode EMA / ADX / DI / SL / TP / Wave / Quota ไว้ใน Main อีกต่อไป
+- ทุกค่าอ่านจาก Strategy.config / Strategy.WAVE_QUOTA / Strategy.name
+- ทุกการตัดสินใจเรียกผ่าน Strategy เท่านั้น: check_trend / check_pattern_15m / is_touch_ema36 / count_waves / detect_swings / get_dow_trend_4h / get_tp_by_wave / get_sl_by_structure
+- ถ้า Strategy ตัวใหม่เพิ่ม Method ใหม่ Main จะใช้ทันที ถ้า Strategy เก่าไม่มี Method นั้น Main จะ Fallback เอง ไม่พัง
+- เปลี่ยน Strategy V9.3 -> V9.4 -> V10 แค่ทับไฟล์ strategy_G_POWER.py แล้ว Deploy Main ไฟล์นี้ไม่ต้องแตะเลย
+อัปโหลดเป็น main_G_POWER.py (ทับตัวเก่า V6.1)
 """
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse
-from strategy_G_POWER import Strategy_G_Power
 from datetime import datetime, timedelta
-import os, ccxt, pandas as pd, json, requests
+import os, ccxt, pandas as pd, json, requests, importlib, traceback
 from pathlib import Path
-app = FastAPI(title="G_POWER V9 EMA+DOW FULL")
-def _m(k):
-    s = Strategy_G_Power(k)
-    return s
-STRATS = {"btc": _m("btc"), "gold": _m("gold")}
-MAX_POS_PER_SYMBOL = 3
-COOLDOWN_HOURS = 0.5
-CAPITAL = 40
+
+app = FastAPI(title="G_POWER UNIVERSAL")
+
+# ===== Config ที่ไม่ใช่กลยุทธ์ (Main จัดการเอง) =====
+CAPITAL = 40.0
 RISK_PCT = 0.02
 LEVERAGE = 3
 SYMBOLS = {"btc": "BTC/USDT:USDT", "gold": "PAXG/USDT:USDT"}
@@ -26,6 +25,42 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 TRADES_FILE = DATA_DIR / "g_power_trades.json"
 AUTO_STATE_FILE = DATA_DIR / "auto_state.json"
 LAST_TRADE_TIME_FILE = DATA_DIR / "last_trade_time.json"
+
+# ===== Load Strategy แบบ Dynamic - ไม่ Hardcode =====
+def load_strategy(symbol_key):
+    """โหลด Strategy ตาม symbol_key ทุกครั้งที่เรียก - เปลี่ยน Strategy แล้วไม่ต้องแก้ Main"""
+    try:
+        import strategy_G_POWER
+        importlib.reload(strategy_G_POWER)
+        StrategyCls = strategy_G_POWER.Strategy_G_Power
+    except Exception as e:
+        print(f"load_strategy import err {e}")
+        raise
+    try:
+        st = StrategyCls(symbol_key)
+    except TypeError:
+        # Strategy เก่าที่ __init__ ไม่มี symbol_key
+        st = StrategyCls()
+        st.symbol_key = symbol_key
+    return st
+
+def get_strategy_name(symbol_key="btc"):
+    try:
+        st = load_strategy(symbol_key)
+        return getattr(st, "name", "UNKNOWN")
+    except:
+        return "UNKNOWN"
+
+# Cache Strategy ไว้ไม่ให้ reload บ่อยเกินไป (reload ทุกครั้งที่ /check จะช้า)
+_STRAT_CACHE = {}
+def get_strat(symbol_key):
+    # ถ้ายังไม่มีใน Cache หรือ Strategy เปลี่ยนเวอร์ชั่น ให้โหลดใหม่
+    # วิธีเช็ค: ถ้า Cache มีอยู่แล้วใช้ Cache ไปเลย Deploy ใหม่ Render จะ Restart เองอยู่แล้ว
+    if symbol_key not in _STRAT_CACHE:
+        _STRAT_CACHE[symbol_key] = load_strategy(symbol_key)
+    return _STRAT_CACHE[symbol_key]
+
+# ===== Helpers - Persistence =====
 def atomic_save(path: Path, data):
     try:
         tmp = path.with_suffix('.tmp')
@@ -36,6 +71,7 @@ def atomic_save(path: Path, data):
         try:
             with open(path, 'w') as f: json.dump(data, f, default=str, indent=2)
         except: pass
+
 def load_trades():
     if TRADES_FILE.exists():
         try:
@@ -50,12 +86,11 @@ def get_auto_state():
         try:
             with open(AUTO_STATE_FILE,'r') as f:
                 d=json.load(f)
-                if isinstance(d,bool): return {"btc":d,"gold":d}
+                if isinstance(d, bool): return {"btc":d,"gold":d}
+                if not isinstance(d, dict): return {"btc":True,"gold":True}
                 if "enabled" in d:
                     v=bool(d.get("enabled",False)); return {"btc":v,"gold":v}
-                if "btc" in d or "gold" in d:
-                    return {"btc": bool(d.get("btc",False)), "gold": bool(d.get("gold",False))}
-                return {"btc":True,"gold":True}
+                return {"btc": bool(d.get("btc",False)), "gold": bool(d.get("gold",False))}
         except: return {"btc":True,"gold":True}
     return {"btc":True,"gold":True}
 def set_auto_state(k, en):
@@ -63,557 +98,309 @@ def set_auto_state(k, en):
     if k=='all':
         for kk in s: s[kk]=en
     else: s[k]=en
-    atomic_save(AUTO_STATE_FILE, s)
-    return s
+    atomic_save(AUTO_STATE_FILE, s); return s
 def get_last_trade_times():
     if LAST_TRADE_TIME_FILE.exists():
-        try:
-            with open(LAST_TRADE_TIME_FILE,'r') as f: return json.load(f)
+        try: return json.load(open(LAST_TRADE_TIME_FILE))
         except: pass
     return {}
 def set_last_trade_time(symbol_key):
     times=get_last_trade_times(); times[symbol_key]=datetime.now().isoformat(); atomic_save(LAST_TRADE_TIME_FILE, times)
-def can_open_new(symbol_key, cooldown_hours=0.5):
-    times=get_last_trade_times(); last_str=times.get(symbol_key)
-    if not last_str: return True
-    try:
-        last=datetime.fromisoformat(last_str)
-        if datetime.now() - last < timedelta(hours=cooldown_hours): return False
-        return True
-    except: return True
-def calc_position(symbol_key="btc"):
-    cfg=STRATS.get(symbol_key, STRATS['btc']).config
-    sl=cfg['sl_pct']; tp=cfg['tp_pct']
-    risk=CAPITAL*RISK_PCT
-    pos=risk/sl if sl else risk/0.008
-    return {"risk":risk,"pos":pos,"margin":pos/LEVERAGE,"sl":sl*100,"tp":tp*100,"rr":round(tp/sl,1) if sl else 0}
-def get_data(symbol="BTC/USDT:USDT", timeframe="15m", limit=500):
+
+# ===== Data =====
+def get_data(symbol="BTC/USDT:USDT", timeframe="15m", limit=250):
     try:
         ex=ccxt.mexc({"options":{"defaultType":"swap"}})
-        ohlcv=ex.fetch_ohlcv(symbol,timeframe,limit=limit)
+        ohlcv=ex.fetch_ohlcv(symbol, timeframe, limit=limit)
         if ohlcv and len(ohlcv)>50:
-            df=pd.DataFrame(ohlcv,columns=['timestamp','open','high','low','close','volume'])
-            df['datetime']=pd.to_datetime(df['timestamp'],unit='ms')
+            df=pd.DataFrame(ohlcv, columns=['timestamp','open','high','low','close','volume'])
+            df['datetime']=pd.to_datetime(df['timestamp'], unit='ms')
             df['time']=df['datetime']
             return df
-    except Exception as e: print(f"get_data err {e}")
-    return (None, f"mexc no symbol {symbol}")
-def get_mexc_balance():
-    try:
-        key=os.environ.get("MEXC_API_KEY","").strip(); sec=os.environ.get("MEXC_API_SECRET","").strip()
-        if not key or not sec: return {"ok":False,"error":"No API"}
-        ex=ccxt.mexc({'apiKey':key,'secret':sec,'options':{'defaultType':'swap'},'enableRateLimit':True})
-        bal=ex.fetch_balance({'type':'swap'}); usdt=bal.get('USDT',{})
-        poss=[]
-        try:
-            for p in ex.fetch_positions():
-                if float(p.get('contracts',0) or 0)>0: poss.append(p)
-        except: pass
-        return {"ok":True,"free":usdt.get('free',0),"total":usdt.get('total',0),"positions":poss}
-    except Exception as e: return {"ok":False,"error":str(e)[:150]}
+    except Exception as e:
+        print(f"get_data err {e}")
+    return None
+
+def resample_tf(df_15m, tf="1h"):
+    df = df_15m.copy().set_index("time")
+    rule = "1h" if tf=="1h" else "4h"
+    ohlc = df.resample(rule).agg({"open":"first","high":"max","low":"min","close":"last","volume":"sum"}).dropna().reset_index()
+    return ohlc
+
 def send_tele(msg, chat_id=None):
     token=os.environ.get("TELEGRAM_BOT_TOKEN","").strip() or os.environ.get("BOT_TOKEN","").strip()
     chat=chat_id or os.environ.get("TELEGRAM_CHAT_ID","").strip() or os.environ.get("CHAT_ID","").strip()
     if not token or not chat: return {"ok":False}
     try:
         r=requests.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id":chat,"text":msg,"parse_mode":"HTML"}, timeout=10)
-        return {"ok":r.status_code==200}
-    except: return {"ok":False}
-def send_tele_photo(img_bytes, caption, chat_id=None):
-    token=os.environ.get("TELEGRAM_BOT_TOKEN","").strip() or os.environ.get("BOT_TOKEN","").strip()
-    chat=chat_id or os.environ.get("TELEGRAM_CHAT_ID","").strip() or os.environ.get("CHAT_ID","").strip()
-    if not token or not chat: return {"ok":False}
-    try:
-        r=requests.post(f"https://api.telegram.org/bot{token}/sendPhoto", data={"chat_id":chat,"caption":caption,"parse_mode":"HTML"}, files={"photo":("portfolio.png", img_bytes, "image/png")}, timeout=20)
-        return {"ok":r.status_code==200}
-    except Exception as e: print(f"send_photo err {e}"); return {"ok":False}
-def make_portfolio_image(paper, unpnl, closed_pnl, win_rate, win_n, total_n, btc_pnl, gold_pnl, opens):
-    try:
-        from PIL import Image, ImageDraw, ImageFont
-        import io
-        W,H=1080,1450
-        img=Image.new("RGB",(W,H),"#0A0E1A"); d=ImageDraw.Draw(img)
-        try:
-            f_big=ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",56)
-            f_mid=ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",36)
-            f_small=ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",28)
-        except: f_big=ImageFont.load_default(); f_mid=f_big; f_small=f_big
-        d.rounded_rectangle([30,30,W-30,170],radius=24,fill="#1E2A4A")
-        d.text((60,55),"G_POWER  PORTFOLIO  V9",font=f_big,fill="white")
-        d.text((60,120),f"{datetime.now().strftime('%d/%m %H:%M')}  -  BTC + GOLD  -  PAPER",font=f_small,fill="#8FA3C8")
-        def card(x,y,w,h,label,value,color):
-            d.rounded_rectangle([x,y,x+w,y+h],radius=20,fill="#141D33")
-            d.text((x+30,y+20),label,font=f_small,fill="#8FA3C8")
-            d.text((x+30,y+60),value,font=f_mid,fill=color)
-        card(30,200,500,170,"PAPER BALANCE",f"${paper:.2f}","white")
-        card(550,200,500,170,"UNREALIZED PnL",f"{unpnl:+.2f}","#2ED573" if unpnl>=0 else "#FF4757")
-        card(30,390,500,170,"TOTAL CLOSED",f"{closed_pnl:+.2f}","#2ED573" if closed_pnl>=0 else "#FF4757")
-        card(550,390,500,170,"WIN RATE",f"{win_rate:.0f}%  ({win_n}/{total_n})","white")
-        d.rounded_rectangle([30,580,W-30,880],radius=20,fill="#141D33")
-        d.text((60,600),"PnL BY COIN",font=f_mid,fill="white")
-        d.text((60,660),"BTC",font=f_mid,fill="white")
-        bw=int(min(abs(btc_pnl)/max(1,abs(btc_pnl)+abs(gold_pnl))*650,650)) if (btc_pnl!=0 or gold_pnl!=0) else 0
-        d.rounded_rectangle([200,660,200+max(bw,20),700],radius=10,fill="#2ED573" if btc_pnl>=0 else "#FF4757")
-        d.text((870,660),f"{btc_pnl:+.2f}",font=f_mid,fill="#2ED573" if btc_pnl>=0 else "#FF4757")
-        d.text((60,730),"GOLD",font=f_mid,fill="white")
-        gw=int(min(abs(gold_pnl)/max(1,abs(btc_pnl)+abs(gold_pnl))*650,650)) if (btc_pnl!=0 or gold_pnl!=0) else 0
-        d.rounded_rectangle([200,730,200+max(gw,20),770],radius=10,fill="#2ED573" if gold_pnl>=0 else "#FF4757")
-        d.text((300,730),f"{gold_pnl:+.2f}",font=f_mid,fill="#2ED573" if gold_pnl>=0 else "#FF4757")
-        d.rounded_rectangle([30,900,W-30,1250],radius=20,fill="#141D33")
-        d.text((60,920),f"OPEN  {len(opens)} TRADES",font=f_mid,fill="white")
-        y=980
-        for o in opens[:5]:
-            col="#2ED573" if o['pnl']>=0 else "#FF4757"
-            d.text((60,y),f"{o['key']} {o['sig']}",font=f_small,fill="white")
-            d.text((360,y),o['txt'],font=f_small,fill="#8FA3C8")
-            d.text((820,y),f"{o['pnl']:+.2f}",font=f_small,fill=col)
-            y+=50
-        d.text((60,1210),"MEXC Paper Only - Not Real Trade  |  V9 Dow",font=f_small,fill="#8FA3C8")
-        buf=io.BytesIO(); img.save(buf,format="PNG"); buf.seek(0); return buf.getvalue()
+        return {"ok": r.status_code==200}
     except Exception as e:
-        print(f"make_image err {e}"); return None
-def make_chart_image(df, st, symbol_label, price, signal, cond, open_trades, timeframe="15m"):
+        print(f"send_tele err {e}"); return {"ok":False}
+
+def calc_position(symbol_key, entry, sl):
+    """คำนวณขนาดไม้จาก Risk - SL มาจาก Strategy ไม่ใช่ Hardcode"""
+    risk = CAPITAL * RISK_PCT
+    sl_pct = abs(entry-sl)/entry if entry and sl and entry!=0 else 0.01
+    if sl_pct==0: sl_pct=0.01
+    pos = risk / sl_pct  # Position size (USDT)
+    return {"risk": risk, "pos": pos, "margin": pos/LEVERAGE, "sl_pct": sl_pct}
+
+# ===== Core: Execute 1 Symbol - ทุกการตัดสินใจถาม Strategy =====
+def execute_symbol(symbol_key):
+    """Main ไม่รู้กลยุทธ์เลย ถาม Strategy ทุกขั้นตอน"""
+    symbol = SYMBOLS[symbol_key]
+    st = get_strat(symbol_key)
+    cfg = getattr(st, "config", {})
+    strat_name = getattr(st, "name", "UNKNOWN")
+    # 1. ดึงข้อมูล 15m
+    df = get_data(symbol, "15m", limit=250)
+    if df is None or len(df)<50:
+        return {"ok": False, "error": "no data", "strategy": strat_name}
+    # 2. Indicators จาก Strategy (Main ไม่คำนวณ EMA/ADX เอง)
+    try: df = st.add_indicators(df)
+    except Exception as e: return {"ok": False, "error": f"add_indicators {e}", "strategy": strat_name}
+    curr = df.iloc[-1]; prev = df.iloc[-2]
+    price = float(curr["close"])
+    # 3. Wave + Dow 4h จาก Strategy (ถ้า Strategy ไม่มี Method นี้ให้ Fallback)
+    wave = None; cycle_id = 0; wave1_len=0; waveA_len=0; dow4h="UNKNOWN"; swings_1h=[]
     try:
-        from PIL import Image, ImageDraw, ImageFont
-        import io
-        W,H=1080,1450
-        img=Image.new("RGB",(W,H),"#0A0E1A"); d=ImageDraw.Draw(img)
-        try:
-            f_big=ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",38)
-            f_mid=ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",30)
-            f_small=ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",24)
-            f_tiny=ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",20)
-        except: f_big=ImageFont.load_default(); f_mid=f_big; f_small=f_big; f_tiny=f_big
-        sig_color="#2ED573" if signal=="LONG" else "#FF4757" if signal=="SHORT" else "#8FA3C8"
-        d.rounded_rectangle([30,30,W-30,150],radius=20,fill="#1E2A4A")
-        d.text((60,50),f"{symbol_label}  {timeframe}  G_POWER V9 DOW",font=f_big,fill="white")
-        d.text((60,105),f"${price:,.2f}  -  {signal}  -  {datetime.now().strftime('%d/%m %H:%M')}",font=f_small,fill=sig_color)
-        d.text((60,170),"EMA Fast",font=f_tiny,fill="#2ED573")
-        d.text((220,170),"EMA Slow",font=f_tiny,fill="#FFD700")
-        d.text((380,170),"EMA Trend",font=f_tiny,fill="#54A0FF")
-        d.text((560,170),"CDC Stop",font=f_tiny,fill="#C56CF0")
-        d.text((720,170),"EMA200",font=f_tiny,fill="#9B59B6")
-        d.text((850,170),"B Buy  S Short",font=f_tiny,fill="white")
-        cx0,cy0,cx1,cy1=30,210,W-30,750
-        d.rounded_rectangle([cx0,cy0,cx1,cy1],radius=16,fill="#141D33")
-        if 'ema200' not in df.columns:
-            try: df['ema200']=df['close'].ewm(span=200, adjust=False).mean()
-            except: df['ema200']=df['close']
-        data=df.tail(80).reset_index(drop=True)
-        if len(data)<5: return None
-        _cols=[c for c in ['low','ema_fast','ema_slow','ema_trend','ema200'] if c in data.columns]
-        lo=float(data[_cols].min().min()); hi=float(data[['high']+ [c for c in ['ema_fast','ema_slow','ema_trend','ema200'] if c in data.columns]].max().max())
-        for ot in open_trades:
-            try:
-                _e=float(ot.get('entry',lo)); lo=min(lo,_e); hi=max(hi,_e)
-            except: pass
-        pad=(hi-lo)*0.08 or 1; lo-=pad; hi+=pad
-        def py(v): return cy1 - (v-lo)/(hi-lo)*(cy1-cy0-40) - 10
-        _chart_right=cx1-170
-        def px(i): return cx0+30 + i*(_chart_right-cx0-60)/max(1,len(data)-1)
-        try: _y_last_pre=py(float(data.iloc[-1]['close']))
-        except: _y_last_pre=-9999
-        for k in range(4):
-            yv=cy0+20+k*(cy1-cy0-40)//3
-            pv=hi-(hi-lo)*(yv-cy0)/(cy1-cy0)
-            d.line([(cx0+10,yv),(_chart_right,yv)],fill="#1E2A4A",width=1)
-            if abs(yv-_y_last_pre)<22: continue
-            d.text((cx1-150,yv-10),f"{pv:,.0f}",font=f_tiny,fill="#8FA3C8")
-        cw=(_chart_right-cx0-60)/max(1,len(data))*0.6
-        for i,row in data.iterrows():
-            x=px(i); o,h,l,c=float(row['open']),float(row['high']),float(row['low']),float(row['close'])
-            col="#2ED573" if c>=o else "#FF4757"
-            d.line([(x,py(h)),(x,py(l))],fill=col,width=2)
-            top,bot=min(py(o),py(c)),max(py(o),py(c))
-            if abs(top-bot)<2: bot=top+2
-            d.rectangle([x-cw/2,top,x+cw/2,bot],fill=col)
-        def draw_line(col_name,color,width=3):
-            pts=[]
-            for i,row in data.iterrows():
-                try: pts.append((px(i),py(float(row[col_name]))))
-                except: pass
-            if len(pts)>1: d.line(pts,fill=color,width=width)
-        draw_line('ema_fast',"#2ED573",3); draw_line('ema_slow',"#FFD700",3); draw_line('ema_trend',"#54A0FF",2); draw_line('ema200',"#9B59B6",2)
-        try:
-            _last_close=float(data.iloc[-1]['close']); _last_open=float(data.iloc[-1]['open'])
-            _y_last=py(_last_close)
-            _last_col="#2ED573" if _last_close>=_last_open else "#FF4757"
-            for _x0 in range(cx0+10, _chart_right, 16): d.line([(_x0,_y_last),(_x0+8,_y_last)],fill=_last_col,width=1)
-            _lab_last=f"${_last_close:,.2f}"
-            d.rounded_rectangle([cx1-160,_y_last-13,cx1-10,_y_last+13],radius=6,fill=_last_col)
-            d.text((cx1-152,_y_last-10),_lab_last,font=f_tiny,fill="white")
-            _x_last=px(len(data)-1)
-            d.ellipse([_x_last-5,_y_last-5,_x_last+5,_y_last+5],fill=_last_col,outline="white",width=1)
-        except Exception as e: print(f"last price label err {e}")
-        for i,row in data.iterrows():
-            try:
-                _cs=float(row['cdc_stop'])
-                if lo <= _cs <= hi:
-                    x=px(i); y=py(_cs); d.ellipse([x-2,y-2,x+2,y+2],fill="#C56CF0")
-            except: pass
-        trade_idx=[]
-        try:
-            from datetime import datetime as _dt
-            for _ot in open_trades:
-                _et=str(_ot.get('entry_time','') or ''); _idx=None
-                if _et and 'datetime' in data.columns:
-                    try:
-                        _t=_dt.fromisoformat(_et.replace('Z',''))
-                        _diffs=[]
-                        for _d in data['datetime']:
-                            try: _diffs.append(abs((_d.to_pydatetime()-_t).total_seconds()))
-                            except: _diffs.append(abs((pd.to_datetime(_d).to_pydatetime()-_t).total_seconds()))
-                        _e_tmp=float(_ot.get('entry',0))
-                        _cands=[k for k in range(len(data)) if float(data.iloc[k]['low']) <= _e_tmp <= float(data.iloc[k]['high'])]
-                        _idx=int(min(_cands, key=lambda k: _diffs[k])) if _cands else int(min(range(len(_diffs)), key=lambda k: _diffs[k]))
-                    except: _idx=None
-                if _idx is None:
-                    try:
-                        _e=float(_ot.get('entry',0)); _d2=[abs(float(c)-_e) for c in data['close']]; _idx=int(min(range(len(_d2)), key=lambda k: _d2[k]))
-                    except: _idx=len(data)-1
-                trade_idx.append(_idx)
-        except: trade_idx=[len(data)-1]*len(open_trades)
-        for _oi,_ot in enumerate(open_trades):
-            _sig=_ot.get('signal','')
-            if _sig not in ('LONG','SHORT'): continue
-            _idx=trade_idx[_oi]; _x=px(_idx); _e_price=float(_ot.get('entry',0)); _y=py(_e_price)
-            _col="#2ED573" if _sig=='LONG' else "#FF4757"; _lab="B" if _sig=='LONG' else "S"
-            d.ellipse([_x-16,_y-16,_x+16,_y+16],fill=_col,outline="white",width=2)
-            d.text((_x-6,_y-10),_lab,font=f_tiny,fill="white")
-        rx0,ry0,rx1,ry1=30,770,W-30,900
-        d.rounded_rectangle([rx0,ry0,rx1,ry1],radius=16,fill="#141D33")
-        try:
-            _adx=float(cond.get('adx',0)); _pdi=float(cond.get('plus_di',0)); _mdi=float(cond.get('minus_di',0))
-            _amin=st.config.get('adx_min',12); _dmin=st.config.get('di_min',10)
-            d.rounded_rectangle([50,772,560,804],radius=8,fill="#0A0E1A")
-            d.text((60,780),f"ADX {_adx:.1f}  +DI {_pdi:.1f}  -DI {_mdi:.1f}  (min {_amin:.0f}/{_dmin:.0f})  Wave {cond.get('wave','?')} {cond.get('wave_trend','')}",font=f_small,fill="white")
-            def apy(v): return 888 - max(0,min(100,float(v)))/100*58
-            for col_name,color in [('adx',"#54A0FF"),('plus_di',"#2ED573"),('minus_di',"#FF4757")]:
-                pts=[]
-                for i,row in data.iterrows():
-                    try: pts.append((cx0+30+i*(_chart_right-cx0-60)/max(1,len(data)-1), apy(float(row[col_name]))))
-                    except: pass
-                if len(pts)>1: d.line(pts,fill=color,width=2)
-            _adx_dup={}
-            for _oi,_ot in enumerate(open_trades):
-                _idx=trade_idx[_oi]; _x=cx0+30+_idx*(_chart_right-cx0-60)/max(1,len(data)-1)
-                _dc=_adx_dup.get(int(_idx),0); _adx_dup[int(_idx)]=_dc+1; _off=_dc*16
-                _ay=apy(float(data.iloc[_idx]['adx']))+_off
-                _col2="#2ED573" if _ot.get('signal')=='LONG' else "#FF4757"; _lab2="B" if _ot.get('signal')=='LONG' else "S"
-                d.ellipse([_x-13,_ay-13,_x+13,_ay+13],fill=_col2,outline="white",width=2); d.text((_x-5,_ay-10),_lab2,font=f_tiny,fill="white")
-            _yl=apy(25)
-            for _x0 in range(rx0+10, rx1-10, 18): d.line([(_x0,_yl),(_x0+9,_yl)],fill="#8FA3C8",width=1)
-            d.text((rx1-50,_yl-10),"25",font=f_tiny,fill="#8FA3C8")
-        except Exception as e: print(f"adx panel err {e}")
-        d.rounded_rectangle([30,920,W-30,1350],radius=20,fill="#141D33")
-        d.text((60,940),"ENTRY / SL / TP  -  V9 DOW",font=f_mid,fill="white")
-        _yrow=980
-        _sl_pct=st.config.get('sl_pct',0.008); _tp_pct=st.config.get('tp_pct',0.04)
-        if open_trades:
-            for _ot in open_trades:
-                _e=float(_ot.get('entry',price)); _s=float(_ot.get('sl',_e)); _tp=float(_ot.get('tp',0)) or (_e*(1+_tp_pct) if _ot.get('signal')=='LONG' else _e*(1-_tp_pct))
-                _sig=_ot.get('signal',''); _pnl=(price-_e)/_e*100 if _sig=='LONG' else (_e-price)/_e*100
-                _sl_abs=abs(_s-_e)/_e*100; _tp_abs=abs(_tp-_e)/_e*100; _rr=(_tp_abs/_sl_abs) if _sl_abs>0 else 0
-                _col="#2ED573" if _sig=='LONG' else "#FF4757"
-                d.text((60,_yrow),f"{_sig} Wave {_ot.get('wave','?')}  {_e:,.0f}  SL {_s:,.0f}  TP {_tp:,.0f}  NOW {price:,.0f}",font=f_small,fill=_col); _yrow+=34
-                d.text((60,_yrow),f"PnL {_pnl:+.2f}%  |  SL {_sl_abs:.2f}%  |  TP {_tp_abs:.2f}%  |  RR {_rr:.1f}R",font=f_small,fill="#FFD700"); _yrow+=44
-        else: d.text((60,_yrow),"ยังไม่มีไม้เปิด - WAIT",font=f_small,fill="#8FA3C8")
-        d.text((60,1405),"MEXC Paper Only - Not Real Trade  |  /chart btc  /chart gold  /chart all  |  V9",font=f_tiny,fill="#8FA3C8")
-        buf=io.BytesIO(); img.save(buf,format="PNG"); return buf.getvalue()
+        df_1h = resample_tf(df, "1h"); df_1h = st.add_indicators(df_1h)
+        df_4h = resample_tf(df, "4h"); df_4h = st.add_indicators(df_4h)
+        if hasattr(st, "detect_swings"):
+            swings_1h = st.detect_swings(df_1h)
+            swings_4h = st.detect_swings(df_4h)
+            if hasattr(st, "count_waves") and len(swings_1h)>=6:
+                winfo = st.count_waves(swings_1h)
+                wave = winfo.get("current_wave"); cycle_id = winfo.get("cycle_id",0)
+                wave1_len = winfo.get("wave1_len",0); waveA_len = winfo.get("waveA_len",0)
+            if hasattr(st, "get_dow_trend_4h"):
+                dow4h = st.get_dow_trend_4h(swings_4h)
     except Exception as e:
-        print(f"chart err {e}"); import traceback; traceback.print_exc(); return None
-def get_strat(symbol):
-    s=symbol.upper()
-    if 'BTC' in s: return STRATS['btc']
-    if 'XAU' in s or 'PAXG' in s or 'GOLD' in s or 'XAUT' in s: return STRATS['gold']
-    return STRATS['btc']
-def resample_1h(df_15m):
-    df=df_15m.copy(); df=df.set_index("time")
-    df_1h=df.resample("1h").agg({"open":"first","high":"max","low":"min","close":"last","volume":"sum"}).dropna().reset_index()
-    return df_1h
-def execute_symbol(symbol, manage_open=True):
+        print(f"wave/dow err {e}"); traceback.print_exc()
+    # 4. เช็คไม้ที่ถืออยู่ - SL/TP
+    trades = load_trades()
+    opens = [t for t in trades if t.get("symbol_key")==symbol_key and str(t.get("status")).upper() in ("OPEN","PAPER_OPEN","PAPER")]
+    closed_msg = ""
+    for ot in opens:
+        entry = float(ot["entry"]); sl = float(ot["sl"]); tp = float(ot["tp"]); sig = ot["signal"]; ps = float(ot.get("position_size",0))
+        hit_sl = (price <= sl if sig=="LONG" else price >= sl)
+        hit_tp = (price >= tp if sig=="LONG" else price <= tp)
+        if hit_sl or hit_tp:
+            pnl = (price-entry)/entry*ps if sig=="LONG" else (entry-price)/entry*ps
+            ot["status"]="CLOSED"; ot["result"]="WIN" if pnl>0 else "LOSS"; ot["exit"]=price; ot["exit_time"]=datetime.now().isoformat(); ot["exit_reason"]="SL" if hit_sl else "TP"; ot["pnl_usd"]=pnl
+            closed_msg += f"\n{'✅' if pnl>0 else '❌'} {sig} {symbol_key.upper()} {entry:.1f}->{price:.1f} {ot['exit_reason']} PnL ${pnl:+.2f} Wave {ot.get('wave','?')}"
+            # บันทึก Last SL Wave ไว้กันเปิดซ้ำ - Main ไม่รู้ Wave เอง อ่านจากไม้ที่ปิด
+            if hit_sl:
+                ot["last_sl_wave"] = ot.get("wave"); ot["last_sl_cycle"] = ot.get("cycle")
+    if closed_msg:
+        save_trades(trades)
+        send_tele(f"ปิดไม้ {symbol_key.upper()} {strat_name}{closed_msg}")
+        # โหลดใหม่หลังปิด
+        trades = load_trades()
+        opens = [t for t in trades if t.get("symbol_key")==symbol_key and str(t.get("status")).upper() in ("OPEN","PAPER_OPEN","PAPER")]
+    # ถ้ายังถืออยู่ ไม่เปิดไม้ใหม่ (1 ไม้ต่อเหรียญ - ถ้า Strategy ต้องการหลายไม้ ให้ Strategy บอกผ่าน MAX_POS ใน config)
+    max_pos = cfg.get("max_pos_per_symbol", 1)
+    if len(opens) >= max_pos:
+        return {"ok": True, "strategy": strat_name, "price": price, "wave": wave, "dow4h": dow4h, "holding": len(opens), "msg": "holding"}
+    # 5. เช็ค Auto
+    if not get_auto_state().get(symbol_key, True):
+        return {"ok": True, "strategy": strat_name, "price": price, "wave": wave, "dow4h": dow4h, "msg": "auto off"}
+    # 6. ถาม Strategy ว่าเข้าได้ไหม - Main ไม่ตัดสินใจเอง
     try:
-        st=get_strat(symbol); symbol_key=st.symbol_key; cfg=st.config
-        df15=get_data(symbol, "15m", limit=500)
-        if isinstance(df15,tuple): return {"ok":False,"symbol":symbol,"error":df15[1]}
-        df15=st.add_indicators(df15)
-        df1h=resample_1h(df15); df1h=st.add_indicators(df1h)
-        idx15 = len(df15)-2 if len(df15)>=3 else len(df15)-1
-        curr=df15.iloc[idx15]; prev=df15.iloc[idx15-1] if idx15>=1 else curr
-        price=float(curr["close"])
-        h1_idx = len(df1h)-2 if len(df1h)>=3 else len(df1h)-1
-        h1_row=df1h.iloc[h1_idx] if h1_idx>=0 else df1h.iloc[-1]
-        df1h_up_to=df1h.iloc[:h1_idx+1] if h1_idx>=0 else df1h
-        swings=st.detect_swings(df1h_up_to); wave_info=st.count_waves(swings)
-        wave=wave_info["current_wave"]; trend=wave_info["trend"]; cycle_id=wave_info["cycle_id"]
-        wave1_len=wave_info["wave1_len"]; waveA_len=wave_info["waveA_len"]
-        ema36_1h=float(h1_row["ema_slow"]); ema_fast_1h=float(h1_row["ema_fast"])
-        adx_1h=float(h1_row["adx"]); di_p_1h=float(h1_row["di_plus"]); di_m_1h=float(h1_row["di_minus"])
-        trades=load_trades()
-        open_trades=[t for t in trades if t.get('symbol')==symbol and str(t.get('status')).upper() in ['OPEN','PAPER_OPEN','PAPER']]
-        actions=[]
-        for ot in list(open_trades):
-            entry=float(ot['entry']); sig=ot['signal']; sl=float(ot.get('sl', entry))
-            if sig=="LONG" and price>entry:
-                tsl=max(sl, ema36_1h*0.999); tp=float(ot.get('tp', entry))
-                if price>=entry+(tp-entry)*0.5: tsl=max(tsl, entry)
-                if tsl>sl: ot['sl']=tsl; ot['trailing']=f"Trail {sl:.0f}->{tsl:.0f}"; actions.append(f"Trailing LONG {symbol} SL {sl:.0f}->{tsl:.0f}")
-            elif sig=="SHORT" and price<entry:
-                tsl=min(sl, ema36_1h*1.001); tp=float(ot.get('tp', entry))
-                if price<=entry-(entry-tp)*0.5: tsl=min(tsl, entry)
-                if tsl<sl: ot['sl']=tsl; ot['trailing']=f"Trail {sl:.0f}->{tsl:.0f}"; actions.append(f"Trailing SHORT {symbol} SL {sl:.0f}->{tsl:.0f}")
-            hit_sl = (price<=float(ot['sl']) if sig=="LONG" else price>=float(ot['sl']))
-            hit_tp = (price>=float(ot.get('tp', 99999999)) if sig=="LONG" else price<=float(ot.get('tp', 0)))
-            if hit_sl or hit_tp:
-                ot['status']='CLOSED'; ot['result']='WIN' if (hit_tp or (price>entry and sig=="LONG") or (price<entry and sig=="SHORT")) else 'LOSS'
-                ot['exit']=price; ot['exit_time']=datetime.now().isoformat(); ot['exit_reason']='TP' if hit_tp else 'SL'
-                pnl=(price-entry)/entry*ot.get('position_size',0) if sig=="LONG" else (entry-price)/entry*ot.get('position_size',0)
-                ot['pnl_usd']=pnl; actions.append(f"CLOSE {sig} {symbol} {ot['exit_reason']} PnL ${pnl:+.2f}")
-        if actions:
-            save_trades(trades); trades=load_trades()
-            open_trades=[t for t in trades if t.get('symbol')==symbol and str(t.get('status')).upper() in ['OPEN','PAPER_OPEN','PAPER']]
-        signal="WAIT"; wave_str = str(wave) if wave else "?"
-        can_open = len(open_trades) < MAX_POS_PER_SYMBOL and can_open_new(symbol_key, cooldown_hours=COOLDOWN_HOURS)
-        auto=get_auto_state()
-        if not auto.get(symbol_key, True): signal="AUTO OFF"; can_open=False
-        if can_open and wave and trend!="UNKNOWN":
-            cnt_same = len([t for t in open_trades if str(t.get('wave'))==str(wave) and str(t.get('cycle_id'))==str(cycle_id)])
-            quota = st.WAVE_QUOTA.get(str(wave), 1)
-            if cnt_same < quota:
-                side=None
-                if trend=="UP":
-                    if wave in ("1","3","5","B"): side="LONG"
-                    elif wave in ("2","4","A","C"): side="SHORT"
-                else:
-                    if wave in ("1","3","5","B"): side="SHORT"
-                    elif wave in ("2","4","A","C"): side="LONG"
-                if side:
-                    hl_key=round(ema36_1h,2)
-                    dup = any(str(t.get('hl_key'))==str(hl_key) and str(t.get('wave'))==str(wave) for t in open_trades)
-                    if not dup:
-                        touched=st.is_touch_ema36(float(curr["low"]), float(curr["high"]), ema36_1h)
-                        pat=st.check_pattern_15m(df15, idx15)
-                        vol=float(curr["volume"]); vol_avg=float(curr["vol_avg"]) if not pd.isna(curr["vol_avg"]) else vol
-                        ok_pat = (side=="LONG" and pat in ("PIN_BULL","ENG_BULL")) or (side=="SHORT" and pat in ("PIN_BEAR","ENG_BEAR"))
-                        ok_vol = vol >= vol_avg*0.7; ok_adx = adx_1h >= cfg["adx_min"]
-                        ok_di = (di_p_1h>=cfg["di_min"] if side=="LONG" else di_m_1h>=cfg["di_min"])
-                        ok_ema = True
-                        if side=="LONG" and ema_fast_1h < ema36_1h and wave!="B": ok_ema=False
-                        if side=="SHORT" and ema_fast_1h > ema36_1h and wave!="B": ok_ema=False
-                        if len(open_trades)>0 and open_trades[0]['signal']!=side: ok_ema=False
-                        if touched and ok_pat and ok_vol and ok_adx and ok_di and ok_ema:
-                            hl_price=float(curr["low"]) if side=="LONG" else float(curr["high"])
-                            sl=st.get_sl_by_structure(side, price, hl_price); tp=st.get_tp_by_wave(str(wave), side, price, wave1_len, waveA_len)
-                            risk=abs(price-sl); reward=abs(tp-price)
-                            if reward >= risk*0.9:
-                                signal=side; pos_info=calc_position(symbol_key)
-                                new_trade={"id":len(trades)+1, "symbol":symbol, "symbol_key":symbol_key, "signal":signal, "entry":price, "entry_time":datetime.now().isoformat(), "position_size":pos_info['pos'], "sl":sl, "tp":tp, "status":"PAPER_OPEN", "real":False, "wave":str(wave), "cycle_id":str(cycle_id), "hl_key":str(hl_key), "note":f"V9 Dow Wave {wave} {trend} TP {tp:.1f} SL {sl:.1f}"}
-                                trades.append(new_trade); save_trades(trades); set_last_trade_time(symbol_key)
-                                actions.append(f"OPEN {signal} {symbol} ${price:.2f} Wave {wave} {trend} SL {sl:.2f} TP {tp:.2f}")
-        if signal in ("LONG","SHORT"): _is_new=True
+        # ส่ง Dow 4h ไปให้ Strategy ล็อคทิศ (ถ้า Strategy เก่าไม่รับ param นี้ ให้ Fallback)
+        try:
+            trend = st.check_trend(curr, prev, dow_trend_4h=dow4h)
+        except TypeError:
+            try: trend = st.check_trend(curr, prev)
+            except: trend = {"long": False, "short": False}
+    except Exception as e:
+        return {"ok": False, "error": f"check_trend {e}", "strategy": strat_name}
+    side = "LONG" if trend.get("long") else "SHORT" if trend.get("short") else None
+    if not side:
+        return {"ok": True, "strategy": strat_name, "price": price, "wave": wave, "dow4h": dow4h, "msg": "no trend signal"}
+    # 7. Quota + ห้ามซ้ำ Wave หลัง SL - อ่านจาก Strategy.WAVE_QUOTA + ประวัติเทรด
+    if wave is not None:
+        quota_map = getattr(st, "WAVE_QUOTA", {})
+        quota = quota_map.get(wave, 1) if isinstance(quota_map, dict) else 1
+        # นับไม้ที่เปิดแล้วใน Wave นี้ (Cycle เดียวกัน)
+        count_in_wave = len([t for t in trades if t.get("symbol_key")==symbol_key and t.get("wave")==wave and t.get("cycle")==cycle_id and str(t.get("status")).upper() in ("OPEN","PAPER_OPEN","PAPER","CLOSED")])
+        # ถ้าเทรดปิดแล้วนับด้วย? นับเฉพาะไม้ที่เปิดใน Cycle นี้ทั้งหมด (รวมที่ปิดไปแล้ว) เพื่อไม่ให้เปิดเกิน Quota
+        if count_in_wave >= quota:
+            return {"ok": True, "strategy": strat_name, "price": price, "wave": wave, "dow4h": dow4h, "msg": f"quota full Wave {wave} {count_in_wave}/{quota}"}
+        # ห้ามซ้ำ Wave เดิมหลัง SL
+        last_sl = None
+        for t in reversed(trades):
+            if t.get("symbol_key")==symbol_key and t.get("exit_reason")=="SL" and t.get("wave")==wave and t.get("cycle")==cycle_id and t.get("signal")==side:
+                last_sl = t; break
+        if last_sl:
+            return {"ok": True, "strategy": strat_name, "price": price, "wave": wave, "dow4h": dow4h, "msg": f"skip Wave {wave} หลัง SL"}
+    # 8. แตะ EMA + Pattern - ถาม Strategy
+    try:
+        ema_slow_val = float(curr["ema_slow"]) if "ema_slow" in curr else float(curr["ema_trend"]) if "ema_trend" in curr else 0
+        if hasattr(st, "is_touch_ema36"):
+            if not st.is_touch_ema36(float(curr["low"]), float(curr["high"]), ema_slow_val):
+                return {"ok": True, "strategy": strat_name, "price": price, "wave": wave, "dow4h": dow4h, "msg": "not touch EMA"}
+        if hasattr(st, "check_pattern_15m"):
+            pat = st.check_pattern_15m(df, len(df)-1)
+            if pat is None:
+                return {"ok": True, "strategy": strat_name, "price": price, "wave": wave, "dow4h": dow4h, "msg": "no pattern"}
+            if side=="LONG" and pat not in ("PIN_BULL","ENG_BULL"):
+                return {"ok": True, "strategy": strat_name, "price": price, "wave": wave, "dow4h": dow4h, "msg": f"pattern {pat} ไม่ตรง LONG"}
+            if side=="SHORT" and pat not in ("PIN_BEAR","ENG_BEAR"):
+                return {"ok": True, "strategy": strat_name, "price": price, "wave": wave, "dow4h": dow4h, "msg": f"pattern {pat} ไม่ตรง SHORT"}
         else:
-            _is_new=False
-            if len(open_trades)>=MAX_POS_PER_SYMBOL: signal=f"MAX {len(open_trades)}/{MAX_POS_PER_SYMBOL} HOLD {open_trades[0]['signal']}"
-            elif len(open_trades)>0: signal=f"HOLD {open_trades[0]['signal']} {len(open_trades)}/{MAX_POS_PER_SYMBOL} Wave {wave_str}"
-            elif signal=="WAIT": signal=f"WAIT Wave {wave_str} {trend} ADX {adx_1h:.0f}"
-        return {"ok":True,"symbol":symbol,"symbol_key":symbol_key,"signal":signal,"price":price,"new_trade":_is_new, "plus_di":float(di_p_1h),"minus_di":float(di_m_1h),"adx":float(adx_1h), "cdc_up":bool(ema_fast_1h>ema36_1h),"cdc_stop":float(ema36_1h), "ema_fast":float(ema_fast_1h),"ema_slow":float(ema36_1h), "wave":wave_str,"wave_trend":trend,"cycle_id":str(cycle_id), "retest":bool(st.is_touch_ema36(float(curr["low"]), float(curr["high"]), ema36_1h)), "sl_pct":cfg['sl_pct']*100,"tp_pct":cfg['tp_pct']*100, "actions":actions, "can_open":can_open, "open_count":len(open_trades), "sideway":bool(adx_1h < cfg["adx_min"]), "long":bool(signal=="LONG"), "short":bool(signal=="SHORT"), "rev_long":False, "rev_short":False, "mom_long":bool(price>ema_fast_1h), "mom_short":bool(price<ema_fast_1h), "df":df15, "cond":{"adx":adx_1h,"plus_di":di_p_1h,"minus_di":di_m_1h,"wave":wave_str,"wave_trend":trend}}
+            pat = "N/A"
     except Exception as e:
-        import traceback; traceback.print_exc()
-        return {"ok":False,"symbol":symbol,"error":str(e)[:300]}
-def send_chart_on_open(symbol, result):
+        print(f"pattern/touch err {e}"); pat = "N/A"
+    # 9. SL / TP - ถาม Strategy (ไม่ Hardcode %)
     try:
-        if result.get('new_trade'):
-            st=get_strat(symbol); df=result.get('df')
-            if df is None: df=get_data(symbol, "15m", limit=200)
-            if isinstance(df,tuple): return
-            df=st.add_indicators(df)
-            img=make_chart_image(df, st, symbol, float(result.get('price',0)), result.get('signal',''), result.get('cond',{}), [], timeframe="15m")
-            if img: send_tele_photo(img, f"OPEN {result.get('signal')} {symbol} Wave {result.get('wave')} ${result.get('price',0):,.2f}", None)
-    except Exception as e: print(f"send_chart_on_open err {e}")
+        atr_val = float(curr["atr"]) if "atr" in curr and pd.notna(curr["atr"]) else 0
+        if hasattr(st, "get_sl_by_structure"):
+            try: sl = float(st.get_sl_by_structure(side, price, swings_1h, atr_val))
+            except TypeError: sl = float(st.get_sl_by_structure(side, price, price))
+        else:
+            sl_pct = cfg.get("sl_pct", 0.008); sl = price*(1-sl_pct) if side=="LONG" else price*(1+sl_pct)
+        if hasattr(st, "get_tp_by_wave"):
+            tp = float(st.get_tp_by_wave(wave, side, price, wave1_len, waveA_len))
+        else:
+            tp_pct = cfg.get("tp_pct", 0.016); tp = price*(1+tp_pct) if side=="LONG" else price*(1-tp_pct)
+        if side=="LONG" and (sl>=price or tp<=price): return {"ok": True, "strategy": strat_name, "price": price, "wave": wave, "msg": "SL/TP ผิดทิศ"}
+        if side=="SHORT" and (sl<=price or tp>=price): return {"ok": True, "strategy": strat_name, "price": price, "wave": wave, "msg": "SL/TP ผิดทิศ"}
+    except Exception as e:
+        return {"ok": False, "error": f"SL/TP {e}", "strategy": strat_name}
+    # 10. เปิดไม้ Paper
+    pos_info = calc_position(symbol_key, price, sl)
+    new_trade = {
+        "symbol_key": symbol_key, "symbol": symbol, "signal": side, "wave": wave, "cycle": cycle_id, "dow4h": dow4h,
+        "entry": price, "sl": sl, "tp": tp, "position_size": pos_info["pos"], "margin": pos_info["margin"],
+        "status": "PAPER_OPEN", "pattern": pat, "strategy": strat_name,
+        "time": datetime.now().isoformat(), "entry_time": datetime.now().isoformat()
+    }
+    trades.append(new_trade); save_trades(trades); set_last_trade_time(symbol_key)
+    send_tele(f"📈 เปิด {side} {symbol_key.upper()} {strat_name}\nWave {wave} Cycle {cycle_id} Dow4h {dow4h} Pattern {pat}\nเข้า {price:.1f} SL {sl:.1f} TP {tp:.1f} Risk ${pos_info['risk']:.2f}")
+    return {"ok": True, "strategy": strat_name, "price": price, "wave": wave, "dow4h": dow4h, "side": side, "entry": price, "sl": sl, "tp": tp, "msg": "opened"}
+
+def parse_sym(s):
+    s=(s or "").lower()
+    if s in ("btc","bitcoin"): return ("btc","BTC")
+    if s in ("gold","xau","paxg"): return ("gold","GOLD")
+    if s in ("all",""): return ("all","ALL")
+    return ("unknown", s)
+
+# ===== API =====
+@app.get("/ping")
+def ping():
+    return {"status": "ok UNIVERSAL", "strategy_btc": get_strategy_name("btc"), "strategy_gold": get_strategy_name("gold"), "auto": get_auto_state(), "trades": len(load_trades())}
+
+@app.get("/", response_class=HTMLResponse)
+def home():
+    auto=get_auto_state()
+    return f"<html><body style='background:#0a0e1a;color:#fff;font-family:Arial;padding:20px'><h1>G_POWER UNIVERSAL</h1><p>Strategy: {get_strategy_name('btc')}</p><p>BTC {'🟢' if auto.get('btc') else '🔴'} GOLD {'🟢' if auto.get('gold') else '🔴'}</p><p>Main ไม่ต้องแก้แล้ว เปลี่ยนแค่ strategy_G_POWER.py</p><a href='/ping'>Ping</a></body></html>"
+
+@app.get("/check")
+def check(sym: str = "all"):
+    key,_ = parse_sym(sym)
+    results={}
+    if key=="all":
+        for k in ["btc","gold"]:
+            try: results[k]=execute_symbol(k)
+            except Exception as e: results[k]={"ok":False,"error":str(e)[:200]}
+    else:
+        try: results[key]=execute_symbol(key)
+        except Exception as e: results[key]={"ok":False,"error":str(e)[:200]}
+    return results
+
 @app.post("/telegram/webhook")
-async def webhook(request: Request):
+async def telegram_webhook(req: Request):
     try:
-        data=await request.json(); msg=data.get('message',{}) or data.get('edited_message',{})
-        chat_id=str(msg.get('chat',{}).get('id','')); text=msg.get('text','').strip(); tl=text.lower()
-        allowed=os.environ.get("CHAT_ID","").strip() or os.environ.get("TELEGRAM_CHAT_ID","").strip()
-        if allowed and chat_id!=str(allowed):
-            try: send_tele("CHAT_ID ไม่ตรง คุณพิมพ์จาก ID: " + str(chat_id) + " แต่ใน Render = " + str(allowed), chat_id=chat_id)
-            except: pass
-            return {"ok":True}
-        if not text: return {"ok":True}
-        def parse_sym(a):
-            a=a.lower(); return {'btc':('btc',SYMBOLS['btc']),'gold':('gold',SYMBOLS['gold']),'all':('all',None)}.get(a,('unknown',None))
-        if tl.startswith('/check'):
-            parts=tl.split(); key='all' if len(parts)<2 else parse_sym(parts[1])[0]
-            if key=="unknown": send_tele(f"❓ ไม่มีเหรียญ {parts[1]} แล้ว มีแค่ BTC / GOLD", chat_id); return {"ok":True}
-            results={}
-            for k in ['btc','gold']:
-                if key!='all' and k!=key: continue
-                results[k]=execute_symbol(SYMBOLS[k])
-            trades=load_trades(); auto=get_auto_state(); bal=get_mexc_balance()
-            out=f"📊 <b>G_POWER V9 DOW CHECK {key.upper()}</b> {datetime.now().strftime('%d/%m %H:%M')}\n"
-            for k,r in results.items():
-                if not r.get('ok'): out+=f"\n{k.upper()} ❌ {r.get('error')}\n"
-                else:
-                    cfg=STRATS[k].config
-                    out+=f"\n<b>{k.upper()} {r['symbol']}</b> {'🟢 ON' if auto.get(k) else '🔴 OFF'} {r['signal']}\n${r['price']:,.2f} Wave {r.get('wave','?')} {r.get('wave_trend','')} EMA36 ${r['ema_slow']:,.2f}\nEMA{cfg['ema_fast']}/{cfg['ema_slow']} +DI {r['plus_di']:.1f} -DI {r['minus_di']:.1f} ADX {r['adx']:.1f}\nRetest {'✅' if r['retest'] else '❌'} Sideway {'❌' if not r.get('sideway') else '✅'} CanOpen {'✅' if r['can_open'] else '❌'} Open {r['open_count']} SL {r['sl_pct']:.2f}% TP {r['tp_pct']:.0f}%\n"
-                    if r['actions']: out+=f"⚡ {'; '.join(r['actions'])}\n"
-            opens=[t for t in trades if str(t.get('status')).upper() in ['OPEN','PAPER_OPEN','PAPER']]
-            if opens:
-                out+=f"\n📌 ถือ {len(opens)} trades:\n"
-                for ot in opens[-3:]:
-                    entry=float(ot['entry']); curr_p=results.get(ot.get('symbol_key','btc'),{}).get('price',entry); sig=ot['signal']; ps=ot.get('position_size',0)
-                    if sig=='LONG': upnl=(curr_p-entry)/entry*ps if entry else 0; upp=(curr_p-entry)/entry*100 if entry else 0
-                    else: upnl=(entry-curr_p)/entry*ps if entry else 0; upp=(entry-curr_p)/entry*100 if entry else 0
-                    sl=ot.get('sl',0); out+=f"{sig} {ot['symbol']} Wave {ot.get('wave','?')} Entry ${entry:,.2f} Now ${curr_p:,.2f} UnPnL ${upnl:+.2f} ({upp:+.1f}%) SL ${sl:,.2f}\n"
-            else: out+=f"\n📌 ไม่มีtradesถืออยู่ - WAIT\n"
-            if bal.get('ok'): out+=f"\n🏦 MEXC {bal.get('total')} USDT | Pos {len(bal.get('positions',[]))}\n"
-            out+=f"\n✅ V9 EMA 12/36 + Dow 1h/15m + TP ตามคลื่น"
-            send_tele(out, chat_id)
-            for _k,_r in results.items():
-                if _r.get('new_trade'): send_chart_on_open(_r.get('symbol'), _r)
-            return {"ok":True}
-        elif tl.startswith('/total') or tl.startswith('/portfolio') or tl.startswith('/port'):
-            trades=load_trades(); bal=get_mexc_balance(); results={}
-            for k in ['btc','gold']:
-                try: results[k]=execute_symbol(SYMBOLS[k])
-                except: results[k]={'ok':False}
-            opens=[t for t in trades if str(t.get('status')).upper() in ['OPEN','PAPER_OPEN','PAPER']]
-            closeds=[t for t in trades if str(t.get('status')).upper()=='CLOSED']
-            total_closed=sum([float(t.get('pnl_usd',0)) for t in closeds])
-            out=f"PORTFOLIO V9 {datetime.now().strftime('%d/%m %H:%M')} MEXC {bal.get('total',0) if bal.get('ok') else 0} USDT\n"
-            total_upnl=0
-            if opens:
-                for ot in opens:
-                    entry=float(ot['entry']); ps=float(ot.get('position_size',0)); key=ot.get('symbol_key','btc'); curr_p=results.get(key,{}).get('price',entry); sig=ot['signal']
-                    upnl=(curr_p-entry)/entry*ps if sig=='LONG' else (entry-curr_p)/entry*ps; total_upnl+=upnl
-                    out+=f"{sig} {ot['symbol']} Wave {ot.get('wave','?')} ${entry:,.2f} -> ${curr_p:,.2f} PnL ${upnl:+.2f}\n"
-                out+=f"UnPnL {total_upnl:+.2f} Paper ${40+total_closed+total_upnl:.2f}\n"
-            else: out+=f"ไม่มีtradesถืออยู่ Paper ${40+total_closed:.2f}\n"
-            try:
-                btc_p=sum([float(t.get('pnl_usd',0)) if t.get('symbol_key')=='btc' else 0 for t in closeds]); gold_p=sum([float(t.get('pnl_usd',0)) if t.get('symbol_key')=='gold' else 0 for t in closeds])
-                for ot in opens:
-                    entry=float(ot['entry']); ps=float(ot.get('position_size',0)); key2=ot.get('symbol_key','btc'); curr_p=results.get(key2,{}).get('price',entry); sig2=ot['signal']; up2=(curr_p-entry)/entry*ps if sig2=='LONG' else (entry-curr_p)/entry*ps
-                    if key2=='btc': btc_p+=up2
-                    else: gold_p+=up2
-                wins=len([t for t in closeds if float(t.get('pnl_usd',0))>0]); wr=(wins/len(closeds)*100) if closeds else (100 if total_upnl>0 else 0)
-                opens_info=[]
-                for ot in opens:
-                    entry=float(ot['entry']); ps=float(ot.get('position_size',0)); key2=ot.get('symbol_key','btc'); curr_p=results.get(key2,{}).get('price',entry); sig2=ot['signal']; up2=(curr_p-entry)/entry*ps if sig2=='LONG' else (entry-curr_p)/entry*ps
-                    opens_info.append({"key":key2.upper(),"sig":sig2,"txt":f"${entry:,.0f} -> ${curr_p:,.0f}","pnl":up2})
-                paper_val=40+total_closed+total_upnl
-                img_bytes=make_portfolio_image(paper_val, total_upnl, total_closed, wr, wins, len(closeds) if closeds else len(opens), btc_p, gold_p, opens_info)
-                if img_bytes: send_tele_photo(img_bytes, out, chat_id)
-                else: send_tele(out, chat_id)
-                for _k,_r in results.items():
-                    if isinstance(_r, dict) and _r.get('new_trade'): send_chart_on_open(_r.get('symbol'), _r)
-            except Exception as e: print(f"portfolio img err {e}"); send_tele(out, chat_id)
-            return {'ok':True}
-        elif tl.startswith('/info') or tl.startswith('/infographic'):
-            trades=load_trades(); bal=get_mexc_balance(); results={}
-            for k in ['btc','gold']:
-                try: results[k]=execute_symbol(SYMBOLS[k])
-                except: results[k]={'ok':False}
-            opens=[t for t in trades if str(t.get('status')).upper() in ['OPEN','PAPER_OPEN','PAPER']]
-            closeds=[t for t in trades if str(t.get('status')).upper()=='CLOSED']
-            total_closed=sum([float(t.get('pnl_usd',0)) for t in closeds]); total_upnl=0; opens_info=[]
-            btc_p=sum([float(t.get('pnl_usd',0)) if t.get('symbol_key')=='btc' else 0 for t in closeds]); gold_p=sum([float(t.get('pnl_usd',0)) if t.get('symbol_key')=='gold' else 0 for t in closeds])
-            for ot in opens:
-                entry=float(ot['entry']); ps=float(ot.get('position_size',0)); key2=ot.get('symbol_key','btc'); curr_p=results.get(key2,{}).get('price',entry); sig2=ot['signal']; up2=(curr_p-entry)/entry*ps if sig2=='LONG' else (entry-curr_p)/entry*ps; total_upnl+=up2
-                opens_info.append({'key':key2.upper(),'sig':sig2,'txt':f"${entry:,.0f} -> ${curr_p:,.0f}",'pnl':up2}); btc_p+=up2 if key2=='btc' else 0; gold_p+=up2 if key2=='gold' else 0
-            wins=len([t for t in closeds if float(t.get('pnl_usd',0))>0]); wr=(wins/len(closeds)*100) if closeds else (100 if total_upnl>0 else 0)
-            paper_val=40+total_closed+total_upnl
-            img_bytes=make_portfolio_image(paper_val,total_upnl,total_closed,wr,wins,len(closeds) if closeds else len(opens),btc_p,gold_p,opens_info)
-            cap=f"G_POWER V9 PORTFOLIO {datetime.now().strftime('%d/%m %H:%M')} Paper ${paper_val:.2f} UnPnL {total_upnl:+.2f}"
-            send_tele_photo(img_bytes,cap,chat_id) if img_bytes else send_tele('สร้างรูปไม่ได้',chat_id)
-            for _k,_r in results.items():
-                if isinstance(_r, dict) and _r.get('new_trade'): send_chart_on_open(_r.get('symbol'), _r)
-            return {'ok':True}
-        elif tl.startswith('/chart'):
-            parts=tl.split(); key='btc' if len(parts)<2 else parse_sym(parts[1])[0]
-            tf='15m'
-            if len(parts)>=3 and parts[2].lower() in ['15m','1h','4h','1d','1w']: tf=parts[2].lower()
-            elif len(parts)>=3 and parts[2].lower() in ['15','60','240']: tf={'15':'15m','60':'1h','240':'4h'}[parts[2].lower()]
-            if key=="unknown": send_tele(f"❓ ไม่มีเหรียญ {parts[1]} แล้ว มีแค่ BTC / GOLD", chat_id); return {"ok":True}
-            keys=['btc','gold'] if key=='all' else [key]
-            for kk in keys:
+        body = await req.json()
+        msg = body.get("message", {})
+        text = (msg.get("text") or "").strip()
+        chat_id = msg.get("chat", {}).get("id")
+        tl = text.lower()
+        if tl.startswith("/check"):
+            parts = tl.split(); key = "all" if len(parts)<2 else parse_sym(parts[1])[0]
+            if key=="unknown": send_tele("❓ มีแค่ BTC / GOLD", chat_id); return {"ok":True}
+            if key=="all":
+                for k in ["btc","gold"]:
+                    try:
+                        r=execute_symbol(k)
+                        send_tele(f"✅ {k.upper()} {r.get('strategy','')} ราคา {r.get('price','?')} Wave {r.get('wave','?')} Dow4h {r.get('dow4h','?')} {r.get('msg','')}", chat_id)
+                    except Exception as e: send_tele(f"{k} Error {e}", chat_id)
+            else:
                 try:
-                    r=execute_symbol(SYMBOLS[kk])
-                    if not r.get('ok'): send_tele(f"{kk.upper()} ❌ {r.get('error')}", chat_id); continue
-                    st=get_strat(SYMBOLS[kk]); df=get_data(SYMBOLS[kk], tf, limit=200)
-                    if isinstance(df,tuple): send_tele(f"{kk.upper()} ❌ {df[1]}", chat_id); continue
-                    df=st.add_indicators(df)
-                    trades2=load_trades(); opens2=[t for t in trades2 if t.get('symbol')==SYMBOLS[kk] and str(t.get('status')).upper() in ['OPEN','PAPER_OPEN','PAPER']]
-                    img=make_chart_image(df, st, SYMBOLS[kk], float(r.get('price',0)), r.get('signal','WAIT'), r.get('cond',{}), opens2, timeframe=tf)
-                    cap=f"{kk.upper()} {tf} ${r.get('price',0):,.2f} Wave {r.get('wave')} {r.get('wave_trend')} {r.get('signal')}"
-                    if img: send_tele_photo(img, cap, chat_id)
-                    else: send_tele(cap, chat_id)
-                except Exception as e: send_tele(f"{kk.upper()} chart err {e}", chat_id)
+                    r=execute_symbol(key)
+                    send_tele(f"✅ {key.upper()} {r.get('strategy','')} ราคา {r.get('price','?')} Wave {r.get('wave','?')} Dow4h {r.get('dow4h','?')} {r.get('msg','')}", chat_id)
+                except Exception as e: send_tele(f"{key} Error {e}", chat_id)
             return {"ok":True}
-        elif tl.startswith('/live'):
-            parts=tl.split(); key='btc' if len(parts)<2 else parse_sym(parts[1])[0]
-            if key=="unknown": send_tele(f"❓ ไม่มีเหรียญ {parts[1]}", chat_id); return {"ok":True}
-            keys=['btc','gold'] if key=='all' else [key]
-            for kk in keys:
-                r=execute_symbol(SYMBOLS[kk]); send_tele(f"LIVE {kk.upper()} ${r.get('price',0):,.2f} {r.get('signal')} Wave {r.get('wave')} ADX {r.get('adx',0):.1f}", chat_id)
-            return {"ok":True}
-        elif tl.startswith('/close'):
-            parts=tl.split(); _want=None if len(parts)<2 or parts[1].lower()=='all' else parse_sym(parts[1])[0]
-            if _want=="unknown": send_tele(f"❓ ไม่มีเหรียญ {parts[1]}", chat_id); return {"ok":True}
-            trades=load_trades(); opens=[t for t in trades if str(t.get('status')).upper() in ['OPEN','PAPER_OPEN','PAPER'] and (_want is None or t.get('symbol_key')==_want)]
-            if not opens: send_tele("ไม่มีไม้เปิดอยู่", chat_id); return {"ok":True}
-            results={}
-            for k in ['btc','gold']:
-                try: results[k]=execute_symbol(SYMBOLS[k])
-                except: results[k]={'ok':False}
-            total=0; out=f"CLOSE {(_want.upper() if _want else 'ALL')} {len(opens)} trades\n"
-            for ot in opens:
-                key=ot.get('symbol_key','btc'); curr_p=results.get(key,{}).get('price', ot.get('entry')); entry=float(ot['entry']); sig=ot['signal']; ps=float(ot.get('position_size',0))
-                pnl=(curr_p-entry)/entry*ps if sig=='LONG' else (entry-curr_p)/entry*ps
-                total+=pnl; ot['status']='CLOSED'; ot['result']='WIN' if pnl>0 else 'LOSS'; ot['exit']=curr_p; ot['exit_time']=datetime.now().isoformat(); ot['exit_reason']='MANUAL CLOSE'; ot['pnl_usd']=pnl
-                out+=f"{sig} {ot['symbol']} PnL ${pnl:+.2f}\n"
-            save_trades(trades)
-            if _want is None: set_auto_state('all', False); out+=f"รวม PnL ${total:+.2f} Auto OFF แล้ว"
-            else: set_auto_state(_want, False); out+=f"รวม PnL ${total:+.2f} Auto {_want.upper()} OFF แล้ว"
-            send_tele(out, chat_id); return {'ok':True}
-        elif tl.startswith('/bt'):
+        elif tl.startswith("/bt"):
             try:
-                import json as _js
                 f=DATA_DIR/"bt_results.json"
-                if not f.exists(): send_tele("ยังไม่มีผล BT ครับ รันใน Render Shell ก่อน: python backtest_G_POWER.py --days 30 แล้วพิมพ์ /bt อีกที", chat_id); return {'ok':True}
-                out=_js.loads(f.read_text()); lines=["📊 BT V9 ล่าสุด (15m MEXC Perp)"]
+                if not f.exists():
+                    send_tele("ยังไม่มีผล BT รันใน Shell ก่อน: python backtest_G_POWER.py --days 30", chat_id); return {"ok":True}
+                out=json.loads(f.read_text())
+                lines=["📊 BT ล่าสุด"]
                 for sym in ["btc","gold"]:
                     if sym not in out: continue
-                    r=out[sym]; lines.append(f"\n{'BTC' if sym=='btc' else 'GOLD'} {r['days']} วัน: {r['trades']} ไม้ Win {r['winrate_pct']}% PnL ${r['total_pnl']:+.2f} ทุน ${r['capital_start']} -> ${r['capital_end']} PF {r['profit_factor']}")
-                    lines.append(f"Avg Win ${r['avg_win']:+.2f} / Avg Loss ${r['avg_loss']:+.2f}")
-                    for tr in r['trade_list'][-5:]: lines.append(f"  {tr['side']} Wave {tr.get('wave','?')} {tr['entry']:.1f}->{tr['exit']:.1f} {tr['exit_reason']} ${tr['pnl_usd']:+.2f}")
-                send_tele("\n".join(lines), chat_id); return {'ok':True}
-            except Exception as e: send_tele(f"/bt Error: {e}", chat_id); return {'ok':True}
-        elif tl.startswith('/reset'):
-            trades=load_trades(); opens=[t for t in trades if str(t.get('status')).upper() in ['OPEN','PAPER_OPEN','PAPER']]
-            if opens: send_tele(f"ยังถือ {len(opens)} tradesอยู่! พิมพ์ /close all ก่อน", chat_id); return {'ok':True}
+                    r=out[sym]
+                    lines.append(f"\n{'BTC' if sym=='btc' else 'GOLD'} {r['days']} วัน: {r['trades']} ไม้ Win {r['winrate_pct']}% PnL ${r['total_pnl']:+.2f} PF {r['profit_factor']}")
+                    for tr in r['trade_list'][-5:]:
+                        lines.append(f"  {tr['side']} Wave {tr.get('wave','?')} {tr['entry']:.1f}->{tr['exit']:.1f} {tr['exit_reason']} ${tr['pnl_usd']:+.2f}")
+                send_tele("\n".join(lines), chat_id); return {"ok":True}
+            except Exception as e: send_tele(f"/bt Error {e}", chat_id); return {"ok":True}
+        elif tl.startswith("/port") or tl.startswith("/info") or tl.startswith("/portfolio"):
+            trades=load_trades(); opens=[t for t in trades if str(t.get("status")).upper() in ("OPEN","PAPER_OPEN","PAPER")]
+            closed=[t for t in trades if str(t.get("status")).upper()=="CLOSED"]
+            total_pnl=sum(float(t.get("pnl_usd",0)) for t in closed)
+            lines=[f"📊 Portfolio {get_strategy_name('btc')}"]
+            lines.append(f"ถืออยู่ {len(opens)} ไม้ | ปิดแล้ว {len(closed)} ไม้ PnL ${total_pnl:+.2f} ทุน ${CAPITAL}")
+            for t in opens:
+                lines.append(f"  {t.get('signal')} {t.get('symbol_key','').upper()} Wave {t.get('wave','?')} เข้า {float(t.get('entry',0)):.1f} SL {float(t.get('sl',0)):.1f} TP {float(t.get('tp',0)):.1f}")
+            send_tele("\n".join(lines), chat_id); return {"ok":True}
+        elif tl.startswith("/close"):
+            parts=tl.split(); want=None if len(parts)<2 or parts[1]=="all" else parse_sym(parts[1])[0]
+            trades=load_trades(); opens=[t for t in trades if str(t.get("status")).upper() in ("OPEN","PAPER_OPEN","PAPER")]
+            if want and want!="all": opens=[t for t in opens if t.get("symbol_key")==want]
+            if not opens: send_tele("ไม่มีไม้ที่ถืออยู่", chat_id); return {"ok":True}
+            total=0; out=f"CLOSE {len(opens)} trades\n"
+            for ot in opens:
+                key=ot.get("symbol_key","btc")
+                try: r=execute_symbol(key); curr_p=r.get("price", float(ot["entry"]))
+                except: curr_p=float(ot["entry"])
+                entry=float(ot["entry"]); sig=ot["signal"]; ps=float(ot.get("position_size",0))
+                pnl=(curr_p-entry)/entry*ps if sig=="LONG" else (entry-curr_p)/entry*ps
+                total+=pnl; ot["status"]="CLOSED"; ot["result"]="WIN" if pnl>0 else "LOSS"; ot["exit"]=curr_p; ot["exit_time"]=datetime.now().isoformat(); ot["exit_reason"]="MANUAL CLOSE"; ot["pnl_usd"]=pnl
+                out+=f"{sig} {ot['symbol']} PnL ${pnl:+.2f}\n"
+            save_trades(trades)
+            if want is None or want=="all": set_auto_state("all", False); out+=f"รวม ${total:+.2f} Auto OFF"
+            else: set_auto_state(want, False); out+=f"รวม ${total:+.2f} Auto {want.upper()} OFF"
+            send_tele(out, chat_id); return {"ok":True}
+        elif tl.startswith("/reset"):
+            trades=load_trades(); opens=[t for t in trades if str(t.get("status")).upper() in ("OPEN","PAPER_OPEN","PAPER")]
+            if opens: send_tele(f"ยังถือ {len(opens)} ไม้อยู่! พิมพ์ /close all ก่อน", chat_id); return {"ok":True}
             try:
-                for f in ['/data/g_power_trades.json','/data/auto_state.json']:
+                for f in [TRADES_FILE, AUTO_STATE_FILE]:
                     try:
-                        if os.path.exists(f): os.remove(f)
+                        if f.exists(): f.unlink(missing_ok=True)
                     except: pass
-                save_trades([]); set_auto_state('all', False)
-            except Exception as e: send_tele(f"RESET Error: {e}", chat_id); return {'ok':True}
-            send_tele('ล้างไพ่เรียบร้อย Paper $40.00 Auto OFF - พิมพ์ /on all เพื่อเริ่มใหม่', chat_id); return {'ok':True}
-        elif tl.startswith('/on'):
-            parts=tl.split(); key='all' if len(parts)<2 else parse_sym(parts[1])[0]
-            if key=="unknown": send_tele(f"❓ ไม่มีเหรียญ {parts[1]} แล้ว มีแค่ BTC / GOLD", chat_id); return {"ok":True}
-            set_auto_state(key, True); send_tele(f"🟢 Auto ON {key.upper()} {datetime.now().strftime('%d/%m %H:%M')} V9 EMA+DOW", chat_id); return {"ok":True}
-        elif tl.startswith('/off'):
-            parts=tl.split(); key='all' if len(parts)<2 else parse_sym(parts[1])[0]
-            if key=="unknown": send_tele(f"❓ ไม่มีเหรียญ {parts[1]} แล้ว มีแค่ BTC / GOLD", chat_id); return {"ok":True}
+                save_trades([]); set_auto_state("all", False)
+            except Exception as e: send_tele(f"RESET Error {e}", chat_id); return {"ok":True}
+            send_tele("ล้างไพ่เรียบร้อย Paper $40.00 Auto OFF - พิมพ์ /on all เพื่อเริ่มใหม่", chat_id); return {"ok":True}
+        elif tl.startswith("/on"):
+            parts=tl.split(); key="all" if len(parts)<2 else parse_sym(parts[1])[0]
+            if key=="unknown": send_tele("❓ มีแค่ BTC / GOLD", chat_id); return {"ok":True}
+            set_auto_state(key, True); send_tele(f"🟢 Auto ON {key.upper()} {get_strategy_name('btc')}", chat_id); return {"ok":True}
+        elif tl.startswith("/off"):
+            parts=tl.split(); key="all" if len(parts)<2 else parse_sym(parts[1])[0]
+            if key=="unknown": send_tele("❓ มีแค่ BTC / GOLD", chat_id); return {"ok":True}
             set_auto_state(key, False); send_tele(f"🔴 Auto OFF {key.upper()}", chat_id); return {"ok":True}
         else:
-            send_tele(f"❓ {text}\n/check [btc|gold|all]\n/chart [btc|gold|all] [15m|1h|4h|1d] = กราฟ\n/on [btc|gold|all]\n/off [btc|gold|all]\n/portfolio = รูปสรุปพอร์ต\n/info = รูปอย่างเดียว\n/bt = ผล Backtest V9\n/live [btc|gold]", chat_id); return {"ok":True}
-    except Exception as e: print(f"ERR {e}"); return {"ok":True}
+            send_tele(f"❓ {text}\n/check [btc|gold|all]\n/on [btc|gold|all]\n/off [btc|gold|all]\n/port\n/bt\n/close all", chat_id); return {"ok":True}
+    except Exception as e:
+        print(f"ERR {e}"); traceback.print_exc(); return {"ok":True}
+
 @app.on_event("startup")
 async def auto_set_webhook():
-    import requests, os
     token = os.environ.get("TELEGRAM_BOT_TOKEN","").strip() or os.environ.get("BOT_TOKEN","").strip()
     if not token: return
     base = os.environ.get("RENDER_EXTERNAL_URL","").strip() or "https://mexc-btc-bot-1.onrender.com"
@@ -622,9 +409,9 @@ async def auto_set_webhook():
         r = requests.get(f"https://api.telegram.org/bot{token}/setWebhook?url={url}", timeout=10)
         print(f"STARTUP setWebhook {url} : {r.text[:200]}")
     except Exception as e: print(f"STARTUP fail {e}")
+
 @app.get("/set_webhook")
 def set_webhook():
-    import requests, os
     token = os.environ.get("TELEGRAM_BOT_TOKEN","").strip() or os.environ.get("BOT_TOKEN","").strip()
     if not token: return {"ok":False,"error":"No BOT_TOKEN"}
     url = "https://mexc-btc-bot-1.onrender.com/telegram/webhook"
@@ -632,22 +419,8 @@ def set_webhook():
         r = requests.get(f"https://api.telegram.org/bot{token}/setWebhook?url={url}", timeout=10)
         return {"ok":r.status_code==200,"telegram":r.json(),"set_to":url}
     except Exception as e: return {"ok":False,"error":str(e)[:200]}
-@app.get("/webhook_info")
-def webhook_info():
-    import requests, os
-    token = os.environ.get("TELEGRAM_BOT_TOKEN","").strip() or os.environ.get("BOT_TOKEN","").strip()
-    if not token: return {"ok":False,"error":"No BOT_TOKEN"}
-    try:
-        r = requests.get(f"https://api.telegram.org/bot{token}/getWebhookInfo", timeout=10)
-        return r.json()
-    except Exception as e: return {"ok":False,"error":str(e)[:200]}
+
 @app.get("/test_send")
 def test_send():
-    r = send_tele("TEST จาก Render V9 FULL - ถ้าเห็นข้อความนี้ = BOT_TOKEN + CHAT_ID ถูกแล้ว")
+    r = send_tele("TEST จาก Render UNIVERSAL - ถ้าเห็นข้อความนี้ = BOT_TOKEN + CHAT_ID ถูกแล้ว")
     return {"sent":r}
-@app.api_route("/ping", methods=["GET","HEAD"])
-def ping(): return {"status":"ok V9 FULL EMA+DOW","auto":get_auto_state(),"dir":str(DATA_DIR),"trades":len(load_trades())}
-@app.get("/", response_class=HTMLResponse)
-def home():
-    auto=get_auto_state()
-    return f"<html><body style='background:#0a0e1a;color:#fff;font-family:Arial;padding:20px'><h1>G_POWER V9 FULL EMA+DOW BTC+GOLD</h1><p>BTC {'🟢' if auto.get('btc') else '🔴'} GOLD {'🟢' if auto.get('gold') else '🔴'}</p><p>✅ V9 FULL 1h นับคลื่น / 15m เข้า / แตะ EMA36 / TP ตามคลื่น + รูปกราฟ + รูปพอร์ต</p><a href='/ping'>Ping</a></body></html>"
