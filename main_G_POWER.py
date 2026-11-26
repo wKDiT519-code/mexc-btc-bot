@@ -12,7 +12,7 @@ from datetime import datetime, timedelta
 import os, ccxt, pandas as pd, json, requests, importlib, traceback
 from pathlib import Path
 
-app = FastAPI(title="G_POWER UNIVERSAL V2.4")
+app = FastAPI(title="G_POWER UNIVERSAL V2.4.2")
 
 CAPITAL = 40.0
 RISK_PCT = 0.02
@@ -204,7 +204,7 @@ def generate_chart_image(symbol_key, df, trades, wave, dow4h, ema36):
     try:
         from PIL import Image, ImageDraw, ImageFont
         d = df.tail(120).copy().reset_index(drop=True)
-        W, H = 900, 620
+        W, H = 900, 690
         BG = (10, 14, 26); GREEN = (0, 210, 110); RED = (255, 82, 82); YELLOW = (255, 213, 74); WHITE = (255,255,255); GRAY = (140,150,170)
         img = Image.new("RGB", (W, H), BG)
         draw = ImageDraw.Draw(img)
@@ -254,6 +254,7 @@ def generate_chart_image(symbol_key, df, trades, wave, dow4h, ema36):
                 except: pass
             if len(pts)>=2: draw.line(pts, fill=YELLOW, width=2)
         # จุดเข้า/ออก + เส้น SL/TP
+        out_text = ""
         for t in sym_trades[-3:]:
             try:
                 entry=float(t.get("entry",0)); sl=float(t.get("sl",0)); tp=float(t.get("tp",0))
@@ -266,27 +267,39 @@ def generate_chart_image(symbol_key, df, trades, wave, dow4h, ema36):
                 x=x_of(xi); y=y_of(entry)
                 sig=t.get("signal","")
                 col=GREEN if sig=="LONG" else RED
-                # สามเหลี่ยมจุดเข้า
+                # สามเหลี่ยมจุดเข้า - ใช้ (wave or '?') เพราะไม้เก่า wave=None จะได้ไม่ขึ้น WNone
+                wv = t.get('wave') or '?'
                 if sig=="LONG":
                     draw.polygon([(x, y-14), (x-10, y+10), (x+10, y+10)], fill=GREEN, outline=WHITE)
-                    draw.text((x+14, y-10), f"BUY {entry:.1f} W{t.get('wave','?')}", fill=GREEN, font=f_small)
+                    draw.text((min(x+14, right-200), y-10), f"BUY {entry:.1f} W{wv}", fill=GREEN, font=f_small)
                 else:
                     draw.polygon([(x, y+14), (x-10, y-10), (x+10, y-10)], fill=RED, outline=WHITE)
-                    draw.text((x+14, y-10), f"SELL {entry:.1f} W{t.get('wave','?')}", fill=RED, font=f_small)
+                    draw.text((min(x+14, right-200), y-10), f"SELL {entry:.1f} W{wv}", fill=RED, font=f_small)
                 # เส้น SL แดงประ / TP เขียวประ (วาดแบบเส้นประด้วยจุด)
                 for yy, cc in [(y_of(sl), RED), (y_of(tp), GREEN)]:
                     for xx in range(left, right, 14): draw.line([(xx, yy), (xx+7, yy)], fill=cc, width=1)
-                # จุดออก X ขาว
+                # จุดออก X ขาว - ดึงเข้ามาจากขอบขวา 15px กันโดนตัด
                 if str(t.get("status")).upper()=="CLOSED" and t.get("exit") is not None:
-                    ex=float(t.get("exit")); yex=y_of(ex); xex=x_of(len(d)-1)
+                    ex=float(t.get("exit")); yex=y_of(ex); xex=min(x_of(len(d)-1), right-15)
                     draw.line([(xex-10, yex-10), (xex+10, yex+10)], fill=WHITE, width=3)
                     draw.line([(xex-10, yex+10), (xex+10, yex-10)], fill=WHITE, width=3)
-                    draw.text((20, bottom+8), f"OUT {ex:.1f} {t.get('exit_reason','')} ${float(t.get('pnl_usd',0)):+.2f}", fill=WHITE, font=f_small)
+                    # เก็บข้อความ OUT ไว้ ไม่วาดทับ Legend ข้างล่าง - เก็บไว้ในตัวแปรแล้ววาดทีเดียวหลัง loop
+                    out_text = f"OUT {ex:.1f} {t.get('exit_reason','')} ${float(t.get('pnl_usd',0)):+.2f}"
             except Exception as e: print(f"chart trade err {e}")
         # ราคา Hi/Lo
         draw.text((right-140, top+6), f"Hi {hi:.1f}", fill=GRAY, font=f_small)
         draw.text((right-140, bottom-24), f"Lo {lo:.1f}", fill=GRAY, font=f_small)
-        draw.text((20, bottom+8), "Green=UP Red=DOWN Yellow=EMA36 Triangle=Entry X=Exit Dashed Red=SL Green=TP", fill=GRAY, font=f_small)
+        # Legend สั้นลง + แยก 2 บรรทัด กันโดนตัดขอบขวาแบบในรูป BTC (บรรทัดเดิมยาว 84 ตัวอักษร เกิน 900px)
+        f_leg = font(18, False)
+        leg1 = "Green=UP Red=DOWN Yellow=EMA36 Triangle=Entry X=Exit"
+        leg2 = "Dashed Red=SL Green=TP"
+        if out_text:
+            draw.text((20, bottom+8), out_text, fill=WHITE, font=f_small)
+            draw.text((20, bottom+36), leg1, fill=GRAY, font=f_leg)
+            draw.text((20, bottom+60), leg2, fill=GRAY, font=f_leg)
+        else:
+            draw.text((20, bottom+8), leg1, fill=GRAY, font=f_leg)
+            draw.text((20, bottom+32), leg2, fill=GRAY, font=f_leg)
         out=f"/tmp/g_power_chart_{symbol_key}.png"
         img.save(out)
         return out
@@ -521,7 +534,7 @@ async def telegram_webhook(req: Request):
                 base_name=raw_name.replace(' BTC','').replace(' btc','').strip()
                 auto=get_auto_state()
                 lines=[f"ℹ️ Info {base_name}"]
-                lines.append(f"รถยนต์ Main UNIVERSAL V2.4 | สมอง Strategy V9.3.1")
+                lines.append(f"รถยนต์ Main UNIVERSAL V2.4.2 | สมอง Strategy V9.3.1")
                 lines.append(f"Auto BTC {'🟢 ON' if auto.get('btc') else '🔴 OFF'} | GOLD {'🟢 ON' if auto.get('gold') else '🔴 OFF'}")
                 lines.append(f"\nBTC: EMA {cfg_btc.get('ema_fast')}/{cfg_btc.get('ema_slow')} ADX>{cfg_btc.get('adx_min')} DI>={cfg_btc.get('di_min')} SL cap {cfg_btc.get('sl_pct_max')} TP cap {cfg_btc.get('tp_cap')}")
                 lines.append(f"GOLD: EMA {cfg_gold.get('ema_fast')}/{cfg_gold.get('ema_slow')} ADX>{cfg_gold.get('adx_min')} DI>={cfg_gold.get('di_min')} SL cap {cfg_gold.get('sl_pct_max')} TP cap {cfg_gold.get('tp_cap')}")
