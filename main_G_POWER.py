@@ -1,9 +1,10 @@
-"""G_POWER Main UNIVERSAL V2.3 - แก้ /chart ให้เป็นกราฟแดงแบบตอน /bt
-V2.3 แก้ในรถยนต์อย่างเดียว สมอง V9.3.1 ไม่ต้องแตะ:
-- /chart เดิม V2.1 เป็นข้อความ + ลิงก์ TradingView อย่างเดียว -> แก้ให้เป็นรูปกราฟแท่งเทียน 120 แท่ง 15m พื้นหลังดำ แท่งแดง/เขียว + เส้น EMA36 สีเหลือง + จุดเข้า 🔺เขียว BUY / 🔻แดง SELL + จุดออก X ขาว + เส้นประแดง SL / เส้นประเขียว TP เหมือนกราฟตอน /bt
+"""G_POWER Main UNIVERSAL V2.4 - แก้ /chart ให้วาดรูปได้จริงด้วย Pillow
+V2.4 แก้ในรถยนต์อย่างเดียว สมอง V9.3.1 ไม่ต้องแตะ:
+- /chart เดิม V2.3 ใช้ matplotlib ซึ่ง Render ไม่มีใน requirements.txt เลยวาดรูปไม่ได้ ตกไปส่งข้อความล้วน
+- แก้: วาดกราฟด้วย Pillow อย่างเดียวเหมือน /port ที่ติดแล้ว ไม่ต้องพึ่ง matplotlib อีก
+- /chart ได้รูปกราฟแดงแบบตอน /bt: แท่งเทียน 120 แท่ง 15m แดง/เขียว + เส้น EMA36 เหลือง + สามเหลี่ยมเข้า BUY/SELL + X ขาวจุดออก + เส้นประแดง SL / เขียว TP
 - /port เป็นการ์ด G_POWER PORTFOLIO (แก้ V2.2)
-- /info แสดงข้อมูลสมอง (แก้ V2.1)
-อัปโหลดเป็น main_G_POWER.py ทับตัวเก่า ต้องมี Pillow + matplotlib ใน requirements.txt
+อัปโหลดเป็น main_G_POWER.py ทับตัวเก่า ต้องมี Pillow ใน requirements.txt อย่างเดียวพอ
 """
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse
@@ -11,7 +12,7 @@ from datetime import datetime, timedelta
 import os, ccxt, pandas as pd, json, requests, importlib, traceback
 from pathlib import Path
 
-app = FastAPI(title="G_POWER UNIVERSAL V2.3")
+app = FastAPI(title="G_POWER UNIVERSAL V2.4")
 
 CAPITAL = 40.0
 RISK_PCT = 0.02
@@ -198,73 +199,96 @@ def generate_portfolio_image(trades, paper_balance, unrealized, total_closed_pnl
         print(f"generate_portfolio_image err {e}"); traceback.print_exc(); return None
 
 def generate_chart_image(symbol_key, df, trades, wave, dow4h, ema36):
-    # V2.3: /chart ต้องได้กราฟแดงแบบตอน /bt ไม่ใช่ข้อความล้วน - แท่งเทียน + จุดเข้า/ออก
+    # V2.4 FIX: /chart เดิมใช้ matplotlib ซึ่ง Render ไม่มีใน requirements.txt เลยวาดรูปไม่ได้ ตกไปส่งข้อความล้วน
+    # แก้: วาดกราฟด้วย Pillow อย่างเดียวเหมือน /port ที่ติดแล้ว ไม่ต้องพึ่ง matplotlib อีก
     try:
-        import matplotlib
-        matplotlib.use("Agg")
-        import matplotlib.pyplot as plt
-        import matplotlib.dates as mdates
-        # ใช้ 120 แท่งล่าสุด 15m
-        d = df.tail(120).copy()
-        d["time"] = pd.to_datetime(d["time"] if "time" in d.columns else d["datetime"])
-        times = d["time"].values
-        opens = d["open"].values; highs = d["high"].values; lows = d["low"].values; closes = d["close"].values
-        fig, ax = plt.subplots(figsize=(12, 6))
-        fig.patch.set_facecolor("#0a0e1a"); ax.set_facecolor("#0a0e1a")
-        # วาดแท่งเทียน: แดงลง เขียวขึ้น เหมือนกราฟ BT
-        for i in range(len(d)):
-            col = "#00d26e" if closes[i] >= opens[i] else "#ff5252"
-            ax.plot([i, i], [lows[i], highs[i]], color=col, linewidth=1)
-            ax.add_patch(plt.Rectangle((i-0.35, min(opens[i], closes[i])), 0.7, abs(closes[i]-opens[i]) if abs(closes[i]-opens[i])>0 else 0.1, facecolor=col, edgecolor=col))
-        # เส้น EMA36
-        if "ema_slow" in d.columns:
-            ax.plot(range(len(d)), d["ema_slow"].values, color="#ffd54a", linewidth=1.2, label="EMA36")
-        # จุดเข้า/ออก จากไม้จริง (ปิดแล้ว + ถืออยู่)
+        from PIL import Image, ImageDraw, ImageFont
+        d = df.tail(120).copy().reset_index(drop=True)
+        W, H = 900, 620
+        BG = (10, 14, 26); GREEN = (0, 210, 110); RED = (255, 82, 82); YELLOW = (255, 213, 74); WHITE = (255,255,255); GRAY = (140,150,170)
+        img = Image.new("RGB", (W, H), BG)
+        draw = ImageDraw.Draw(img)
+        def font(sz, bold=False):
+            for p in ["/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf" if bold else "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"]:
+                try: return ImageFont.truetype(p, sz)
+                except: pass
+            return ImageFont.load_default()
+        f_title = font(26, True); f_small = font(20, False); f_mid = font(22, True)
+        # Header
+        draw.text((20, 12), f"{symbol_key.upper()} 15m  Wave {wave}  Dow4h {dow4h}", fill=WHITE, font=f_title)
+        last_price = float(d["close"].iloc[-1])
+        draw.text((20, 48), f"Price {last_price:.2f}  EMA36 {ema36:.2f}", fill=YELLOW, font=f_small)
+        # พื้นที่กราฟ
+        left, top, right, bottom = 20, 90, 880, 540
+        draw.rectangle([left, top, right, bottom], outline=(50,60,80))
+        # เส้นกริด
+        for gy in range(5):
+            y = top + (bottom-top)*gy/4
+            draw.line([(left, y), (right, y)], fill=(30,40,60), width=1)
+        # คำนวณสเกลราคา
+        lo = float(d["low"].min()); hi = float(d["high"].max())
+        # รวม SL/TP เข้าไปในสเกลด้วย
         sym_trades = [t for t in trades if t.get("symbol_key")==symbol_key]
         for t in sym_trades:
-            entry = float(t.get("entry", 0))
-            # หาตำแหน่ง x ที่ใกล้ราคา entry ที่สุดใน 120 แท่ง (ประมาณจากเวลาเข้า ถ้าไม่มีเวลาให้วางท้ายกราฟ)
             try:
-                et = pd.to_datetime(t.get("entry_time") or t.get("time"))
-                # หา index ที่เวลาอยู่ใกล้ที่สุด
-                diffs = abs(pd.to_datetime(d["time"]) - et)
-                xi = int(diffs.idxmin()) if hasattr(diffs, "idxmin") else len(d)-1
-                # diffs idxmin เป็น index ของ d (0..) ไม่ใช่ตำแหน่ง ต้องแปลง
-                # ใช้ตำแหน่งใน d แทน
-                times_list = list(pd.to_datetime(d["time"]))
-                xi = min(range(len(times_list)), key=lambda j: abs((times_list[j]-et).total_seconds()))
-            except:
-                xi = len(d)-1
-            sig = t.get("signal","")
-            # จุดเข้า: สามเหลี่ยม
-            if sig == "LONG":
-                ax.scatter([xi], [entry], marker="^", s=160, color="#00d26e", edgecolors="white", linewidths=1, zorder=5)
-                ax.text(xi, entry, f"  BUY {entry:.1f} W{t.get('wave','?')}", color="#00d26e", fontsize=9, va="bottom")
-            else:
-                ax.scatter([xi], [entry], marker="v", s=160, color="#ff5252", edgecolors="white", linewidths=1, zorder=5)
-                ax.text(xi, entry, f"  SELL {entry:.1f} W{t.get('wave','?')}", color="#ff5252", fontsize=9, va="top")
-            # เส้น SL/TP ของไม้นั้น
-            try:
-                sl = float(t.get("sl", 0)); tp = float(t.get("tp", 0))
-                if sl>0: ax.axhline(sl, color="#ff5252", linestyle="--", linewidth=0.8, alpha=0.7)
-                if tp>0: ax.axhline(tp, color="#00d26e", linestyle="--", linewidth=0.8, alpha=0.7)
+                lo = min(lo, float(t.get("sl", lo)), float(t.get("tp", lo)), float(t.get("entry", lo)))
+                hi = max(hi, float(t.get("sl", hi)), float(t.get("tp", hi)), float(t.get("entry", hi)))
             except: pass
-            # จุดออก ถ้าปิดแล้ว
-            if str(t.get("status")).upper()=="CLOSED" and t.get("exit") is not None:
-                try:
-                    ex = float(t.get("exit"))
-                    ax.scatter([len(d)-1], [ex], marker="X", s=140, color="white", edgecolors="#ff5252", linewidths=1.5, zorder=5)
-                    ax.text(len(d)-1, ex, f"  OUT {ex:.1f} {t.get('exit_reason','')} ${float(t.get('pnl_usd',0)):+.2f}", color="white", fontsize=9, va="bottom")
+        if hi<=lo: hi = lo+1
+        pad = (hi-lo)*0.08; lo -= pad; hi += pad
+        def y_of(price): return bottom - (price-lo)/(hi-lo)*(bottom-top)
+        def x_of(i): return left + 8 + i*(right-left-16)/max(len(d)-1,1)
+        # วาดแท่งเทียน 120 แท่ง: แดงลง เขียวขึ้น เหมือนกราฟ BT
+        for i in range(len(d)):
+            o=float(d["open"].iloc[i]); h=float(d["high"].iloc[i]); l=float(d["low"].iloc[i]); c=float(d["close"].iloc[i])
+            x = x_of(i); col = GREEN if c>=o else RED
+            draw.line([(x, y_of(h)), (x, y_of(l))], fill=col, width=2)
+            # ตัวแท่ง
+            bw = max(2, (right-left)//len(d)//2)
+            draw.rectangle([x-bw//2, y_of(max(o,c)), x+bw//2, y_of(min(o,c))], fill=col)
+        # เส้น EMA36 สีเหลือง
+        if "ema_slow" in d.columns:
+            pts=[]
+            for i in range(len(d)):
+                try: pts.append((x_of(i), y_of(float(d["ema_slow"].iloc[i]))))
                 except: pass
-        ax.set_title(f"{symbol_key.upper()} 15m  Wave {wave}  Dow4h {dow4h}  EMA36 {ema36:.2f}", color="white", fontsize=14, fontweight="bold")
-        ax.tick_params(colors="white", labelsize=8)
-        for spine in ax.spines.values(): spine.set_color("#333")
-        ax.grid(True, color="#222", linewidth=0.5)
-        ax.legend(facecolor="#121a30", edgecolor="#333", labelcolor="white")
-        plt.tight_layout()
-        out = f"/tmp/g_power_chart_{symbol_key}.png"
-        fig.savefig(out, facecolor="#0a0e1a", dpi=130)
-        plt.close(fig)
+            if len(pts)>=2: draw.line(pts, fill=YELLOW, width=2)
+        # จุดเข้า/ออก + เส้น SL/TP
+        for t in sym_trades[-3:]:
+            try:
+                entry=float(t.get("entry",0)); sl=float(t.get("sl",0)); tp=float(t.get("tp",0))
+                # ตำแหน่ง x จากเวลาเข้า
+                try:
+                    et=pd.to_datetime(t.get("entry_time") or t.get("time"))
+                    times_list=list(pd.to_datetime(d["time"] if "time" in d.columns else d["datetime"]))
+                    xi=min(range(len(times_list)), key=lambda j: abs((times_list[j]-et).total_seconds()))
+                except: xi=len(d)-1
+                x=x_of(xi); y=y_of(entry)
+                sig=t.get("signal","")
+                col=GREEN if sig=="LONG" else RED
+                # สามเหลี่ยมจุดเข้า
+                if sig=="LONG":
+                    draw.polygon([(x, y-14), (x-10, y+10), (x+10, y+10)], fill=GREEN, outline=WHITE)
+                    draw.text((x+14, y-10), f"BUY {entry:.1f} W{t.get('wave','?')}", fill=GREEN, font=f_small)
+                else:
+                    draw.polygon([(x, y+14), (x-10, y-10), (x+10, y-10)], fill=RED, outline=WHITE)
+                    draw.text((x+14, y-10), f"SELL {entry:.1f} W{t.get('wave','?')}", fill=RED, font=f_small)
+                # เส้น SL แดงประ / TP เขียวประ (วาดแบบเส้นประด้วยจุด)
+                for yy, cc in [(y_of(sl), RED), (y_of(tp), GREEN)]:
+                    for xx in range(left, right, 14): draw.line([(xx, yy), (xx+7, yy)], fill=cc, width=1)
+                # จุดออก X ขาว
+                if str(t.get("status")).upper()=="CLOSED" and t.get("exit") is not None:
+                    ex=float(t.get("exit")); yex=y_of(ex); xex=x_of(len(d)-1)
+                    draw.line([(xex-10, yex-10), (xex+10, yex+10)], fill=WHITE, width=3)
+                    draw.line([(xex-10, yex+10), (xex+10, yex-10)], fill=WHITE, width=3)
+                    draw.text((20, bottom+8), f"OUT {ex:.1f} {t.get('exit_reason','')} ${float(t.get('pnl_usd',0)):+.2f}", fill=WHITE, font=f_small)
+            except Exception as e: print(f"chart trade err {e}")
+        # ราคา Hi/Lo
+        draw.text((right-140, top+6), f"Hi {hi:.1f}", fill=GRAY, font=f_small)
+        draw.text((right-140, bottom-24), f"Lo {lo:.1f}", fill=GRAY, font=f_small)
+        draw.text((20, bottom+8), "Green=UP Red=DOWN Yellow=EMA36 Triangle=Entry X=Exit Dashed Red=SL Green=TP", fill=GRAY, font=f_small)
+        out=f"/tmp/g_power_chart_{symbol_key}.png"
+        img.save(out)
         return out
     except Exception as e:
         print(f"generate_chart_image err {e}"); traceback.print_exc(); return None
@@ -405,12 +429,12 @@ def parse_sym(s):
 
 @app.get("/ping")
 def ping():
-    return {"status": "ok UNIVERSAL V2", "strategy_btc": get_strategy_name("btc"), "strategy_gold": get_strategy_name("gold"), "auto": get_auto_state(), "trades": len(load_trades())}
+    return {"status": "ok UNIVERSAL V2.4", "strategy_btc": get_strategy_name("btc"), "strategy_gold": get_strategy_name("gold"), "auto": get_auto_state(), "trades": len(load_trades())}
 
 @app.get("/", response_class=HTMLResponse)
 def home():
     auto=get_auto_state()
-    return f"<html><body style='background:#0a0e1a;color:#fff;font-family:Arial;padding:20px'><h1>G_POWER UNIVERSAL V2</h1><p>Strategy: {get_strategy_name('btc')}</p><p>BTC {'🟢' if auto.get('btc') else '🔴'} GOLD {'🟢' if auto.get('gold') else '🔴'}</p><p>Main ไม่ต้องแก้แล้ว เปลี่ยนแค่ strategy_G_POWER.py | Wave None / Dow UNKNOWN ห้ามเปิด</p><a href='/ping'>Ping</a></body></html>"
+    return f"<html><body style='background:#0a0e1a;color:#fff;font-family:Arial;padding:20px'><h1>G_POWER UNIVERSAL V2.4</h1><p>Strategy: {get_strategy_name('btc')}</p><p>BTC {'🟢' if auto.get('btc') else '🔴'} GOLD {'🟢' if auto.get('gold') else '🔴'}</p><p>Main ไม่ต้องแก้แล้ว เปลี่ยนแค่ strategy_G_POWER.py | Wave None / Dow UNKNOWN ห้ามเปิด</p><a href='/ping'>Ping</a></body></html>"
 
 @app.get("/check")
 def check(sym: str = "all"):
@@ -497,7 +521,7 @@ async def telegram_webhook(req: Request):
                 base_name=raw_name.replace(' BTC','').replace(' btc','').strip()
                 auto=get_auto_state()
                 lines=[f"ℹ️ Info {base_name}"]
-                lines.append(f"รถยนต์ Main UNIVERSAL V2.1 | สมอง Strategy V9.3.1")
+                lines.append(f"รถยนต์ Main UNIVERSAL V2.4 | สมอง Strategy V9.3.1")
                 lines.append(f"Auto BTC {'🟢 ON' if auto.get('btc') else '🔴 OFF'} | GOLD {'🟢 ON' if auto.get('gold') else '🔴 OFF'}")
                 lines.append(f"\nBTC: EMA {cfg_btc.get('ema_fast')}/{cfg_btc.get('ema_slow')} ADX>{cfg_btc.get('adx_min')} DI>={cfg_btc.get('di_min')} SL cap {cfg_btc.get('sl_pct_max')} TP cap {cfg_btc.get('tp_cap')}")
                 lines.append(f"GOLD: EMA {cfg_gold.get('ema_fast')}/{cfg_gold.get('ema_slow')} ADX>{cfg_gold.get('adx_min')} DI>={cfg_gold.get('di_min')} SL cap {cfg_gold.get('sl_pct_max')} TP cap {cfg_gold.get('tp_cap')}")
@@ -612,5 +636,5 @@ def set_webhook():
 
 @app.get("/test_send")
 def test_send():
-    r = send_tele("TEST จาก Render UNIVERSAL V2 - ถ้าเห็นข้อความนี้ = BOT_TOKEN + CHAT_ID ถูกแล้ว")
+    r = send_tele("TEST จาก Render UNIVERSAL V2.4 - ถ้าเห็นข้อความนี้ = BOT_TOKEN + CHAT_ID ถูกแล้ว")
     return {"sent":r}
