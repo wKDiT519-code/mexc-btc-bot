@@ -1,14 +1,9 @@
-"""G_POWER Main UNIVERSAL V2 - แก้บั๊ก Wave None / Dow UNKNOWN แล้วเปิดไม้
-บั๊กจากรูป Telegram 19:41:
-- GOLD เปิด SHORT ทั้งที่ Wave None Cycle 0 Dow4h UNKNOWN Pattern PIN_BEAR
-- สาเหตุ 1: Main ดึงแท่ง 15m แค่ 250 แท่ง = 2.6 วัน Resample เป็น 1h ได้ 62 แท่ง 4h ได้ 15 แท่ง Swing ไม่พอ นับ Wave ไม่ได้ -> Wave None
-- สาเหตุ 2: Main เก่าปล่อยให้ Dow UNKNOWN ผ่านได้ (บล็อคแค่ตอน Dow ตรงข้าม) เลยเปิดไม้ทั้งที่ Dow ไม่รู้ทิศ
-แก้ V2:
-1. ดึงแท่ง 15m 1000 แท่ง = 10 วัน (1h ได้ 250 แท่ง 4h ได้ 62 แท่ง Swing พอ)
-2. ถ้า Wave is None -> ห้ามเปิด รอ Wave ก่อน
-3. ถ้า Dow4h is UNKNOWN -> ห้ามเปิด รอ Dow ก่อน
-4. ถ้า Wave None แต่มีไม้เปิดค้างอยู่ ให้ถือต่อ ไม่ปิด (แค่ห้ามเปิดไม้ใหม่)
-อัปโหลดเป็น main_G_POWER.py ทับตัวเก่า
+"""G_POWER Main UNIVERSAL V2.3 - แก้ /chart ให้เป็นกราฟแดงแบบตอน /bt
+V2.3 แก้ในรถยนต์อย่างเดียว สมอง V9.3.1 ไม่ต้องแตะ:
+- /chart เดิม V2.1 เป็นข้อความ + ลิงก์ TradingView อย่างเดียว -> แก้ให้เป็นรูปกราฟแท่งเทียน 120 แท่ง 15m พื้นหลังดำ แท่งแดง/เขียว + เส้น EMA36 สีเหลือง + จุดเข้า 🔺เขียว BUY / 🔻แดง SELL + จุดออก X ขาว + เส้นประแดง SL / เส้นประเขียว TP เหมือนกราฟตอน /bt
+- /port เป็นการ์ด G_POWER PORTFOLIO (แก้ V2.2)
+- /info แสดงข้อมูลสมอง (แก้ V2.1)
+อัปโหลดเป็น main_G_POWER.py ทับตัวเก่า ต้องมี Pillow + matplotlib ใน requirements.txt
 """
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse
@@ -16,7 +11,7 @@ from datetime import datetime, timedelta
 import os, ccxt, pandas as pd, json, requests, importlib, traceback
 from pathlib import Path
 
-app = FastAPI(title="G_POWER UNIVERSAL V2")
+app = FastAPI(title="G_POWER UNIVERSAL V2.3")
 
 CAPITAL = 40.0
 RISK_PCT = 0.02
@@ -125,6 +120,154 @@ def send_tele(msg, chat_id=None):
         return {"ok": r.status_code==200}
     except Exception as e:
         print(f"send_tele err {e}"); return {"ok":False}
+
+def send_tele_photo(image_path, caption, chat_id=None):
+    token=os.environ.get("TELEGRAM_BOT_TOKEN","").strip() or os.environ.get("BOT_TOKEN","").strip()
+    chat=chat_id or os.environ.get("TELEGRAM_CHAT_ID","").strip() or os.environ.get("CHAT_ID","").strip()
+    if not token or not chat: return {"ok":False}
+    try:
+        with open(image_path,'rb') as f:
+            r=requests.post(f"https://api.telegram.org/bot{token}/sendPhoto", data={"chat_id":chat,"caption":caption,"parse_mode":"HTML"}, files={"photo":f}, timeout=15)
+        return {"ok": r.status_code==200, "resp": r.text[:300]}
+    except Exception as e:
+        print(f"send_tele_photo err {e}"); return {"ok":False}
+
+def generate_portfolio_image(trades, paper_balance, unrealized, total_closed_pnl, win_rate, win_count, total_count, pnl_btc, pnl_gold, opens):
+    # V2.2: /port ต้องได้การ์ดแบบในรูปที่พี่ส่ง 13/11 20:16 ไม่ใช่ข้อความล้วน
+    try:
+        from PIL import Image, ImageDraw, ImageFont
+        W, H = 800, 1050
+        BG = (10, 14, 26); CARD = (18, 26, 48); CARD2 = (22, 32, 58)
+        WHITE = (255,255,255); GRAY = (140,150,170); GREEN = (0, 210, 110); RED = (255, 80, 80)
+        img = Image.new("RGB", (W, H), BG)
+        d = ImageDraw.Draw(img)
+        def font(sz, bold=False):
+            for p in ["/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf" if bold else "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", "/usr/share/fonts/TTF/DejaVuSans-Bold.ttf"]:
+                try: return ImageFont.truetype(p, sz)
+                except: pass
+            return ImageFont.load_default()
+        f_title = font(34, True); f_label = font(20, False); f_val = font(30, True); f_small = font(22, False); f_coin = font(24, True)
+        # Header
+        d.text((30, 20), "G_POWER  PORTFOLIO", fill=WHITE, font=f_title)
+        d.text((30, 62), datetime.now().strftime("%d/%m %H:%M") + "  -  BTC + GOLD", fill=GRAY, font=f_small)
+        # 4 boxes
+        boxes = [
+            ("PAPER BALANCE", f"${paper_balance:.2f}", WHITE, 30, 110, 360, 130),
+            ("UNREALIZED PnL", f"{unrealized:+.2f}", GREEN if unrealized>=0 else RED, 430, 110, 360, 130),
+            ("TOTAL CLOSED", f"{total_closed_pnl:+.2f}", GREEN if total_closed_pnl>=0 else RED, 30, 260, 360, 130),
+            ("WIN RATE", f"{win_rate:.0f}%  ({win_count}/{total_count})", WHITE, 430, 260, 360, 130),
+        ]
+        for label, val, col, x, y, w, h in boxes:
+            d.rounded_rectangle([x, y, x+w, y+h], radius=12, fill=CARD)
+            d.text((x+18, y+14), label, fill=GRAY, font=f_label)
+            d.text((x+18, y+48), val, fill=col, font=f_val)
+        # PnL BY COIN
+        y0 = 410
+        d.rounded_rectangle([30, y0, 790, y0+190], radius=12, fill=CARD)
+        d.text((50, y0+14), "PnL BY COIN", fill=WHITE, font=f_coin)
+        # BTC bar
+        max_abs = max(abs(pnl_btc), abs(pnl_gold), 0.01)
+        d.text((50, y0+60), "BTC", fill=WHITE, font=f_coin)
+        bw_btc = int(420 * abs(pnl_btc) / max_abs) if max_abs>0 else 0
+        d.rectangle([150, y0+62, 150+bw_btc, y0+92], fill=GREEN if pnl_btc>=0 else RED)
+        d.text((150+bw_btc+12, y0+60), f"{pnl_btc:+.2f}", fill=GREEN if pnl_btc>=0 else RED, font=f_coin)
+        # GOLD bar
+        d.text((50, y0+115), "GOLD", fill=WHITE, font=f_coin)
+        bw_gold = int(420 * abs(pnl_gold) / max_abs) if max_abs>0 else 0
+        d.rectangle([150, y0+117, 150+bw_gold, y0+147], fill=GREEN if pnl_gold>=0 else RED)
+        d.text((150+bw_gold+12, y0+115), f"{pnl_gold:+.2f}", fill=GREEN if pnl_gold>=0 else RED, font=f_coin)
+        # OPEN
+        y1 = 620
+        d.rounded_rectangle([30, y1, 790, y1+260], radius=12, fill=CARD)
+        d.text((50, y1+14), f"OPEN  {len(opens)} TRADES", fill=WHITE, font=f_coin)
+        if not opens:
+            d.text((50, y1+90), "No open trades", fill=(170,180,200), font=f_val)
+            d.text((50, y1+135), "Waiting for signal...", fill=GRAY, font=f_small)
+        else:
+            yy = y1+60
+            for t in opens[:4]:
+                d.text((50, yy), f"{t.get('signal')} {t.get('symbol_key','').upper()} Wave {t.get('wave','?')} {float(t.get('entry',0)):.1f} SL {float(t.get('sl',0)):.1f} TP {float(t.get('tp',0)):.1f}", fill=WHITE, font=f_small)
+                yy += 38
+        # Footer
+        d.rounded_rectangle([30, 900, 790, 980], radius=12, fill=CARD2)
+        d.text((50, 925), "MEXC Paper Only - Not Real Trade", fill=GRAY, font=f_small)
+        out = "/tmp/g_power_portfolio.png"
+        img.save(out)
+        return out
+    except Exception as e:
+        print(f"generate_portfolio_image err {e}"); traceback.print_exc(); return None
+
+def generate_chart_image(symbol_key, df, trades, wave, dow4h, ema36):
+    # V2.3: /chart ต้องได้กราฟแดงแบบตอน /bt ไม่ใช่ข้อความล้วน - แท่งเทียน + จุดเข้า/ออก
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        import matplotlib.dates as mdates
+        # ใช้ 120 แท่งล่าสุด 15m
+        d = df.tail(120).copy()
+        d["time"] = pd.to_datetime(d["time"] if "time" in d.columns else d["datetime"])
+        times = d["time"].values
+        opens = d["open"].values; highs = d["high"].values; lows = d["low"].values; closes = d["close"].values
+        fig, ax = plt.subplots(figsize=(12, 6))
+        fig.patch.set_facecolor("#0a0e1a"); ax.set_facecolor("#0a0e1a")
+        # วาดแท่งเทียน: แดงลง เขียวขึ้น เหมือนกราฟ BT
+        for i in range(len(d)):
+            col = "#00d26e" if closes[i] >= opens[i] else "#ff5252"
+            ax.plot([i, i], [lows[i], highs[i]], color=col, linewidth=1)
+            ax.add_patch(plt.Rectangle((i-0.35, min(opens[i], closes[i])), 0.7, abs(closes[i]-opens[i]) if abs(closes[i]-opens[i])>0 else 0.1, facecolor=col, edgecolor=col))
+        # เส้น EMA36
+        if "ema_slow" in d.columns:
+            ax.plot(range(len(d)), d["ema_slow"].values, color="#ffd54a", linewidth=1.2, label="EMA36")
+        # จุดเข้า/ออก จากไม้จริง (ปิดแล้ว + ถืออยู่)
+        sym_trades = [t for t in trades if t.get("symbol_key")==symbol_key]
+        for t in sym_trades:
+            entry = float(t.get("entry", 0))
+            # หาตำแหน่ง x ที่ใกล้ราคา entry ที่สุดใน 120 แท่ง (ประมาณจากเวลาเข้า ถ้าไม่มีเวลาให้วางท้ายกราฟ)
+            try:
+                et = pd.to_datetime(t.get("entry_time") or t.get("time"))
+                # หา index ที่เวลาอยู่ใกล้ที่สุด
+                diffs = abs(pd.to_datetime(d["time"]) - et)
+                xi = int(diffs.idxmin()) if hasattr(diffs, "idxmin") else len(d)-1
+                # diffs idxmin เป็น index ของ d (0..) ไม่ใช่ตำแหน่ง ต้องแปลง
+                # ใช้ตำแหน่งใน d แทน
+                times_list = list(pd.to_datetime(d["time"]))
+                xi = min(range(len(times_list)), key=lambda j: abs((times_list[j]-et).total_seconds()))
+            except:
+                xi = len(d)-1
+            sig = t.get("signal","")
+            # จุดเข้า: สามเหลี่ยม
+            if sig == "LONG":
+                ax.scatter([xi], [entry], marker="^", s=160, color="#00d26e", edgecolors="white", linewidths=1, zorder=5)
+                ax.text(xi, entry, f"  BUY {entry:.1f} W{t.get('wave','?')}", color="#00d26e", fontsize=9, va="bottom")
+            else:
+                ax.scatter([xi], [entry], marker="v", s=160, color="#ff5252", edgecolors="white", linewidths=1, zorder=5)
+                ax.text(xi, entry, f"  SELL {entry:.1f} W{t.get('wave','?')}", color="#ff5252", fontsize=9, va="top")
+            # เส้น SL/TP ของไม้นั้น
+            try:
+                sl = float(t.get("sl", 0)); tp = float(t.get("tp", 0))
+                if sl>0: ax.axhline(sl, color="#ff5252", linestyle="--", linewidth=0.8, alpha=0.7)
+                if tp>0: ax.axhline(tp, color="#00d26e", linestyle="--", linewidth=0.8, alpha=0.7)
+            except: pass
+            # จุดออก ถ้าปิดแล้ว
+            if str(t.get("status")).upper()=="CLOSED" and t.get("exit") is not None:
+                try:
+                    ex = float(t.get("exit"))
+                    ax.scatter([len(d)-1], [ex], marker="X", s=140, color="white", edgecolors="#ff5252", linewidths=1.5, zorder=5)
+                    ax.text(len(d)-1, ex, f"  OUT {ex:.1f} {t.get('exit_reason','')} ${float(t.get('pnl_usd',0)):+.2f}", color="white", fontsize=9, va="bottom")
+                except: pass
+        ax.set_title(f"{symbol_key.upper()} 15m  Wave {wave}  Dow4h {dow4h}  EMA36 {ema36:.2f}", color="white", fontsize=14, fontweight="bold")
+        ax.tick_params(colors="white", labelsize=8)
+        for spine in ax.spines.values(): spine.set_color("#333")
+        ax.grid(True, color="#222", linewidth=0.5)
+        ax.legend(facecolor="#121a30", edgecolor="#333", labelcolor="white")
+        plt.tight_layout()
+        out = f"/tmp/g_power_chart_{symbol_key}.png"
+        fig.savefig(out, facecolor="#0a0e1a", dpi=130)
+        plt.close(fig)
+        return out
+    except Exception as e:
+        print(f"generate_chart_image err {e}"); traceback.print_exc(); return None
 
 def calc_position(symbol_key, entry, sl):
     risk = CAPITAL * RISK_PCT
@@ -320,15 +463,90 @@ async def telegram_webhook(req: Request):
                         lines.append(f"  {tr['side']} Wave {tr.get('wave','?')} {tr['entry']:.1f}->{tr['exit']:.1f} {tr['exit_reason']} ${tr['pnl_usd']:+.2f}")
                 send_tele("\n".join(lines), chat_id); return {"ok":True}
             except Exception as e: send_tele(f"/bt Error {e}", chat_id); return {"ok":True}
-        elif tl.startswith("/port") or tl.startswith("/info") or tl.startswith("/portfolio"):
-            trades=load_trades(); opens=[t for t in trades if str(t.get("status")).upper() in ("OPEN","PAPER_OPEN","PAPER")]
+        elif tl.startswith("/port") or tl.startswith("/portfolio"):
+            # V2.2: /port ต้องได้การ์ดแบบรูป 13/11 ที่พี่ส่ง ไม่ใช่ข้อความล้วน
+            trades=load_trades()
+            opens=[t for t in trades if str(t.get("status")).upper() in ("OPEN","PAPER_OPEN","PAPER")]
             closed=[t for t in trades if str(t.get("status")).upper()=="CLOSED"]
-            total_pnl=sum(float(t.get("pnl_usd",0)) for t in closed)
-            lines=[f"📊 Portfolio {get_strategy_name('btc')}"]
-            lines.append(f"ถืออยู่ {len(opens)} ไม้ | ปิดแล้ว {len(closed)} ไม้ PnL ${total_pnl:+.2f} ทุน ${CAPITAL}")
-            for t in opens:
-                lines.append(f"  {t.get('signal')} {t.get('symbol_key','').upper()} Wave {t.get('wave','?')} เข้า {float(t.get('entry',0)):.1f} SL {float(t.get('sl',0)):.1f} TP {float(t.get('tp',0)):.1f}")
-            send_tele("\n".join(lines), chat_id); return {"ok":True}
+            pnl_btc=sum(float(t.get("pnl_usd",0)) for t in closed if t.get("symbol_key")=="btc")
+            pnl_gold=sum(float(t.get("pnl_usd",0)) for t in closed if t.get("symbol_key")=="gold")
+            total_closed_pnl=pnl_btc+pnl_gold
+            # Paper Balance = ทุน $40 + กำไรปิดแล้ว + Unrealized (ตอนนี้ไม่มีไม้ถือ Unrealized=0)
+            # ถ้ามีไม้ถืออยู่ คำนวณ Unrealized จากราคาปัจจุบันไม่ได้ตรงนี้ ให้ใส่ 0 แล้วข้อความด้านล่างบอก
+            unrealized=0.0
+            paper_balance=CAPITAL+total_closed_pnl+unrealized
+            wins=len([t for t in closed if float(t.get("pnl_usd",0))>0])
+            total_count=len(closed)
+            win_rate=(wins/total_count*100) if total_count>0 else 0
+            img_path=generate_portfolio_image(trades, paper_balance, unrealized, total_closed_pnl, win_rate, wins, total_count, pnl_btc, pnl_gold, opens)
+            caption=f"PORTFOLIO {datetime.now().strftime('%d/%m %H:%M')} MEXC {paper_balance:.2f} USDT\n{'ไม่มีไม้ถืออยู่' if not opens else f'ถืออยู่ {len(opens)} ไม้'} Paper ${paper_balance:.2f}"
+            if img_path:
+                r=send_tele_photo(img_path, caption, chat_id)
+                if not r.get("ok"):
+                    # ถ้าส่งรูปไม่ได้ ส่งข้อความแทน
+                    send_tele(caption, chat_id)
+            else:
+                send_tele(caption, chat_id)
+            return {"ok":True}
+        elif tl.startswith("/info"):
+            # V2.1 FIX: /info เดิมเรียกโค้ดเดียวกับ /port เลยได้ Portfolio ซ้ำกัน แก้ให้แสดงข้อมูลสมองแทน
+            try:
+                st_btc=get_strat("btc"); st_gold=get_strat("gold")
+                cfg_btc=getattr(st_btc,"config",{}); cfg_gold=getattr(st_gold,"config",{})
+                raw_name=get_strategy_name('btc')
+                base_name=raw_name.replace(' BTC','').replace(' btc','').strip()
+                auto=get_auto_state()
+                lines=[f"ℹ️ Info {base_name}"]
+                lines.append(f"รถยนต์ Main UNIVERSAL V2.1 | สมอง Strategy V9.3.1")
+                lines.append(f"Auto BTC {'🟢 ON' if auto.get('btc') else '🔴 OFF'} | GOLD {'🟢 ON' if auto.get('gold') else '🔴 OFF'}")
+                lines.append(f"\nBTC: EMA {cfg_btc.get('ema_fast')}/{cfg_btc.get('ema_slow')} ADX>{cfg_btc.get('adx_min')} DI>={cfg_btc.get('di_min')} SL cap {cfg_btc.get('sl_pct_max')} TP cap {cfg_btc.get('tp_cap')}")
+                lines.append(f"GOLD: EMA {cfg_gold.get('ema_fast')}/{cfg_gold.get('ema_slow')} ADX>{cfg_gold.get('adx_min')} DI>={cfg_gold.get('di_min')} SL cap {cfg_gold.get('sl_pct_max')} TP cap {cfg_gold.get('tp_cap')}")
+                lines.append(f"\nTF: 1h นับ Wave | 15m เข้า | 4h ยืนยัน Dow")
+                lines.append(f"เข้า: แตะ EMA36 1h + Pin Bar / Engulfing 15m + Volume")
+                lines.append(f"TP: Wave3=1.618x Wave1 | Wave5=1.0x Wave1 | ABC=1.0x WaveA")
+                lines.append(f"SL: ตามโครงสร้าง HL/LH Cap BTC 0.8% / GOLD 0.6%")
+                lines.append(f"Quota: Wave 1=3, 2=1, 3=3, 4=1, 5=3, A=1, B=3, C=1")
+                lines.append(f"ห้าม: Wave None / Dow UNKNOWN ห้ามเปิด")
+                send_tele("\n".join(lines), chat_id)
+            except Exception as e: send_tele(f"/info Error {e}", chat_id)
+            return {"ok":True}
+        elif tl.startswith("/chart"):
+            # V2.3: /chart ต้องได้กราฟแดงแบบตอน /bt - แท่งเทียน + จุดเข้า/ออก + เส้น EMA36 + เส้น SL/TP ไม่ใช่ข้อความล้วน
+            parts=tl.split(); key="all" if len(parts)<2 else parse_sym(parts[1])[0]
+            if key=="unknown": send_tele("❓ /chart [btc|gold|all]", chat_id); return {"ok":True}
+            keys=["btc","gold"] if key=="all" else [key]
+            trades_all=load_trades()
+            for k in keys:
+                try:
+                    sym=SYMBOLS[k]; st=get_strat(k)
+                    df=get_data(sym,"15m",limit=1000)
+                    if df is None: send_tele(f"{k.upper()} ไม่มีข้อมูล", chat_id); continue
+                    df=st.add_indicators(df); curr=df.iloc[-1]
+                    price=float(curr["close"]); ema36=float(curr["ema_slow"]) if "ema_slow" in curr else 0
+                    adx=float(curr["adx"]) if "adx" in curr else 0
+                    pdi=float(curr["plus_di"]) if "plus_di" in curr else 0
+                    mdi=float(curr["minus_di"]) if "minus_di" in curr else 0
+                    wave="?" ; dow4h="?"
+                    try:
+                        df_1h=resample_tf(df,"1h"); df_1h=st.add_indicators(df_1h)
+                        df_4h=resample_tf(df,"4h"); df_4h=st.add_indicators(df_4h)
+                        sw1=st.detect_swings(df_1h); sw4=st.detect_swings(df_4h)
+                        if len(sw1)>=6: wave=str(st.count_waves(sw1).get("current_wave"))
+                        dow4h=st.get_dow_trend_4h(sw4)
+                    except: pass
+                    touch="แตะ EMA36" if hasattr(st,"is_touch_ema36") and st.is_touch_ema36(float(curr["low"]),float(curr["high"]),ema36) else "ไม่แตะ EMA36"
+                    pat="?"
+                    try: pat=str(st.check_pattern_15m(df,len(df)-1))
+                    except: pass
+                    img_path=generate_chart_image(k, df, trades_all, wave, dow4h, ema36)
+                    caption=f"📈 Chart {k.upper()} ราคา {price:.2f} Wave {wave} Dow4h {dow4h} EMA36 {ema36:.2f} | {touch} ADX {adx:.1f} DI+ {pdi:.1f} DI- {mdi:.1f} Pattern {pat}\n🔺 เขียว = BUY / 🔻 แดง = SELL / X ขาว = จุดออก / เส้นประแดง = SL / เส้นประเขียว = TP"
+                    if img_path:
+                        r=send_tele_photo(img_path, caption, chat_id)
+                        if not r.get("ok"): send_tele(caption, chat_id)
+                    else:
+                        send_tele(caption, chat_id)
+                except Exception as e: send_tele(f"/chart {k} Error {e}", chat_id)
+            return {"ok":True}
         elif tl.startswith("/close"):
             parts=tl.split(); want=None if len(parts)<2 or parts[1]=="all" else parse_sym(parts[1])[0]
             trades=load_trades(); opens=[t for t in trades if str(t.get("status")).upper() in ("OPEN","PAPER_OPEN","PAPER")]
@@ -367,7 +585,7 @@ async def telegram_webhook(req: Request):
             if key=="unknown": send_tele("❓ มีแค่ BTC / GOLD", chat_id); return {"ok":True}
             set_auto_state(key, False); send_tele(f"🔴 Auto OFF {key.upper()}", chat_id); return {"ok":True}
         else:
-            send_tele(f"❓ {text}\n/check [btc|gold|all]\n/on [btc|gold|all]\n/off [btc|gold|all]\n/port\n/bt\n/close all", chat_id); return {"ok":True}
+            send_tele(f"❓ {text}\n/check [btc|gold|all]\n/on [btc|gold|all]\n/off [btc|gold|all]\n/port\n/info\n/chart [btc|gold|all]\n/bt\n/close all", chat_id); return {"ok":True}
     except Exception as e:
         print(f"ERR {e}"); traceback.print_exc(); return {"ok":True}
 
