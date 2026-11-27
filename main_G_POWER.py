@@ -1,9 +1,9 @@
-"""G_POWER Main UNIVERSAL V2.6 - สามเหลี่ยมไม่มีข้อความ ใช้เส้นโยงไปป้ายราคาขอบขวา
-V2.6 แก้ในรถยนต์อย่างเดียว สมอง V9.3.1 ไม่ต้องแตะ:
-- สามเหลี่ยมแดง/เขียว ไม่แสดงข้อความใดๆ แล้ว เอา "SELL 3512.6 W?" ข้างสามเหลี่ยมออก
-- จากสามเหลี่ยมมีเส้นประสีเดียวกับสามเหลี่ยม โยงไปป้ายราคาขอบขวา BUY/SELL ... ตรงระดับที่เข้าไม้
-- ป้ายราคาขอบขวาไม่ทับกันแล้ว: OUT / ราคาปัจจุบัน / SL / SELL / TP ถ้าอยู่ใกล้กันจะดันลงให้ห่างกัน 24px (ในรูปเก่า OUT 3568.4 ทับ 3560.8 ทับ SL 3554.8)
-- ขอบขวาสเกลราคา 5 ระดับ + สามเหลี่ยมตรงแท่งเข้าไม้เหมือน V2.5
+"""G_POWER Main UNIVERSAL V2.8 - /chart 4h แสดง Wave Dow Theory
+V2.8 แก้ในรถยนต์อย่างเดียว สมอง V9.3.1 ไม่ต้องแตะ:
+- /chart gold 4h / /chart btc 4h มีเส้น ZigZag ขาว เชื่อม Swing 4h + ป้าย HH/HL/LH/LL
+- HH = High ใหม่สูงกว่า High ก่อน, LH = High ใหม่ต่ำกว่า High ก่อน / HL = Low ใหม่สูงกว่า Low ก่อน, LL = Low ใหม่ต่ำกว่า Low ก่อน
+- HH+HL = Dow UP, LH+LL = Dow DOWN ตรงกับ Dow4h ที่สมองตัดสินเลย เพราะใช้ swings ตัวเดียวกัน (detect_swings 4h)
+- /chart 1h/15m เหมือน V2.7 ไม่ใส่ Dow เพราะ Dow ดูที่ 4h เท่านั้น
 อัปโหลดเป็น main_G_POWER.py ทับตัวเก่า ต้องมี Pillow อย่างเดียวพอ
 """
 from fastapi import FastAPI, Request
@@ -12,7 +12,7 @@ from datetime import datetime, timedelta
 import os, ccxt, pandas as pd, json, requests, importlib, traceback
 from pathlib import Path
 
-app = FastAPI(title="G_POWER UNIVERSAL V2.6")
+app = FastAPI(title="G_POWER UNIVERSAL V2.8")
 
 CAPITAL = 40.0
 RISK_PCT = 0.02
@@ -198,11 +198,13 @@ def generate_portfolio_image(trades, paper_balance, unrealized, total_closed_pnl
     except Exception as e:
         print(f"generate_portfolio_image err {e}"); traceback.print_exc(); return None
 
-def generate_chart_image(symbol_key, df, trades, wave, dow4h, ema36):
-    # V2.6: Pillow อย่างเดียว + ขอบขวาสเกลราคา + สามเหลี่ยมไม่มีข้อความ ใช้เส้นโยงไปป้ายราคาขอบขวา
+def generate_chart_image(symbol_key, df, trades, wave, dow4h, ema36, tf="15m", candle_minutes=15, dow_swings=None):
+    # V2.8: + กราฟ 4h แสดง Wave Dow Theory: เส้น ZigZag เชื่อม Swing 4h + ป้าย HH/HL/LH/LL
     try:
         from PIL import Image, ImageDraw, ImageFont
+        orig_len = len(df)
         d = df.tail(120).copy().reset_index(drop=True)
+        offset = orig_len - len(d)
         W, H = 960, 700
         BG = (10, 14, 26); GREEN = (0, 210, 110); RED = (255, 82, 82); YELLOW = (255, 213, 74); WHITE = (255,255,255); GRAY = (140,150,170)
         img = Image.new("RGB", (W, H), BG)
@@ -213,12 +215,14 @@ def generate_chart_image(symbol_key, df, trades, wave, dow4h, ema36):
                 except: pass
             return ImageFont.load_default()
         f_title = font(26, True); f_small = font(20, False); f_leg = font(18, False); f_price = font(17, False); f_tag = font(17, True)
-        draw.text((20, 12), f"{symbol_key.upper()} 15m  Wave {wave}  Dow4h {dow4h}", fill=WHITE, font=f_title)
+        draw.text((20, 12), f"{symbol_key.upper()} {tf}  Wave {wave}  Dow4h {dow4h}", fill=WHITE, font=f_title)
         last_price = float(d["close"].iloc[-1])
         draw.text((20, 48), f"Price {last_price:.2f}  EMA36 {ema36:.2f}", fill=YELLOW, font=f_small)
+        # พื้นที่กราฟ: เว้นขอบขวา 110px ไว้เป็นสเกลราคา
         left, top, right, bottom = 20, 90, 830, 560
         price_x = right + 6
         draw.rectangle([left, top, right, bottom], outline=(50,60,80))
+        # สเกลราคา
         lo = float(d["low"].min()); hi = float(d["high"].max())
         sym_trades = [t for t in trades if t.get("symbol_key")==symbol_key]
         for t in sym_trades:
@@ -230,28 +234,82 @@ def generate_chart_image(symbol_key, df, trades, wave, dow4h, ema36):
         pad = (hi-lo)*0.08; lo -= pad; hi += pad
         def y_of(price): return bottom - (price-lo)/(hi-lo)*(bottom-top)
         def x_of(i): return left + 8 + i*(right-left-16)/max(len(d)-1,1)
+        # เส้นกริด + ระดับราคาขอบขวา (5 ระดับ)
         for gy in range(5):
             y = top + (bottom-top)*gy/4
             draw.line([(left, y), (right, y)], fill=(30,40,60), width=1)
-            draw.text((price_x, y-9), f"{hi-(hi-lo)*gy/4:.1f}", fill=GRAY, font=f_price)
+            lvl_price = hi - (hi-lo)*gy/4
+            draw.text((price_x, y-9), f"{lvl_price:.1f}", fill=GRAY, font=f_price)
+        # แท่งเทียน 120 แท่ง
         for i in range(len(d)):
             o=float(d["open"].iloc[i]); h=float(d["high"].iloc[i]); l=float(d["low"].iloc[i]); c=float(d["close"].iloc[i])
             x = x_of(i); col = GREEN if c>=o else RED
             draw.line([(x, y_of(h)), (x, y_of(l))], fill=col, width=2)
             bw = max(2, (right-left)//len(d)//2)
             draw.rectangle([x-bw//2, y_of(max(o,c)), x+bw//2, y_of(min(o,c))], fill=col)
+        # เส้น EMA36 เหลือง
         if "ema_slow" in d.columns:
             pts=[]
             for i in range(len(d)):
                 try: pts.append((x_of(i), y_of(float(d["ema_slow"].iloc[i]))))
                 except: pass
             if len(pts)>=2: draw.line(pts, fill=YELLOW, width=2)
-        # เก็บป้ายราคาขอบขวาไว้ก่อน แล้วค่อยวาดทีเดียวแบบกันซ้อนกัน (OUT/ราคาปัจจุบัน/SL ใกล้กันจะได้ไม่ทับ)
+        # ===== V2.8: กราฟ 4h แสดง Wave Dow Theory =====
+        # ใช้ swings ที่สมองนับไว้แล้ว (detect_swings 4h) มาวาดซ้ำ ไม่ได้นับใหม่ในรถยนต์
+        # เส้น ZigZag ขาว เชื่อม High/Low + ป้าย HH/HL (ขาขึ้น) / LH/LL (ขาลง) เทียบกับ Swing ประเภทเดียวกันก่อนหน้า
+        if tf=="4h" and dow_swings:
+            try:
+                pts=[]; labels=[]
+                last_high=None; last_low=None
+                for s in dow_swings:
+                    try:
+                        # รองรับ swings หลายรูปแบบ: dict / tuple / list
+                        if isinstance(s, dict):
+                            idx=s.get("index", s.get("idx", s.get("i", s.get("pos", s.get("bar", None)))))
+                            pr=s.get("price", s.get("value", s.get("close", None)))
+                            typ=str(s.get("type", s.get("kind", s.get("side", s.get("label",""))))).lower()
+                            if idx is None and "time" in s: idx=None
+                            if pr is None: continue
+                            idx=int(idx) if idx is not None else None
+                        elif isinstance(s, (list, tuple)) and len(s)>=2:
+                            idx=int(s[0]); pr=float(s[1]); typ=str(s[2]).lower() if len(s)>=3 else ""
+                        else: continue
+                        if idx is None: continue
+                        # ถ้าไม่มี type ให้เดาจากราคา vs High/Low ของแท่งนั้น
+                        if not typ or typ not in ("high","low","h","l","hh","hl","lh","ll"):
+                            try:
+                                row=df.iloc[idx]
+                                typ="high" if abs(float(pr)-float(row["high"]))<=abs(float(pr)-float(row["low"])) else "low"
+                            except: typ="high" if pr>=float(d["close"].iloc[-1]) else "low"
+                        is_high = typ in ("high","h","hh","lh")
+                        # ป้าย Dow: High ใหม่สูงกว่า High ก่อน = HH, ต่ำกว่า = LH / Low ใหม่สูงกว่า Low ก่อน = HL, ต่ำกว่า = LL
+                        if is_high:
+                            lbl="HH" if (last_high is None or float(pr)>last_high) else "LH"
+                            last_high=float(pr)
+                        else:
+                            lbl="HL" if (last_low is None or float(pr)>last_low) else "LL"
+                            last_low=float(pr)
+                        # แปลง index ของ df เต็ม -> index ในรูป tail 120
+                        xi = idx - offset
+                        if xi<0 or xi>=len(d): continue
+                        pts.append((x_of(xi), y_of(float(pr))))
+                        labels.append((x_of(xi), y_of(float(pr)), lbl, is_high))
+                    except: continue
+                if len(pts)>=2: draw.line(pts, fill=WHITE, width=2)
+                for x,y,lbl,is_high in labels:
+                    col = GREEN if lbl in ("HH","HL") else RED
+                    draw.ellipse([(x-4,y-4),(x+4,y+4)], fill=col, outline=WHITE)
+                    ty = y-26 if is_high else y+10
+                    draw.text((x-12, ty), lbl, fill=col, font=f_tag)
+                # ข้อความบอก Dow ใต้หัวข้อ
+                draw.text((20, 72), f"Dow 4h: {dow4h}  HH/HL = ขาขึ้น  LH/LL = ขาลง  เส้นขาว = ZigZag Swing 4h", fill=GRAY, font=f_leg)
+            except Exception as e: print(f"dow overlay err {e}")
+        # เส้นราคาปัจจุบัน - เก็บเป็นป้ายไว้ก่อน วาดทีเดียวแบบกันซ้อน
         right_tags = []
-        # เส้นราคาปัจจุบัน
         y_cur = y_of(last_price)
         for xx in range(left, right, 12): draw.line([(xx, y_cur), (xx+6, y_cur)], fill=YELLOW, width=1)
         right_tags.append([y_cur, f"{last_price:.1f}", YELLOW, (10,14,26)])
+        # จุดเข้า/ออก + SL/TP
         out_text = ""
         try: times_list = list(pd.to_datetime(d["time"] if "time" in d.columns else d["datetime"]))
         except: times_list = []
@@ -263,35 +321,34 @@ def generate_chart_image(symbol_key, df, trades, wave, dow4h, ema36):
                     et=pd.to_datetime(t.get("entry_time") or t.get("time"))
                     found = None
                     for j, ct in enumerate(times_list):
-                        if ct <= et < ct + pd.Timedelta(minutes=15): found=j; break
-                    xi = found if found is not None else min(range(len(times_list)), key=lambda j: abs((times_list[j]-et).total_seconds()))
+                        if ct <= et < ct + pd.Timedelta(minutes=candle_minutes):
+                            found = j; break
+                    if found is not None: xi = found
+                    else: xi = min(range(len(times_list)), key=lambda j: abs((times_list[j]-et).total_seconds()))
                 except: xi=len(d)-1
                 x=x_of(xi); y=y_of(entry)
                 sig=t.get("signal","")
                 tri_col = GREEN if sig=="LONG" else RED
-                # เส้นแนวตั้งประที่แท่งเข้าไม้
                 for yy in range(top, bottom, 16): draw.line([(x, yy), (x, yy+8)], fill=(80,90,110), width=1)
-                # สามเหลี่ยมอย่างเดียว ไม่แสดงข้อความใดๆ
+                # สามเหลี่ยมอย่างเดียว ไม่แสดงข้อความใดๆ - ข้อความไปอยู่ที่ป้ายราคาขอบขวาแทน
                 if sig=="LONG":
                     draw.polygon([(x, y-14), (x-10, y+10), (x+10, y+10)], fill=GREEN, outline=WHITE)
                 else:
                     draw.polygon([(x, y+14), (x-10, y-10), (x+10, y-10)], fill=RED, outline=WHITE)
-                # เส้นโยงจากสามเหลี่ยมไปป้ายราคาขอบขวา (เส้นประสีเดียวกับสามเหลี่ยม) จาก x ของสามเหลี่ยมถึงขอบขวา
+                # เส้นโยงจากสามเหลี่ยมไปป้ายราคาขอบขวา
                 for xx in range(int(x), right, 14): draw.line([(xx, y), (xx+7, y)], fill=tri_col, width=2)
                 right_tags.append([y, f"{'BUY' if sig=='LONG' else 'SELL'} {entry:.1f}", tri_col, WHITE])
-                # เส้น SL/TP + ป้ายขอบขวา
                 for val, cc, lbl in [(sl, RED, "SL"), (tp, GREEN, "TP")]:
                     yy = y_of(val)
                     for xx in range(left, right, 14): draw.line([(xx, yy), (xx+7, yy)], fill=cc, width=1)
                     right_tags.append([yy, f"{lbl} {val:.1f}", cc, WHITE])
-                # X ขาวจุดออก ตรงแท่งที่ปิด
                 if str(t.get("status")).upper()=="CLOSED" and t.get("exit") is not None:
                     ex=float(t.get("exit")); yex=y_of(ex)
                     try:
                         xt=pd.to_datetime(t.get("exit_time") or t.get("time"))
                         x_idx=None
                         for j, ct in enumerate(times_list):
-                            if ct <= xt < ct + pd.Timedelta(minutes=15): x_idx=j; break
+                            if ct <= xt < ct + pd.Timedelta(minutes=candle_minutes): x_idx=j; break
                         if x_idx is None: x_idx=len(d)-1
                     except: x_idx=len(d)-1
                     xex=min(x_of(x_idx), right-15)
@@ -300,7 +357,7 @@ def generate_chart_image(symbol_key, df, trades, wave, dow4h, ema36):
                     right_tags.append([yex, f"OUT {ex:.1f}", WHITE, (10,14,26)])
                     out_text = f"OUT {ex:.1f} {t.get('exit_reason','')} ${float(t.get('pnl_usd',0)):+.2f}"
             except Exception as e: print(f"chart trade err {e}")
-        # วาดป้ายขอบขวาแบบกันซ้อน: เรียงตาม y แล้วถ้าห่างกันน้อยกว่า 24px ให้ดันลง
+        # วาดป้ายขอบขวาแบบกันซ้อน
         right_tags.sort(key=lambda r: r[0])
         prev_y = -100
         for tag in right_tags:
@@ -311,6 +368,7 @@ def generate_chart_image(symbol_key, df, trades, wave, dow4h, ema36):
         for yy, txt, bg, fg in right_tags:
             draw.rectangle([price_x-2, yy-11, W-8, yy+11], fill=bg)
             draw.text((price_x+2, yy-10), txt, fill=fg, font=f_tag)
+        # Legend แยก 2 บรรทัด กันโดนตัด
         leg1 = "Green=UP Red=DOWN Yellow=EMA36 Triangle=Entry X=Exit"
         leg2 = "Dashed Red=SL Green=TP  Right=Price Levels"
         if out_text:
@@ -462,12 +520,12 @@ def parse_sym(s):
 
 @app.get("/ping")
 def ping():
-    return {"status": "ok UNIVERSAL V2.6", "strategy_btc": get_strategy_name("btc"), "strategy_gold": get_strategy_name("gold"), "auto": get_auto_state(), "trades": len(load_trades())}
+    return {"status": "ok UNIVERSAL V2.8", "strategy_btc": get_strategy_name("btc"), "strategy_gold": get_strategy_name("gold"), "auto": get_auto_state(), "trades": len(load_trades())}
 
 @app.get("/", response_class=HTMLResponse)
 def home():
     auto=get_auto_state()
-    return f"<html><body style='background:#0a0e1a;color:#fff;font-family:Arial;padding:20px'><h1>G_POWER UNIVERSAL V2.6</h1><p>Strategy: {get_strategy_name('btc')}</p><p>BTC {'🟢' if auto.get('btc') else '🔴'} GOLD {'🟢' if auto.get('gold') else '🔴'}</p><p>Main ไม่ต้องแก้แล้ว เปลี่ยนแค่ strategy_G_POWER.py | Wave None / Dow UNKNOWN ห้ามเปิด</p><a href='/ping'>Ping</a></body></html>"
+    return f"<html><body style='background:#0a0e1a;color:#fff;font-family:Arial;padding:20px'><h1>G_POWER UNIVERSAL V2.8</h1><p>Strategy: {get_strategy_name('btc')}</p><p>BTC {'🟢' if auto.get('btc') else '🔴'} GOLD {'🟢' if auto.get('gold') else '🔴'}</p><p>Main ไม่ต้องแก้แล้ว เปลี่ยนแค่ strategy_G_POWER.py | Wave None / Dow UNKNOWN ห้ามเปิด</p><a href='/ping'>Ping</a></body></html>"
 
 @app.get("/check")
 def check(sym: str = "all"):
@@ -554,7 +612,7 @@ async def telegram_webhook(req: Request):
                 base_name=raw_name.replace(' BTC','').replace(' btc','').strip()
                 auto=get_auto_state()
                 lines=[f"ℹ️ Info {base_name}"]
-                lines.append(f"รถยนต์ Main UNIVERSAL V2.6 | สมอง Strategy V9.3.1")
+                lines.append(f"รถยนต์ Main UNIVERSAL V2.8 | สมอง Strategy V9.3.1")
                 lines.append(f"Auto BTC {'🟢 ON' if auto.get('btc') else '🔴 OFF'} | GOLD {'🟢 ON' if auto.get('gold') else '🔴 OFF'}")
                 lines.append(f"\nBTC: EMA {cfg_btc.get('ema_fast')}/{cfg_btc.get('ema_slow')} ADX>{cfg_btc.get('adx_min')} DI>={cfg_btc.get('di_min')} SL cap {cfg_btc.get('sl_pct_max')} TP cap {cfg_btc.get('tp_cap')}")
                 lines.append(f"GOLD: EMA {cfg_gold.get('ema_fast')}/{cfg_gold.get('ema_slow')} ADX>{cfg_gold.get('adx_min')} DI>={cfg_gold.get('di_min')} SL cap {cfg_gold.get('sl_pct_max')} TP cap {cfg_gold.get('tp_cap')}")
@@ -568,41 +626,58 @@ async def telegram_webhook(req: Request):
             except Exception as e: send_tele(f"/info Error {e}", chat_id)
             return {"ok":True}
         elif tl.startswith("/chart"):
-            # V2.3: /chart ต้องได้กราฟแดงแบบตอน /bt - แท่งเทียน + จุดเข้า/ออก + เส้น EMA36 + เส้น SL/TP ไม่ใช่ข้อความล้วน
-            parts=tl.split(); key="all" if len(parts)<2 else parse_sym(parts[1])[0]
-            if key=="unknown": send_tele("❓ /chart [btc|gold|all]", chat_id); return {"ok":True}
+            # V2.7: /chart [btc|gold|all] [15m|1h|4h] - ตัวอย่าง /chart gold /chart gold 1h /chart btc 4h /chart all 1h /chart 1h
+            parts=tl.split()
+            tf="15m"; candle_minutes=15; key="all"
+            for p in parts[1:]:
+                pl=p.lower()
+                if pl in ("15m","15","m15"): tf="15m"; candle_minutes=15
+                elif pl in ("1h","h1","60m","60"): tf="1h"; candle_minutes=60
+                elif pl in ("4h","h4","240m","240"): tf="4h"; candle_minutes=240
+                else:
+                    pk=parse_sym(p)[0]
+                    if pk!="unknown": key=pk
+            if key=="unknown": send_tele("❓ /chart [btc|gold|all] [15m|1h|4h]\nตัวอย่าง: /chart gold 1h /chart btc 4h", chat_id); return {"ok":True}
             keys=["btc","gold"] if key=="all" else [key]
             trades_all=load_trades()
             for k in keys:
                 try:
                     sym=SYMBOLS[k]; st=get_strat(k)
-                    df=get_data(sym,"15m",limit=1000)
-                    if df is None: send_tele(f"{k.upper()} ไม่มีข้อมูล", chat_id); continue
-                    df=st.add_indicators(df); curr=df.iloc[-1]
+                    df15=get_data(sym,"15m",limit=1000)
+                    if df15 is None: send_tele(f"{k.upper()} ไม่มีข้อมูล", chat_id); continue
+                    # สร้าง df ตาม TF ที่ขอ: 15m ใช้ตรงๆ 1h/4h resample จาก 15m เหมือนตอนนับ Wave
+                    if tf=="15m": df_chart=df15
+                    else: df_chart=resample_tf(df15, tf)
+                    df_chart=st.add_indicators(df_chart); curr=df_chart.iloc[-1]
                     price=float(curr["close"]); ema36=float(curr["ema_slow"]) if "ema_slow" in curr else 0
                     adx=float(curr["adx"]) if "adx" in curr else 0
                     pdi=float(curr["plus_di"]) if "plus_di" in curr else 0
                     mdi=float(curr["minus_di"]) if "minus_di" in curr else 0
-                    wave="?" ; dow4h="?"
+                    wave="?" ; dow4h="?" ; dow_swings=None
                     try:
-                        df_1h=resample_tf(df,"1h"); df_1h=st.add_indicators(df_1h)
-                        df_4h=resample_tf(df,"4h"); df_4h=st.add_indicators(df_4h)
+                        df_1h=resample_tf(df15,"1h"); df_1h=st.add_indicators(df_1h)
+                        df_4h=resample_tf(df15,"4h"); df_4h=st.add_indicators(df_4h)
                         sw1=st.detect_swings(df_1h); sw4=st.detect_swings(df_4h)
                         if len(sw1)>=6: wave=str(st.count_waves(sw1).get("current_wave"))
                         dow4h=st.get_dow_trend_4h(sw4)
+                        # กราฟ 4h ใช้ swings 4h ตัวเดียวกับที่สมองใช้ตัดสิน Dow (ไม่นับใหม่)
+                        if tf=="4h": dow_swings=sw4
                     except: pass
                     touch="แตะ EMA36" if hasattr(st,"is_touch_ema36") and st.is_touch_ema36(float(curr["low"]),float(curr["high"]),ema36) else "ไม่แตะ EMA36"
                     pat="?"
-                    try: pat=str(st.check_pattern_15m(df,len(df)-1))
-                    except: pass
-                    img_path=generate_chart_image(k, df, trades_all, wave, dow4h, ema36)
-                    caption=f"📈 Chart {k.upper()} ราคา {price:.2f} Wave {wave} Dow4h {dow4h} EMA36 {ema36:.2f} | {touch} ADX {adx:.1f} DI+ {pdi:.1f} DI- {mdi:.1f} Pattern {pat}\n🔺 เขียว = BUY / 🔻 แดง = SELL / X ขาว = จุดออก / เส้นประแดง = SL / เส้นประเขียว = TP"
+                    # Pattern มีแค่ 15m เท่านั้น 1h/4h ไม่เช็ค Pattern
+                    if tf=="15m":
+                        try: pat=str(st.check_pattern_15m(df_chart,len(df_chart)-1))
+                        except: pass
+                    else: pat="- (Pattern ดูที่ 15m)"
+                    img_path=generate_chart_image(k, df_chart, trades_all, wave, dow4h, ema36, tf=tf, candle_minutes=candle_minutes, dow_swings=dow_swings)
+                    caption=f"📈 Chart {k.upper()} {tf} ราคา {price:.2f} Wave {wave} Dow4h {dow4h} EMA36 {ema36:.2f} | {touch} ADX {adx:.1f} DI+ {pdi:.1f} DI- {mdi:.1f} Pattern {pat}\n🔺 เขียว = BUY / 🔻 แดง = SELL / X ขาว = จุดออก / เส้นประแดง = SL / เส้นประเขียว = TP" + (f"\n⚪ เส้นขาว = ZigZag Dow 4h | HH/HL = ขาขึ้น | LH/LL = ขาลง" if tf=="4h" else "")
                     if img_path:
                         r=send_tele_photo(img_path, caption, chat_id)
                         if not r.get("ok"): send_tele(caption, chat_id)
                     else:
                         send_tele(caption, chat_id)
-                except Exception as e: send_tele(f"/chart {k} Error {e}", chat_id)
+                except Exception as e: send_tele(f"/chart {k} {tf} Error {e}", chat_id)
             return {"ok":True}
         elif tl.startswith("/close"):
             parts=tl.split(); want=None if len(parts)<2 or parts[1]=="all" else parse_sym(parts[1])[0]
@@ -669,5 +744,5 @@ def set_webhook():
 
 @app.get("/test_send")
 def test_send():
-    r = send_tele("TEST จาก Render UNIVERSAL V2.6 - ถ้าเห็นข้อความนี้ = BOT_TOKEN + CHAT_ID ถูกแล้ว")
+    r = send_tele("TEST จาก Render UNIVERSAL V2.8 - ถ้าเห็นข้อความนี้ = BOT_TOKEN + CHAT_ID ถูกแล้ว")
     return {"sent":r}
