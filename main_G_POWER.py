@@ -1,9 +1,7 @@
-"""G_POWER Main UNIVERSAL V2.8 - /chart 4h แสดง Wave Dow Theory
-V2.8 แก้ในรถยนต์อย่างเดียว สมอง V9.3.1 ไม่ต้องแตะ:
-- /chart gold 4h / /chart btc 4h มีเส้น ZigZag ขาว เชื่อม Swing 4h + ป้าย HH/HL/LH/LL
-- HH = High ใหม่สูงกว่า High ก่อน, LH = High ใหม่ต่ำกว่า High ก่อน / HL = Low ใหม่สูงกว่า Low ก่อน, LL = Low ใหม่ต่ำกว่า Low ก่อน
-- HH+HL = Dow UP, LH+LL = Dow DOWN ตรงกับ Dow4h ที่สมองตัดสินเลย เพราะใช้ swings ตัวเดียวกัน (detect_swings 4h)
-- /chart 1h/15m เหมือน V2.7 ไม่ใส่ Dow เพราะ Dow ดูที่ 4h เท่านั้น
+"""G_POWER Main UNIVERSAL V2.8.1 - แก้ตัวหนังสือ Dow ในรูป 4h เป็น □□□
+V2.8.1 แก้ในรถยนต์อย่างเดียว สมอง V9.3.1 ไม่ต้องแตะ:
+- บรรทัด Dow 4h ใต้หัวข้อ เปลี่ยนจากภาษาไทยเป็น English ล้วน เพราะฟอนต์ DejaVuSans ใน Render ไม่มีตัวอักษรไทย เลยขึ้นเป็น □□□ แบบในรูปพี่
+- ที่เหลือเหมือน V2.8: /chart 4h มีเส้น ZigZag ขาว + ป้าย HH/HL/LH/LL
 อัปโหลดเป็น main_G_POWER.py ทับตัวเก่า ต้องมี Pillow อย่างเดียวพอ
 """
 from fastapi import FastAPI, Request
@@ -12,7 +10,7 @@ from datetime import datetime, timedelta
 import os, ccxt, pandas as pd, json, requests, importlib, traceback
 from pathlib import Path
 
-app = FastAPI(title="G_POWER UNIVERSAL V2.8")
+app = FastAPI(title="G_POWER UNIVERSAL V2.8.1")
 
 CAPITAL = 40.0
 RISK_PCT = 0.02
@@ -301,8 +299,8 @@ def generate_chart_image(symbol_key, df, trades, wave, dow4h, ema36, tf="15m", c
                     draw.ellipse([(x-4,y-4),(x+4,y+4)], fill=col, outline=WHITE)
                     ty = y-26 if is_high else y+10
                     draw.text((x-12, ty), lbl, fill=col, font=f_tag)
-                # ข้อความบอก Dow ใต้หัวข้อ
-                draw.text((20, 72), f"Dow 4h: {dow4h}  HH/HL = ขาขึ้น  LH/LL = ขาลง  เส้นขาว = ZigZag Swing 4h", fill=GRAY, font=f_leg)
+                # ข้อความบอก Dow ใต้หัวข้อ - ใช้ English อย่างเดียว เพราะฟอนต์ DejaVuSans ใน Render ไม่มีตัวอักษรไทย จะกลายเป็น □□□ แบบในรูปพี่
+                draw.text((20, 72), f"Dow 4h: {dow4h}  HH/HL = UPTREND  LH/LL = DOWNTREND  White = ZigZag Swing 4h", fill=GRAY, font=f_leg)
             except Exception as e: print(f"dow overlay err {e}")
         # เส้นราคาปัจจุบัน - เก็บเป็นป้ายไว้ก่อน วาดทีเดียวแบบกันซ้อน
         right_tags = []
